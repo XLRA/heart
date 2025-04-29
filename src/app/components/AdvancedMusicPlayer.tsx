@@ -205,7 +205,6 @@ const AdvancedMusicPlayer = () => {
   useEffect(() => {
     if (audioRef.current) {
       audioRef.current.src = songs[currentSongIndex].url;
-      audioRef.current.volume = volume;
       
       if (isPlaying) {
         audioRef.current.play();
@@ -218,7 +217,7 @@ const AdvancedMusicPlayer = () => {
         clearInterval(bufferingIntervalRef.current);
       }
     };
-  }, [currentSongIndex, isPlaying, songs, volume]);
+  }, [currentSongIndex, isPlaying, songs]);
 
   useEffect(() => {
     if (audioRef.current) {
