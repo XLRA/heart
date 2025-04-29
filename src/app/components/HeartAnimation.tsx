@@ -18,9 +18,6 @@ const HeartAnimation = () => {
 
     // Get device pixel ratio for retina displays
     const dpr = window.devicePixelRatio || 1;
-    const isDevice = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(
-      (navigator.userAgent || navigator.vendor || (window as WindowWithOpera).opera || '').toLowerCase()
-    );
 
     // Set canvas size accounting for device pixel ratio
     let width = canvas.width = window.innerWidth * dpr;

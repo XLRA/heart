@@ -218,7 +218,7 @@ const AdvancedMusicPlayer = () => {
         clearInterval(bufferingIntervalRef.current);
       }
     };
-  }, [currentSongIndex, isPlaying, songs]);
+  }, [currentSongIndex, isPlaying, songs, volume]);
 
   useEffect(() => {
     if (audioRef.current) {
