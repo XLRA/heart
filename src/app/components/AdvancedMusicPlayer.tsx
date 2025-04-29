@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import Image from 'next/image';
 
 interface Song {
@@ -24,14 +24,13 @@ const AdvancedMusicPlayer = () => {
   const [previousVolume, setPreviousVolume] = useState(0.47);
   const [isMuted, setIsMuted] = useState(false);
   const [isDraggingVolume, setIsDraggingVolume] = useState(false);
-  const [imageLoaded, setImageLoaded] = useState(true);
   
   const audioRef = useRef<HTMLAudioElement>(null);
   const bufferingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastBufferingTimeRef = useRef<number>(0);
   const volumeBarRef = useRef<HTMLDivElement>(null);
 
-  const songs: Song[] = [
+  const songs = useMemo<Song[]>(() => [
     {
       title: "What You Need",
       artist: "The Weeknd - Durdnn Remix",
@@ -44,7 +43,7 @@ const AdvancedMusicPlayer = () => {
       url: "/music/song2.mp3",
       cover: "/covers/cover2.png"
     }
-  ];
+  ], []);
 
   const formatTime = (time: number): string => {
     if (isNaN(time)) return '00:00';
@@ -134,11 +133,17 @@ const AdvancedMusicPlayer = () => {
     handleVolumeChange(e);
   };
 
-  const handleVolumeMouseMove = (e: MouseEvent) => {
-    if (isDraggingVolume) {
-      handleVolumeChange(e);
+  const handleVolumeMouseMove = useCallback((e: MouseEvent) => {
+    if (isDraggingVolume && volumeBarRef.current) {
+      const rect = volumeBarRef.current.getBoundingClientRect();
+      const volumeValue = Math.max(0, Math.min(1, (e.clientX - rect.left) / volumeBarRef.current.offsetWidth));
+      
+      if (audioRef.current) {
+        audioRef.current.volume = volumeValue;
+        setVolume(volumeValue);
+      }
     }
-  };
+  }, [isDraggingVolume]);
 
   const handleVolumeMouseUp = () => {
     setIsDraggingVolume(false);
@@ -158,15 +163,6 @@ const AdvancedMusicPlayer = () => {
       }
     }
     setIsMuted(!isMuted);
-  };
-
-  const handleImageLoad = () => {
-    setImageLoaded(true);
-  };
-
-  const handleImageError = () => {
-    console.error('Image loading error for:', songs[currentSongIndex].cover);
-    setImageLoaded(false);
   };
 
   const checkBuffering = () => {
@@ -233,10 +229,6 @@ const AdvancedMusicPlayer = () => {
       }
     };
   }, [currentSongIndex, isPlaying, songs, volume]);
-
-  useEffect(() => {
-    setImageLoaded(true);
-  }, [currentSongIndex]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -383,11 +375,13 @@ const AdvancedMusicPlayer = () => {
             <Image 
               src={songs[currentSongIndex].cover}
               alt={`${songs[currentSongIndex].title} cover`}
-              width={64}
-              height={64}
-              onLoad={handleImageLoad}
-              onError={handleImageError}
-              className="rounded-lg"
+              width={115}
+              height={115}
+              onError={() => console.error('Image loading error for:', songs[currentSongIndex].cover)}
+              className="w-full h-full object-cover"
+              style={{
+                animation: isPlaying ? 'rotateAlbumArt 3s linear 0s infinite forwards' : 'none'
+              }}
             />
             <div id="buffer-box" style={{
               position: 'absolute',
