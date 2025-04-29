@@ -16,15 +16,25 @@ const HeartAnimation = () => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    // Get device pixel ratio for retina displays
+    const dpr = window.devicePixelRatio || 1;
     const isDevice = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(
       (navigator.userAgent || navigator.vendor || (window as WindowWithOpera).opera || '').toLowerCase()
     );
-    const koef = isDevice ? 0.5 : 1;
-    let width = canvas.width = koef * window.innerWidth;
-    let height = canvas.height = koef * window.innerHeight;
+
+    // Set canvas size accounting for device pixel ratio
+    let width = canvas.width = window.innerWidth * dpr;
+    let height = canvas.height = window.innerHeight * dpr;
+    
+    // Scale canvas style size
+    canvas.style.width = `${window.innerWidth}px`;
+    canvas.style.height = `${window.innerHeight}px`;
+    
+    // Scale context to account for device pixel ratio
+    ctx.scale(dpr, dpr);
 
     ctx.fillStyle = "rgba(0,0,0,1)";
-    ctx.fillRect(0, 0, width, height);
+    ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
     const heartPosition = (rad: number): [number, number] => {
       return [
@@ -38,17 +48,20 @@ const HeartAnimation = () => {
     };
 
     const handleResize = () => {
-      width = canvas.width = koef * window.innerWidth;
-      height = canvas.height = koef * window.innerHeight;
+      width = canvas.width = window.innerWidth * dpr;
+      height = canvas.height = window.innerHeight * dpr;
+      canvas.style.width = `${window.innerWidth}px`;
+      canvas.style.height = `${window.innerHeight}px`;
+      ctx.scale(dpr, dpr);
       ctx.fillStyle = "rgba(0,0,0,1)";
-      ctx.fillRect(0, 0, width, height);
+      ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
     };
 
     window.addEventListener('resize', handleResize);
 
-    const traceCount = isDevice ? 20 : 50;
+    const traceCount = 50; // Use same particle count for all devices
     const pointsOrigin: [number, number][] = [];
-    const dr = isDevice ? 0.3 : 0.1;
+    const dr = 0.1; // Use same step size for all devices
 
     for (let i = 0; i < Math.PI * 2; i += dr) {
       pointsOrigin.push(scaleAndTranslate(heartPosition(i), 210, 13, 0, 0));
@@ -66,8 +79,8 @@ const HeartAnimation = () => {
     const pulse = (kx: number, ky: number) => {
       for (let i = 0; i < pointsOrigin.length; i++) {
         targetPoints[i] = [
-          kx * pointsOrigin[i][0] + width / 2,
-          ky * pointsOrigin[i][1] + height / 2
+          kx * pointsOrigin[i][0] + window.innerWidth / 2,
+          ky * pointsOrigin[i][1] + window.innerHeight / 2
         ];
       }
     };
