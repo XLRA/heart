@@ -2,6 +2,10 @@
 
 import { useEffect, useRef } from 'react';
 
+interface WindowWithOpera extends Window {
+  opera?: string;
+}
+
 const HeartAnimation = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -13,7 +17,7 @@ const HeartAnimation = () => {
     if (!ctx) return;
 
     const isDevice = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(
-      (navigator.userAgent || navigator.vendor || (window as any).opera).toLowerCase()
+      (navigator.userAgent || navigator.vendor || (window as WindowWithOpera).opera || '').toLowerCase()
     );
     const koef = isDevice ? 0.5 : 1;
     let width = canvas.width = koef * window.innerWidth;

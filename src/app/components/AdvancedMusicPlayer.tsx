@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import Image from 'next/image';
 
 interface Song {
   title: string;
@@ -163,7 +164,7 @@ const AdvancedMusicPlayer = () => {
     setImageLoaded(true);
   };
 
-  const handleImageError = (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
+  const handleImageError = () => {
     console.error('Image loading error for:', songs[currentSongIndex].cover);
     setImageLoaded(false);
   };
@@ -213,7 +214,7 @@ const AdvancedMusicPlayer = () => {
       window.removeEventListener('mousemove', handleVolumeMouseMove);
       window.removeEventListener('mouseup', handleVolumeMouseUp);
     };
-  }, [isDraggingVolume]);
+  }, [isDraggingVolume, handleVolumeMouseMove]);
 
   useEffect(() => {
     if (audioRef.current) {
@@ -231,7 +232,7 @@ const AdvancedMusicPlayer = () => {
         clearInterval(bufferingIntervalRef.current);
       }
     };
-  }, [currentSongIndex]);
+  }, [currentSongIndex, isPlaying, songs, volume]);
 
   useEffect(() => {
     setImageLoaded(true);
@@ -379,24 +380,14 @@ const AdvancedMusicPlayer = () => {
             overflow: 'hidden',
             backgroundColor: '#151518'
           }}>
-            <img 
-              key={songs[currentSongIndex].cover}
+            <Image 
               src={songs[currentSongIndex].cover}
-              onError={handleImageError}
+              alt={`${songs[currentSongIndex].title} cover`}
+              width={64}
+              height={64}
               onLoad={handleImageLoad}
-              style={{
-                display: imageLoaded ? 'block' : 'none',
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: '100%',
-                height: '100%',
-                opacity: 1,
-                zIndex: 1,
-                animation: isPlaying ? 'rotateAlbumArt 3s linear 0s infinite forwards' : 'none',
-                objectFit: 'cover'
-              }}
-              alt={`${songs[currentSongIndex].title} cover art`}
+              onError={handleImageError}
+              className="rounded-lg"
             />
             <div id="buffer-box" style={{
               position: 'absolute',
