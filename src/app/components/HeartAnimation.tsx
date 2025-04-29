@@ -2,10 +2,6 @@
 
 import { useEffect, useRef } from 'react';
 
-interface WindowWithOpera extends Window {
-  opera?: string;
-}
-
 const HeartAnimation = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
