@@ -6,8 +6,11 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Heart Animation with Music Player",
-  description: "A beautiful heart animation with an advanced music player",
+  title: "sleep",
+  description: "where do we go from here?",
+  icons: {
+    icon: '/favicon.ico'
+  }
 };
 
 export default function RootLayout({
