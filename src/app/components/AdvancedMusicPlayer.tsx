@@ -116,17 +116,13 @@ const AdvancedMusicPlayer = () => {
     setShowSeekTime(false);
   };
 
-  const handleVolumeChange = (e: React.MouseEvent<HTMLDivElement> | MouseEvent) => {
+  const handleVolumeChange = useCallback((e: React.MouseEvent<HTMLDivElement> | MouseEvent) => {
     if (volumeBarRef.current) {
       const rect = volumeBarRef.current.getBoundingClientRect();
       const volumeValue = Math.max(0, Math.min(1, (e.clientX - rect.left) / volumeBarRef.current.offsetWidth));
-      
-      if (audioRef.current) {
-        audioRef.current.volume = volumeValue;
-        setVolume(volumeValue);
-      }
+      setVolume(volumeValue);
     }
-  };
+  }, []);
 
   const handleVolumeMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     setIsDraggingVolume(true);
@@ -134,16 +130,10 @@ const AdvancedMusicPlayer = () => {
   };
 
   const handleVolumeMouseMove = useCallback((e: MouseEvent) => {
-    if (isDraggingVolume && volumeBarRef.current) {
-      const rect = volumeBarRef.current.getBoundingClientRect();
-      const volumeValue = Math.max(0, Math.min(1, (e.clientX - rect.left) / volumeBarRef.current.offsetWidth));
-      
-      if (audioRef.current) {
-        audioRef.current.volume = volumeValue;
-        setVolume(volumeValue);
-      }
+    if (isDraggingVolume) {
+      handleVolumeChange(e);
     }
-  }, [isDraggingVolume]);
+  }, [isDraggingVolume, handleVolumeChange]);
 
   const handleVolumeMouseUp = () => {
     setIsDraggingVolume(false);
@@ -228,7 +218,13 @@ const AdvancedMusicPlayer = () => {
         clearInterval(bufferingIntervalRef.current);
       }
     };
-  }, [currentSongIndex, isPlaying, songs, volume]);
+  }, [currentSongIndex, isPlaying, songs]);
+
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.volume = volume;
+    }
+  }, [volume]);
 
   useEffect(() => {
     const audio = audioRef.current;
