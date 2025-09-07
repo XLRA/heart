@@ -102,7 +102,7 @@ const HeartAnimation = () => {
         q: ~~(Math.random() * heartPointsCount),
         D: 2 * (i % 2) - 1,
         force: 0.2 * Math.random() + 0.7,
-        f: `hsla(0,${~~(40 * Math.random() + 60)}%,${~~(60 * Math.random() + 20)}%,.3)`,
+        f: `hsla(${Math.random() < 0.5 ? 320 + Math.random() * 20 : 280 + Math.random() * 20},${~~(60 * Math.random() + 70)}%,${~~(80 * Math.random() + 15)}%,.4)`,
         trace: Array(traceCount).fill(null).map(() => ({ x, y }))
       };
     }
