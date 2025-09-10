@@ -2,15 +2,20 @@
 
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import Image from 'next/image';
+import { useSpotify } from '../context/SpotifyContext';
+import PlaylistSelector from './PlaylistSelector';
 
 interface Song {
   title: string;
   artist: string;
   url: string;
   cover: string;
+  duration?: number;
+  id?: string;
 }
 
 const AdvancedMusicPlayer = () => {
+  const { isAuthenticated, currentPlaylist, setCurrentPlaylist } = useSpotify();
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentSongIndex, setCurrentSongIndex] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
@@ -24,13 +29,15 @@ const AdvancedMusicPlayer = () => {
   const [previousVolume, setPreviousVolume] = useState(0.47);
   const [isMuted, setIsMuted] = useState(false);
   const [isDraggingVolume, setIsDraggingVolume] = useState(false);
+  const [showPlaylistSelector, setShowPlaylistSelector] = useState(false);
+  const [currentPlaylistSongs, setCurrentPlaylistSongs] = useState<Song[]>([]);
   
   const audioRef = useRef<HTMLAudioElement>(null);
   const bufferingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastBufferingTimeRef = useRef<number>(0);
   const volumeBarRef = useRef<HTMLDivElement>(null);
 
-  const songs = useMemo<Song[]>(() => [
+  const defaultSongs = useMemo<Song[]>(() => [
     {
       title: "What You Need",
       artist: "The Weeknd - Durdnn Remix",
@@ -44,6 +51,13 @@ const AdvancedMusicPlayer = () => {
       cover: "/covers/cover2.png"
     }
   ], []);
+
+  const songs = useMemo<Song[]>(() => {
+    if (currentPlaylistSongs.length > 0) {
+      return currentPlaylistSongs;
+    }
+    return defaultSongs;
+  }, [currentPlaylistSongs, defaultSongs]);
 
   const formatTime = (time: number): string => {
     if (isNaN(time)) return '00:00';
@@ -153,6 +167,36 @@ const AdvancedMusicPlayer = () => {
       }
     }
     setIsMuted(!isMuted);
+  };
+
+  const handlePlaylistSelect = (playlist: any) => {
+    const spotifySongs: Song[] = playlist.tracks.map((track: any) => ({
+      title: track.name,
+      artist: track.artists.map((artist: any) => artist.name).join(', '),
+      url: track.preview_url || '',
+      cover: track.album.images && track.album.images.length > 0 ? track.album.images[0].url : '/covers/cover1.jpg',
+      duration: track.duration_ms / 1000,
+      id: track.id
+    })).filter((song: Song) => song.url); // Only include songs with preview URLs
+
+    setCurrentPlaylistSongs(spotifySongs);
+    setCurrentPlaylist(playlist);
+    setCurrentSongIndex(0);
+    setIsPlaying(false);
+    setShowPlaylistSelector(false);
+  };
+
+  const handlePlaylistToggle = () => {
+    if (isAuthenticated) {
+      setShowPlaylistSelector(!showPlaylistSelector);
+    }
+  };
+
+  const handleBackToDefault = () => {
+    setCurrentPlaylistSongs([]);
+    setCurrentPlaylist(null);
+    setCurrentSongIndex(0);
+    setIsPlaying(false);
   };
 
   const checkBuffering = () => {
@@ -265,16 +309,52 @@ const AdvancedMusicPlayer = () => {
           border: '1px solid rgba(255, 255, 255, 0.1)',
           borderBottom: 'none'
         }}>
-          <div id="album-name" style={{
-            color: '#f1f1f1',
-            fontSize: '17px',
-            fontWeight: 'bold'
-          }}>{songs[currentSongIndex].title}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+            <div id="album-name" style={{
+              color: '#f1f1f1',
+              fontSize: '17px',
+              fontWeight: 'bold',
+              flex: 1
+            }}>{songs[currentSongIndex].title}</div>
+            {currentPlaylist && (
+              <button
+                onClick={handleBackToDefault}
+                style={{
+                  backgroundColor: 'transparent',
+                  border: 'none',
+                  color: '#8f8f9d',
+                  cursor: 'pointer',
+                  padding: '4px',
+                  borderRadius: '4px',
+                  fontSize: '12px',
+                  transition: 'all 0.2s ease'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = '#252529';
+                  e.currentTarget.style.color = '#ffffff';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = 'transparent';
+                  e.currentTarget.style.color = '#8f8f9d';
+                }}
+                title="Back to default playlist"
+              >
+                <i className="fas fa-times"></i>
+              </button>
+            )}
+          </div>
           <div id="track-name" style={{
             color: '#8f8f9d',
             fontSize: '13px',
             margin: '2px 0 8px 0'
-          }}>{songs[currentSongIndex].artist}</div>
+          }}>
+            {songs[currentSongIndex].artist}
+            {currentPlaylist && (
+              <span style={{ color: '#1db954', marginLeft: '8px' }}>
+                • {currentPlaylist.name}
+              </span>
+            )}
+          </div>
           <div id="track-time" style={{
             height: '12px',
             marginBottom: '2px',
@@ -407,6 +487,35 @@ const AdvancedMusicPlayer = () => {
             alignItems: 'center',
             justifyContent: 'space-between'
           }}>
+            {/* Playlist Button */}
+            <div className="control" style={{
+              width: '33.333%',
+              display: 'flex',
+              justifyContent: 'center',
+              padding: '12px 0'
+            }}>
+              <div 
+                className="button" 
+                onClick={isAuthenticated ? handlePlaylistToggle : undefined}
+                style={{
+                  width: '76px',
+                  height: '76px',
+                  backgroundColor: 'transparent',
+                  borderRadius: '16px',
+                  cursor: isAuthenticated ? 'pointer' : 'default',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  opacity: isAuthenticated ? 1 : 0.3
+                }}
+                title={isAuthenticated ? (currentPlaylist ? 'Switch Playlist' : 'Select Playlist') : 'Connect to Spotify to access playlists'}
+              >
+                <i style={{
+                  color: currentPlaylist ? '#1db954' : '#b0b3c6',
+                  fontSize: '26px'
+                }} className="fab fa-spotify"></i>
+              </div>
+            </div>
             <div className="control" style={{
               width: '33.333%',
               display: 'flex',
@@ -549,6 +658,11 @@ const AdvancedMusicPlayer = () => {
         </div>
       </div>
       <audio ref={audioRef} />
+      <PlaylistSelector
+        onPlaylistSelect={handlePlaylistSelect}
+        isVisible={showPlaylistSelector}
+        onClose={() => setShowPlaylistSelector(false)}
+      />
       <style jsx>{`
         @keyframes rotateAlbumArt {
           0% { transform: rotateZ(0); }
