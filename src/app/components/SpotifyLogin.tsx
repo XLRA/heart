@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { useSpotify } from '../context/SpotifyContext';
 
 const SpotifyLogin = () => {
@@ -19,9 +20,11 @@ const SpotifyLogin = () => {
           minWidth: '200px'
         }}>
           {user.images && user.images.length > 0 && (
-            <img
+            <Image
               src={user.images[0].url}
-              alt={user.display_name}
+              alt={user.display_name || 'User'}
+              width={32}
+              height={32}
               style={{
                 width: '32px',
                 height: '32px',
@@ -39,7 +42,7 @@ const SpotifyLogin = () => {
               overflow: 'hidden',
               textOverflow: 'ellipsis'
             }}>
-              {user.display_name}
+              {user.display_name || 'User'}
             </div>
             <div style={{
               color: '#8f8f9d',

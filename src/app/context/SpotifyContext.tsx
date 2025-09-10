@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import SpotifyWebApi from 'spotify-web-api-js';
 
 interface SpotifyTrack {
@@ -21,24 +21,33 @@ interface SpotifyTrack {
 interface SpotifyPlaylist {
   id: string;
   name: string;
-  description: string;
-  images: Array<{ url: string }>;
-  tracks: {
+  description?: string | null;
+  images?: Array<{ url: string }>;
+  tracks?: {
     total: number;
-    items: Array<{
-      track: SpotifyTrack;
+    href?: string;
+    items?: Array<{
+      track: {
+        name: string;
+        artists: Array<{ name: string }>;
+        preview_url: string | null;
+        album: { images: Array<{ url: string }> };
+        duration_ms: number;
+        id: string;
+        external_urls?: { spotify: string };
+      };
     }>;
   };
-  owner: {
-    display_name: string;
+  owner?: {
+    display_name?: string;
   };
 }
 
 interface SpotifyUser {
   id: string;
-  display_name: string;
-  images: Array<{ url: string }>;
-  email: string;
+  display_name?: string;
+  images?: Array<{ url: string }>;
+  email?: string;
 }
 
 interface SpotifyContextType {
@@ -46,7 +55,7 @@ interface SpotifyContextType {
   user: SpotifyUser | null;
   playlists: SpotifyPlaylist[];
   currentPlaylist: SpotifyPlaylist | null;
-  spotifyApi: SpotifyWebApi | null;
+  spotifyApi: SpotifyWebApi.SpotifyWebApiJs | null;
   login: () => void;
   logout: () => void;
   setCurrentPlaylist: (playlist: SpotifyPlaylist | null) => void;
@@ -71,7 +80,41 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<SpotifyUser | null>(null);
   const [playlists, setPlaylists] = useState<SpotifyPlaylist[]>([]);
   const [currentPlaylist, setCurrentPlaylist] = useState<SpotifyPlaylist | null>(null);
-  const [spotifyApi, setSpotifyApi] = useState<SpotifyWebApi | null>(null);
+  const [spotifyApi, setSpotifyApi] = useState<SpotifyWebApi.SpotifyWebApiJs | null>(null);
+
+  const logout = useCallback(() => {
+    localStorage.removeItem('spotify_access_token');
+    localStorage.removeItem('spotify_token_type');
+    localStorage.removeItem('spotify_expires_in');
+    setSpotifyApi(null);
+    setIsAuthenticated(false);
+    setUser(null);
+    setPlaylists([]);
+    setCurrentPlaylist(null);
+  }, []);
+
+  const loadUserPlaylists = useCallback(async (api?: SpotifyWebApi.SpotifyWebApiJs) => {
+    const apiInstance = api || spotifyApi;
+    if (!apiInstance) return;
+
+    try {
+      const playlistsData = await apiInstance.getUserPlaylists();
+      setPlaylists(playlistsData.items);
+    } catch (error) {
+      console.error('Error loading playlists:', error);
+    }
+  }, [spotifyApi]);
+
+  const loadUserData = useCallback(async (api: SpotifyWebApi.SpotifyWebApiJs) => {
+    try {
+      const userData = await api.getMe();
+      setUser(userData);
+      await loadUserPlaylists(api);
+    } catch (error) {
+      console.error('Error loading user data:', error);
+      logout();
+    }
+  }, [logout, loadUserPlaylists]);
 
   useEffect(() => {
     // Check for existing access token
@@ -83,45 +126,11 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
       setIsAuthenticated(true);
       loadUserData(api);
     }
-  }, []);
-
-  const loadUserData = async (api: SpotifyWebApi) => {
-    try {
-      const userData = await api.getMe();
-      setUser(userData);
-      await loadUserPlaylists(api);
-    } catch (error) {
-      console.error('Error loading user data:', error);
-      logout();
-    }
-  };
+  }, [loadUserData]);
 
   const login = () => {
     const authUrl = `https://accounts.spotify.com/authorize?client_id=${CLIENT_ID}&response_type=token&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(SCOPES)}&show_dialog=true`;
     window.location.href = authUrl;
-  };
-
-  const logout = () => {
-    localStorage.removeItem('spotify_access_token');
-    localStorage.removeItem('spotify_token_type');
-    localStorage.removeItem('spotify_expires_in');
-    setSpotifyApi(null);
-    setIsAuthenticated(false);
-    setUser(null);
-    setPlaylists([]);
-    setCurrentPlaylist(null);
-  };
-
-  const loadUserPlaylists = async (api?: SpotifyWebApi) => {
-    const apiInstance = api || spotifyApi;
-    if (!apiInstance) return;
-
-    try {
-      const playlistsData = await apiInstance.getUserPlaylists();
-      setPlaylists(playlistsData.items);
-    } catch (error) {
-      console.error('Error loading playlists:', error);
-    }
   };
 
   const loadPlaylistTracks = async (playlistId: string): Promise<SpotifyTrack[]> => {
@@ -131,7 +140,7 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
       const tracksData = await spotifyApi.getPlaylistTracks(playlistId);
       return tracksData.items
         .map(item => item.track)
-        .filter(track => track && track.preview_url) as SpotifyTrack[];
+        .filter(track => track && 'preview_url' in track && track.preview_url) as SpotifyTrack[];
     } catch (error) {
       console.error('Error loading playlist tracks:', error);
       return [];

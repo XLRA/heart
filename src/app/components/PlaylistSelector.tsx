@@ -1,10 +1,34 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Image from 'next/image';
 import { useSpotify } from '../context/SpotifyContext';
 
+interface SpotifyPlaylistData {
+  id: string;
+  name: string;
+  description?: string | null;
+  images?: Array<{ url: string }>;
+  tracks?: {
+    total: number;
+    href?: string;
+    items?: Array<{
+      track: {
+        name: string;
+        artists: Array<{ name: string }>;
+        preview_url: string | null;
+        album: { images: Array<{ url: string }> };
+        duration_ms: number;
+        id: string;
+        external_urls?: { spotify: string };
+      };
+    }>;
+  };
+  owner?: { display_name?: string };
+}
+
 interface PlaylistSelectorProps {
-  onPlaylistSelect: (playlist: any) => void;
+  onPlaylistSelect: (playlist: SpotifyPlaylistData) => void;
   isVisible: boolean;
   onClose: () => void;
 }
@@ -12,7 +36,7 @@ interface PlaylistSelectorProps {
 const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSelectorProps) => {
   const { playlists, loadUserPlaylists, loadPlaylistTracks } = useSpotify();
   const [loading, setLoading] = useState(false);
-  const [selectedPlaylist, setSelectedPlaylist] = useState<any>(null);
+  const [selectedPlaylist, setSelectedPlaylist] = useState<SpotifyPlaylistData | null>(null);
 
   useEffect(() => {
     if (isVisible && playlists.length === 0) {
@@ -20,13 +44,20 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
     }
   }, [isVisible, playlists.length, loadUserPlaylists]);
 
-  const handlePlaylistClick = async (playlist: any) => {
+  const handlePlaylistClick = async (playlist: SpotifyPlaylistData) => {
     setLoading(true);
     setSelectedPlaylist(playlist);
     
     try {
       const tracks = await loadPlaylistTracks(playlist.id);
-      onPlaylistSelect({ ...playlist, tracks });
+      const playlistWithTracks: SpotifyPlaylistData = {
+        ...playlist,
+        tracks: {
+          total: tracks.length,
+          items: tracks.map(track => ({ track }))
+        }
+      };
+      onPlaylistSelect(playlistWithTracks);
     } catch (error) {
       console.error('Error loading playlist tracks:', error);
     } finally {
@@ -161,9 +192,11 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
                     justifyContent: 'center'
                   }}>
                     {playlist.images && playlist.images.length > 0 ? (
-                      <img
+                      <Image
                         src={playlist.images[0].url}
                         alt={playlist.name}
+                        width={60}
+                        height={60}
                         style={{
                           width: '100%',
                           height: '100%',
@@ -196,14 +229,14 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
                       overflow: 'hidden',
                       textOverflow: 'ellipsis'
                     }}>
-                      {playlist.owner.display_name}
+                      {playlist.owner?.display_name || 'Unknown'}
                     </p>
                     <p style={{
                       color: '#8f8f9d',
                       fontSize: '12px',
                       margin: 0
                     }}>
-                      {playlist.tracks.total} tracks
+                      {playlist.tracks?.total || 0} tracks
                     </p>
                   </div>
 

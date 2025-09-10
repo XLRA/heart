@@ -14,6 +14,29 @@ interface Song {
   id?: string;
 }
 
+interface SpotifyPlaylistData {
+  id: string;
+  name: string;
+  description?: string | null;
+  images?: Array<{ url: string }>;
+  tracks?: {
+    total: number;
+    href?: string;
+    items?: Array<{
+      track: {
+        name: string;
+        artists: Array<{ name: string }>;
+        preview_url: string | null;
+        album: { images: Array<{ url: string }> };
+        duration_ms: number;
+        id: string;
+        external_urls?: { spotify: string };
+      };
+    }>;
+  };
+  owner?: { display_name?: string };
+}
+
 const AdvancedMusicPlayer = () => {
   const { isAuthenticated, currentPlaylist, setCurrentPlaylist } = useSpotify();
   const [isPlaying, setIsPlaying] = useState(false);
@@ -169,15 +192,18 @@ const AdvancedMusicPlayer = () => {
     setIsMuted(!isMuted);
   };
 
-  const handlePlaylistSelect = (playlist: any) => {
-    const spotifySongs: Song[] = playlist.tracks.map((track: any) => ({
-      title: track.name,
-      artist: track.artists.map((artist: any) => artist.name).join(', '),
-      url: track.preview_url || '',
-      cover: track.album.images && track.album.images.length > 0 ? track.album.images[0].url : '/covers/cover1.jpg',
-      duration: track.duration_ms / 1000,
-      id: track.id
-    })).filter((song: Song) => song.url); // Only include songs with preview URLs
+  const handlePlaylistSelect = (playlist: SpotifyPlaylistData) => {
+    const spotifySongs: Song[] = (playlist.tracks?.items || []).map((item) => {
+      const track = item.track;
+      return {
+        title: track.name,
+        artist: track.artists.map((artist) => artist.name).join(', '),
+        url: track.preview_url || '',
+        cover: track.album.images && track.album.images.length > 0 ? track.album.images[0].url : '/covers/cover1.jpg',
+        duration: track.duration_ms / 1000,
+        id: track.id
+      };
+    }).filter((song: Song) => song.url); // Only include songs with preview URLs
 
     setCurrentPlaylistSongs(spotifySongs);
     setCurrentPlaylist(playlist);

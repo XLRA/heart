@@ -1,7 +1,6 @@
 import HeartAnimation from './components/HeartAnimation';
 import AdvancedMusicPlayer from './components/AdvancedMusicPlayer';
 import SpotifyLogin from './components/SpotifyLogin';
-import PlaylistSelector from './components/PlaylistSelector';
 import { SpotifyProvider } from './context/SpotifyContext';
 
 export default function Home() {
