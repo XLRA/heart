@@ -84,6 +84,52 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
 
   const playerRef = useRef<SpotifyPlayer | null>(null);
   const isInitializingRef = useRef<boolean>(false);
+  const stateCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Function to periodically check current state for UI updates
+  const startStatePolling = () => {
+    if (stateCheckIntervalRef.current) {
+      clearInterval(stateCheckIntervalRef.current);
+    }
+    
+    stateCheckIntervalRef.current = setInterval(async () => {
+      if (playerRef.current && isReady) {
+        try {
+          const state = await playerRef.current.getCurrentState();
+          if (state) {
+            const stateObj = state as Record<string, unknown>;
+            const currentTrack = (stateObj.track_window as Record<string, unknown>)?.current_track as Record<string, unknown> | undefined;
+            
+            setPlayerState(prev => ({
+              is_paused: Boolean(stateObj.paused),
+              is_active: true,
+              current_track: currentTrack ? {
+                id: String(currentTrack.id),
+                name: String(currentTrack.name),
+                artists: (currentTrack.artists as Array<{ name: string }>) || [],
+                album: (currentTrack.album as { name: string; images: Array<{ url: string }> }) || { name: '', images: [] },
+                duration_ms: Number(currentTrack.duration_ms) || 0,
+                uri: String(currentTrack.uri)
+              } : null,
+              position: Number(stateObj.position) || 0,
+              duration: Number(currentTrack?.duration_ms) || 0,
+              volume: prev.volume, // Keep current volume
+              device_id: deviceId
+            }));
+          }
+        } catch (error) {
+          console.warn('Error getting current state:', error);
+        }
+      }
+    }, 1000); // Check every second
+  };
+
+  const stopStatePolling = () => {
+    if (stateCheckIntervalRef.current) {
+      clearInterval(stateCheckIntervalRef.current);
+      stateCheckIntervalRef.current = null;
+    }
+  };
 
   const checkAvailableDevices = (targetDeviceId?: string): Promise<boolean> => {
     const token = localStorage.getItem('spotify_access_token');
@@ -216,7 +262,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       const stateObj = state as Record<string, unknown>;
       const currentTrack = (stateObj.track_window as Record<string, unknown>)?.current_track as Record<string, unknown> | undefined;
       
-      setPlayerState({
+      setPlayerState(prev => ({
         is_paused: Boolean(stateObj.paused),
         is_active: true,
         current_track: currentTrack ? {
@@ -229,9 +275,9 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         } : null,
         position: Number(stateObj.position) || 0,
         duration: Number(currentTrack?.duration_ms) || 0,
-        volume: Number(stateObj.volume) || 0.5,
+        volume: prev.volume, // Keep current volume since Spotify doesn't provide it in state
         device_id: deviceId
-      });
+      }));
     });
 
     // Ready
@@ -249,6 +295,8 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       if (isRegistered) {
         setIsReady(true);
         console.log('Web Player is fully ready and registered');
+        // Start polling for state updates
+        startStatePolling();
       } else {
         console.error('Web Player failed to register with Spotify servers');
         setIsReady(false);
@@ -263,6 +311,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       const data = args[0] as { device_id: string };
       console.log('Spotify Web Player device has gone offline:', data.device_id);
       setIsReady(false);
+      stopStatePolling();
     });
 
     // Connect to the player
@@ -480,6 +529,12 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
       }
       console.log('Volume set successfully');
+      
+      // Update local state to reflect the new volume
+      setPlayerState(prev => ({
+        ...prev,
+        volume: volume
+      }));
     } catch (error) {
       console.error('Error setting volume:', error);
     }
@@ -518,6 +573,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
 
   // Cleanup function
   const cleanup = () => {
+    stopStatePolling();
     if (playerRef.current) {
       console.log('Cleaning up Web Player...');
       try {
