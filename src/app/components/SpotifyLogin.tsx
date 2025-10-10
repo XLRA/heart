@@ -3,9 +3,11 @@
 import { useState, useEffect } from 'react';
 import Image from 'next/image';
 import { useSpotify } from '../context/SpotifyContext';
+import { useWebPlayer } from '../context/WebPlayerContext';
 
 const SpotifyLogin = () => {
   const { login, isAuthenticated, user, logout } = useSpotify();
+  const { initializePlayer } = useWebPlayer();
   const [isRateLimited, setIsRateLimited] = useState(false);
   const [isAccessForbidden, setIsAccessForbidden] = useState(false);
 
@@ -29,6 +31,23 @@ const SpotifyLogin = () => {
       window.removeEventListener('spotifyAccessForbidden', handleAccessForbidden);
     };
   }, []);
+
+  // Initialize Web Player when authenticated
+  useEffect(() => {
+    if (isAuthenticated && user) {
+      const token = localStorage.getItem('spotify_access_token');
+      if (token) {
+        // Wait for SDK to be ready
+        if (window.Spotify) {
+          initializePlayer(token);
+        } else {
+          window.onSpotifyWebPlaybackSDKReady = () => {
+            initializePlayer(token);
+          };
+        }
+      }
+    }
+  }, [isAuthenticated, user, initializePlayer]);
 
   if (isAuthenticated && user) {
     return (

@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import Image from 'next/image';
 import { useSpotify } from '../context/SpotifyContext';
+import { useWebPlayer } from '../context/WebPlayerContext';
 import PlaylistSelector from './PlaylistSelector';
 
 interface Song {
@@ -12,6 +13,7 @@ interface Song {
   cover: string;
   duration?: number;
   id?: string;
+  uri?: string;
 }
 
 interface SpotifyPlaylistData {
@@ -39,25 +41,29 @@ interface SpotifyPlaylistData {
 
 const AdvancedMusicPlayer = () => {
   const { isAuthenticated, currentPlaylist, setCurrentPlaylist } = useSpotify();
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentSongIndex, setCurrentSongIndex] = useState(0);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [seekPosition, setSeekPosition] = useState(0);
-  const [isBuffering, setIsBuffering] = useState(false);
+  const { 
+    playerState, 
+    isReady, 
+    deviceId, 
+    playPlaylist, 
+    togglePlay, 
+    nextTrack, 
+    previousTrack, 
+    setVolume, 
+    seek 
+  } = useWebPlayer();
+  
   const [showSeekTime, setShowSeekTime] = useState(false);
   const [seekTimeValue, setSeekTimeValue] = useState('00:00');
   const [seekHoverPosition, setSeekHoverPosition] = useState(0);
-  const [volume, setVolume] = useState(0.47);
   const [previousVolume, setPreviousVolume] = useState(0.47);
   const [isMuted, setIsMuted] = useState(false);
   const [isDraggingVolume, setIsDraggingVolume] = useState(false);
   const [showPlaylistSelector, setShowPlaylistSelector] = useState(false);
   const [currentPlaylistSongs, setCurrentPlaylistSongs] = useState<Song[]>([]);
+  const [isUsingSpotifyPlayer, setIsUsingSpotifyPlayer] = useState(false);
   
   const audioRef = useRef<HTMLAudioElement>(null);
-  const bufferingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const lastBufferingTimeRef = useRef<number>(0);
   const volumeBarRef = useRef<HTMLDivElement>(null);
 
   const defaultSongs = useMemo<Song[]>(() => [
@@ -76,11 +82,23 @@ const AdvancedMusicPlayer = () => {
   ], []);
 
   const songs = useMemo<Song[]>(() => {
+    if (isUsingSpotifyPlayer && playerState.current_track) {
+      // Convert Spotify track to our Song format
+      return [{
+        title: playerState.current_track.name,
+        artist: playerState.current_track.artists.map(artist => artist.name).join(', '),
+        url: '', // Not used for Spotify tracks
+        cover: playerState.current_track.album.images[0]?.url || '/covers/cover1.jpg',
+        duration: playerState.current_track.duration_ms / 1000,
+        id: playerState.current_track.id,
+        uri: playerState.current_track.uri
+      }];
+    }
     if (currentPlaylistSongs.length > 0) {
       return currentPlaylistSongs;
     }
     return defaultSongs;
-  }, [currentPlaylistSongs, defaultSongs]);
+  }, [currentPlaylistSongs, defaultSongs, isUsingSpotifyPlayer, playerState.current_track]);
 
   const formatTime = (time: number): string => {
     if (isNaN(time)) return '00:00';
@@ -91,32 +109,38 @@ const AdvancedMusicPlayer = () => {
     return `${minutes < 10 ? '0' + minutes : minutes}:${seconds < 10 ? '0' + seconds : seconds}`;
   };
 
-  const togglePlay = () => {
-    if (audioRef.current) {
-      if (isPlaying) {
-        audioRef.current.pause();
-      } else {
+  const handleTogglePlay = () => {
+    if (isUsingSpotifyPlayer && isReady) {
+      togglePlay();
+    } else if (audioRef.current) {
+      if (playerState.is_paused) {
         audioRef.current.play();
+      } else {
+        audioRef.current.pause();
       }
-      setIsPlaying(!isPlaying);
     }
   };
 
-  const playNextSong = () => {
-    const nextIndex = (currentSongIndex + 1) % songs.length;
-    setCurrentSongIndex(nextIndex);
+  const handleNextSong = () => {
+    if (isUsingSpotifyPlayer && isReady) {
+      nextTrack();
+    }
+    // For local songs, we'd need to implement this differently
   };
 
-  const playPreviousSong = () => {
-    const prevIndex = (currentSongIndex - 1 + songs.length) % songs.length;
-    setCurrentSongIndex(prevIndex);
+  const handlePreviousSong = () => {
+    if (isUsingSpotifyPlayer && isReady) {
+      previousTrack();
+    }
+    // For local songs, we'd need to implement this differently
   };
 
   const handleSeekHover = (e: React.MouseEvent<HTMLDivElement>) => {
     const seekBarContainer = e.currentTarget;
     const rect = seekBarContainer.getBoundingClientRect();
     const seekT = e.clientX - rect.left;
-    const seekLoc = duration * (seekT / seekBarContainer.offsetWidth);
+    const currentDuration = isUsingSpotifyPlayer ? playerState.duration / 1000 : playerState.duration / 1000;
+    const seekLoc = currentDuration * (seekT / seekBarContainer.offsetWidth);
     
     setSeekHoverPosition(seekT);
     
@@ -142,11 +166,13 @@ const AdvancedMusicPlayer = () => {
     const seekBarContainer = e.currentTarget;
     const rect = seekBarContainer.getBoundingClientRect();
     const seekT = e.clientX - rect.left;
-    const seekLoc = duration * (seekT / seekBarContainer.offsetWidth);
+    const currentDuration = isUsingSpotifyPlayer ? playerState.duration / 1000 : playerState.duration / 1000;
+    const seekLoc = currentDuration * (seekT / seekBarContainer.offsetWidth);
     
-    if (audioRef.current) {
+    if (isUsingSpotifyPlayer && isReady) {
+      seek(seekLoc * 1000); // Convert to milliseconds for Spotify
+    } else if (audioRef.current) {
       audioRef.current.currentTime = seekLoc;
-      setCurrentTime(seekLoc);
     }
     
     setSeekHoverPosition(0);
@@ -157,9 +183,13 @@ const AdvancedMusicPlayer = () => {
     if (volumeBarRef.current) {
       const rect = volumeBarRef.current.getBoundingClientRect();
       const volumeValue = Math.max(0, Math.min(1, (e.clientX - rect.left) / volumeBarRef.current.offsetWidth));
-      setVolume(volumeValue);
+      if (isUsingSpotifyPlayer && isReady) {
+        setVolume(volumeValue);
+      } else if (audioRef.current) {
+        audioRef.current.volume = volumeValue;
+      }
     }
-  }, []);
+  }, [isUsingSpotifyPlayer, isReady, setVolume]);
 
   const handleVolumeMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     setIsDraggingVolume(true);
@@ -178,14 +208,16 @@ const AdvancedMusicPlayer = () => {
 
   const handleMuteToggle = () => {
     if (isMuted) {
-      setVolume(previousVolume);
-      if (audioRef.current) {
+      if (isUsingSpotifyPlayer && isReady) {
+        setVolume(previousVolume);
+      } else if (audioRef.current) {
         audioRef.current.volume = previousVolume;
       }
     } else {
-      setPreviousVolume(volume);
-      setVolume(0);
-      if (audioRef.current) {
+      setPreviousVolume(playerState.volume);
+      if (isUsingSpotifyPlayer && isReady) {
+        setVolume(0);
+      } else if (audioRef.current) {
         audioRef.current.volume = 0;
       }
     }
@@ -193,23 +225,33 @@ const AdvancedMusicPlayer = () => {
   };
 
   const handlePlaylistSelect = (playlist: SpotifyPlaylistData) => {
-    const spotifySongs: Song[] = (playlist.tracks?.items || []).map((item) => {
-      const track = item.track;
-      return {
-        title: track.name,
-        artist: track.artists.map((artist) => artist.name).join(', '),
-        url: track.preview_url || '',
-        cover: track.album.images && track.album.images.length > 0 ? track.album.images[0].url : '/covers/cover1.jpg',
-        duration: track.duration_ms / 1000,
-        id: track.id
-      };
-    }).filter((song: Song) => song.url); // Only include songs with preview URLs
+    if (isReady && deviceId) {
+      // Use Spotify Web Player for full playback
+      const playlistUri = `spotify:playlist:${playlist.id}`;
+      playPlaylist(playlistUri);
+      setCurrentPlaylist(playlist);
+      setIsUsingSpotifyPlayer(true);
+      setShowPlaylistSelector(false);
+    } else {
+      // Fallback to preview URLs (limited functionality)
+      const spotifySongs: Song[] = (playlist.tracks?.items || []).map((item) => {
+        const track = item.track;
+        return {
+          title: track.name,
+          artist: track.artists.map((artist) => artist.name).join(', '),
+          url: track.preview_url || '',
+          cover: track.album.images && track.album.images.length > 0 ? track.album.images[0].url : '/covers/cover1.jpg',
+          duration: track.duration_ms / 1000,
+          id: track.id,
+          uri: track.external_urls?.spotify || `spotify:track:${track.id}`
+        };
+      }).filter((song: Song) => song.url); // Only include songs with preview URLs
 
-    setCurrentPlaylistSongs(spotifySongs);
-    setCurrentPlaylist(playlist);
-    setCurrentSongIndex(0);
-    setIsPlaying(false);
-    setShowPlaylistSelector(false);
+      setCurrentPlaylistSongs(spotifySongs);
+      setCurrentPlaylist(playlist);
+      setIsUsingSpotifyPlayer(false);
+      setShowPlaylistSelector(false);
+    }
   };
 
   const handlePlaylistToggle = () => {
@@ -221,42 +263,17 @@ const AdvancedMusicPlayer = () => {
   const handleBackToDefault = () => {
     setCurrentPlaylistSongs([]);
     setCurrentPlaylist(null);
-    setCurrentSongIndex(0);
-    setIsPlaying(false);
-  };
-
-  const checkBuffering = () => {
-    if (bufferingIntervalRef.current) {
-      clearInterval(bufferingIntervalRef.current);
-    }
-    
-    bufferingIntervalRef.current = setInterval(() => {
-      const now = new Date().getTime();
-      
-      if (now === 0 || lastBufferingTimeRef.current - now > 1000) {
-        setIsBuffering(true);
-      } else {
-        setIsBuffering(false);
-      }
-      
-      lastBufferingTimeRef.current = now;
-    }, 100);
-  };
-
-  const updateCurrentTime = () => {
-    if (audioRef.current) {
-      const currentTimeValue = audioRef.current.currentTime;
-      const durationValue = audioRef.current.duration;
-      
-      setCurrentTime(currentTimeValue);
-      setDuration(durationValue);
-      setSeekPosition((currentTimeValue / durationValue) * 100);
-      
-      if (currentTimeValue >= durationValue) {
-        setIsPlaying(false);
-        setSeekPosition(0);
-        setCurrentTime(0);
-      }
+    setIsUsingSpotifyPlayer(false);
+    // Stop Spotify playback if active
+    if (isReady && deviceId) {
+      fetch('https://api.spotify.com/v1/me/player/pause', {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
+        }
+      }).catch(error => {
+        console.error('Error pausing Spotify playback:', error);
+      });
     }
   };
 
@@ -272,48 +289,6 @@ const AdvancedMusicPlayer = () => {
     };
   }, [isDraggingVolume, handleVolumeMouseMove]);
 
-  useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.src = songs[currentSongIndex].url;
-      
-      if (isPlaying) {
-        audioRef.current.play();
-        checkBuffering();
-      }
-    }
-    
-    return () => {
-      if (bufferingIntervalRef.current) {
-        clearInterval(bufferingIntervalRef.current);
-      }
-    };
-  }, [currentSongIndex, isPlaying, songs]);
-
-  useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = volume;
-    }
-  }, [volume]);
-
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    
-    const handleTimeUpdate = () => updateCurrentTime();
-    const handleLoadedMetadata = () => setDuration(audio.duration);
-    const handleEnded = () => setIsPlaying(false);
-    
-    audio.addEventListener('timeupdate', handleTimeUpdate);
-    audio.addEventListener('loadedmetadata', handleLoadedMetadata);
-    audio.addEventListener('ended', handleEnded);
-    
-    return () => {
-      audio.removeEventListener('timeupdate', handleTimeUpdate);
-      audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
-      audio.removeEventListener('ended', handleEnded);
-    };
-  }, []);
-
   return (
     <div className="fixed bottom-8 left-0 z-50" style={{ padding: '0 0 0 20px' }}>
       <div id="player-container" style={{
@@ -324,7 +299,7 @@ const AdvancedMusicPlayer = () => {
       }}>
         <div id="player-track" style={{
           position: 'absolute',
-          top: isPlaying ? '-92px' : '0',
+          top: (!playerState.is_paused && playerState.is_active) ? '-92px' : '0',
           right: '15px',
           left: '15px',
           padding: '13px 22px 10px 184px',
@@ -341,7 +316,7 @@ const AdvancedMusicPlayer = () => {
               fontSize: '17px',
               fontWeight: 'bold',
               flex: 1
-            }}>{songs[currentSongIndex].title}</div>
+            }}>{songs[0]?.title || 'No track'}</div>
             {currentPlaylist && (
               <button
                 onClick={handleBackToDefault}
@@ -374,7 +349,7 @@ const AdvancedMusicPlayer = () => {
             fontSize: '13px',
             margin: '2px 0 8px 0'
           }}>
-            {songs[currentSongIndex].artist}
+            {songs[0]?.artist || 'No artist'}
             {currentPlaylist && (
               <span style={{ color: '#1db954', marginLeft: '8px' }}>
                 • {currentPlaylist.name}
@@ -388,20 +363,20 @@ const AdvancedMusicPlayer = () => {
           }}>
             <div id="current-time" style={{
               float: 'left',
-              color: isPlaying ? '#8f8f9d' : 'transparent',
+              color: (!playerState.is_paused && playerState.is_active) ? '#8f8f9d' : 'transparent',
               fontSize: '11px',
-              backgroundColor: isPlaying ? 'transparent' : '#252529',
+              backgroundColor: (!playerState.is_paused && playerState.is_active) ? 'transparent' : '#252529',
               borderRadius: '10px',
               transition: '0.3s ease all'
-            }}>{formatTime(currentTime)}</div>
+            }}>{formatTime(playerState.position / 1000)}</div>
             <div id="track-length" style={{
               float: 'right',
-              color: isPlaying ? '#8f8f9d' : 'transparent',
+              color: (!playerState.is_paused && playerState.is_active) ? '#8f8f9d' : 'transparent',
               fontSize: '11px',
-              backgroundColor: isPlaying ? 'transparent' : '#252529',
+              backgroundColor: (!playerState.is_paused && playerState.is_active) ? 'transparent' : '#252529',
               borderRadius: '10px',
               transition: '0.3s ease all'
-            }}>{formatTime(duration)}</div>
+            }}>{formatTime(playerState.duration / 1000)}</div>
           </div>
           <div id="seek-bar-container" 
             style={{
@@ -444,7 +419,7 @@ const AdvancedMusicPlayer = () => {
               top: 0,
               bottom: 0,
               left: 0,
-              width: `${seekPosition}%`,
+              width: `${playerState.duration > 0 ? (playerState.position / playerState.duration) * 100 : 0}%`,
               backgroundColor: '#8f8f9d',
               transition: '0.2s ease width',
               zIndex: 1
@@ -462,24 +437,24 @@ const AdvancedMusicPlayer = () => {
         }}>
           <div id="album-art" style={{
             position: 'absolute',
-            top: isPlaying ? '-60px' : '-40px',
+            top: (!playerState.is_paused && playerState.is_active) ? '-60px' : '-40px',
             width: '115px',
             height: '115px',
             marginLeft: '40px',
             transform: 'rotateZ(0)',
             transition: '0.3s ease all',
-            boxShadow: isPlaying ? '0 0 0 4px #23232b, 0 30px 50px -15px #23232b' : '0 0 0 10px #18181f',
+            boxShadow: (!playerState.is_paused && playerState.is_active) ? '0 0 0 4px #23232b, 0 30px 50px -15px #23232b' : '0 0 0 10px #18181f',
             borderRadius: '50%',
             overflow: 'hidden',
             backgroundColor: '#151518'
           }}>
             <Image 
-              src={songs[currentSongIndex].cover}
-              alt={`${songs[currentSongIndex].title} cover`}
+              src={songs[0]?.cover || '/covers/cover1.jpg'}
+              alt={`${songs[0]?.title || 'No track'} cover`}
               width={115}
               height={115}
               onError={(e) => {
-                console.error('Image loading error for:', songs[currentSongIndex].cover);
+                console.error('Image loading error for:', songs[0]?.cover);
                 e.currentTarget.style.display = 'none';
                 // Show fallback
                 const fallback = e.currentTarget.nextElementSibling as HTMLElement;
@@ -487,7 +462,7 @@ const AdvancedMusicPlayer = () => {
               }}
               className="w-full h-full object-cover"
               style={{
-                animation: isPlaying ? 'rotateAlbumArt 3s linear 0s infinite forwards' : 'none'
+                animation: (!playerState.is_paused && playerState.is_active) ? 'rotateAlbumArt 3s linear 0s infinite forwards' : 'none'
               }}
             />
             <div style={{
@@ -520,7 +495,7 @@ const AdvancedMusicPlayer = () => {
               padding: '6px',
               margin: '-12px auto 0 auto',
               backgroundColor: 'rgba(36, 36, 48, 0.7)',
-              opacity: isBuffering ? 1 : 0,
+              opacity: (!playerState.is_active && isReady) ? 1 : 0,
               zIndex: 2
             }}>Buffering ...</div>
           </div>
@@ -571,7 +546,7 @@ const AdvancedMusicPlayer = () => {
             }}>
               <div 
                 className="button" 
-                onClick={playPreviousSong}
+                onClick={handlePreviousSong}
                 style={{
                   width: '76px',
                   height: '76px',
@@ -597,7 +572,7 @@ const AdvancedMusicPlayer = () => {
             }}>
               <div 
                 className="button" 
-                onClick={togglePlay}
+                onClick={handleTogglePlay}
                 style={{
                   width: '76px',
                   height: '76px',
@@ -612,7 +587,7 @@ const AdvancedMusicPlayer = () => {
                 <i style={{
                   color: '#b0b3c6',
                   fontSize: '26px'
-                }} className={isPlaying ? "fas fa-pause" : "fas fa-play"}></i>
+                }} className={playerState.is_paused ? "fas fa-play" : "fas fa-pause"}></i>
               </div>
             </div>
             <div className="control" style={{
@@ -623,7 +598,7 @@ const AdvancedMusicPlayer = () => {
             }}>
               <div 
                 className="button" 
-                onClick={playNextSong}
+                onClick={handleNextSong}
                 style={{
                   width: '76px',
                   height: '76px',
@@ -676,7 +651,7 @@ const AdvancedMusicPlayer = () => {
             <i style={{
               color: '#8f8f9d',
               fontSize: '16px'
-            }} className={isMuted ? "fas fa-volume-mute" : volume === 0 ? "fas fa-volume-off" : volume < 0.5 ? "fas fa-volume-down" : "fas fa-volume-up"}></i>
+            }} className={isMuted ? "fas fa-volume-mute" : playerState.volume === 0 ? "fas fa-volume-off" : playerState.volume < 0.5 ? "fas fa-volume-down" : "fas fa-volume-up"}></i>
           </div>
           <div id="volume-bar-container" 
             ref={volumeBarRef}
@@ -696,7 +671,7 @@ const AdvancedMusicPlayer = () => {
               top: 0,
               bottom: 0,
               left: 0,
-              width: `${volume * 100}%`,
+              width: `${playerState.volume * 100}%`,
               backgroundColor: '#fff',
               transition: '0.2s ease width',
               borderRadius: '4px'
