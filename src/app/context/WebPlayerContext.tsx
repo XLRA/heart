@@ -189,25 +189,23 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
 
-    player.getCurrentState().then((state: unknown) => {
-      if (!state) {
-        console.error('User is not playing music through the Web Playback SDK');
-        return;
+    // Use the Web API to start playback directly
+    fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        uris: [trackUri]
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
       }
-
-      // Use the Web API to start playback
-      fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-          uris: [trackUri]
-        }),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
-        }
-      }).catch(error => {
-        console.error('Error starting playback:', error);
-      });
+    }).then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      console.log('Track playback started successfully');
+    }).catch(error => {
+      console.error('Error starting track playback:', error);
     });
   };
 
@@ -217,66 +215,131 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
 
-    player.getCurrentState().then((state: unknown) => {
-      if (!state) {
-        console.error('User is not playing music through the Web Playback SDK');
-        return;
+    // Use the Web API to start playlist playback directly
+    fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        context_uri: playlistUri
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
       }
-
-      // Use the Web API to start playlist playback
-      fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-          context_uri: playlistUri
-        }),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
-        }
-      }).catch(error => {
-        console.error('Error starting playlist playback:', error);
-      });
+    }).then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      console.log('Playlist playback started successfully');
+    }).catch(error => {
+      console.error('Error starting playlist playback:', error);
     });
   };
 
   const togglePlay = () => {
-    if (!player) {
-      console.error('Player not available');
+    if (!player || !deviceId) {
+      console.error('Player not available or device ID not available');
       return;
     }
-    player.togglePlay();
+
+    // Use the Web API to toggle playback
+    const action = playerState.is_paused ? 'play' : 'pause';
+    fetch(`https://api.spotify.com/v1/me/player/${action}?device_id=${deviceId}`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
+      }
+    }).then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      console.log(`Playback ${action} successful`);
+    }).catch(error => {
+      console.error(`Error ${action}ing playback:`, error);
+    });
   };
 
   const nextTrack = () => {
-    if (!player) {
-      console.error('Player not available');
+    if (!player || !deviceId) {
+      console.error('Player not available or device ID not available');
       return;
     }
-    player.nextTrack();
+
+    fetch(`https://api.spotify.com/v1/me/player/next?device_id=${deviceId}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
+      }
+    }).then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      console.log('Next track successful');
+    }).catch(error => {
+      console.error('Error skipping to next track:', error);
+    });
   };
 
   const previousTrack = () => {
-    if (!player) {
-      console.error('Player not available');
+    if (!player || !deviceId) {
+      console.error('Player not available or device ID not available');
       return;
     }
-    player.previousTrack();
+
+    fetch(`https://api.spotify.com/v1/me/player/previous?device_id=${deviceId}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
+      }
+    }).then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      console.log('Previous track successful');
+    }).catch(error => {
+      console.error('Error skipping to previous track:', error);
+    });
   };
 
   const setVolume = (volume: number) => {
-    if (!player) {
-      console.error('Player not available');
+    if (!player || !deviceId) {
+      console.error('Player not available or device ID not available');
       return;
     }
-    player.setVolume(volume);
+
+    fetch(`https://api.spotify.com/v1/me/player/volume?volume_percent=${Math.round(volume * 100)}&device_id=${deviceId}`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
+      }
+    }).then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      console.log('Volume set successfully');
+    }).catch(error => {
+      console.error('Error setting volume:', error);
+    });
   };
 
   const seek = (position: number) => {
-    if (!player) {
-      console.error('Player not available');
+    if (!player || !deviceId) {
+      console.error('Player not available or device ID not available');
       return;
     }
-    player.seek(position);
+
+    fetch(`https://api.spotify.com/v1/me/player/seek?position_ms=${Math.round(position)}&device_id=${deviceId}`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
+      }
+    }).then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      console.log('Seek successful');
+    }).catch(error => {
+      console.error('Error seeking:', error);
+    });
   };
 
   // Cleanup on unmount

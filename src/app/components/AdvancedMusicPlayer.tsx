@@ -62,6 +62,13 @@ const AdvancedMusicPlayer = () => {
   const [showPlaylistSelector, setShowPlaylistSelector] = useState(false);
   const [currentPlaylistSongs, setCurrentPlaylistSongs] = useState<Song[]>([]);
   const [isUsingSpotifyPlayer, setIsUsingSpotifyPlayer] = useState(false);
+  const [localPlayerState, setLocalPlayerState] = useState({
+    is_paused: true,
+    is_active: false,
+    position: 0,
+    duration: 0,
+    volume: 0.5
+  });
   
   const audioRef = useRef<HTMLAudioElement>(null);
   const volumeBarRef = useRef<HTMLDivElement>(null);
@@ -100,6 +107,11 @@ const AdvancedMusicPlayer = () => {
     return defaultSongs;
   }, [currentPlaylistSongs, defaultSongs, isUsingSpotifyPlayer, playerState.current_track]);
 
+  // Use appropriate player state based on whether we're using Spotify or local audio
+  const currentPlayerState = useMemo(() => {
+    return isUsingSpotifyPlayer ? playerState : localPlayerState;
+  }, [isUsingSpotifyPlayer, playerState, localPlayerState]);
+
   const formatTime = (time: number): string => {
     if (isNaN(time)) return '00:00';
     
@@ -113,7 +125,7 @@ const AdvancedMusicPlayer = () => {
     if (isUsingSpotifyPlayer && isReady) {
       togglePlay();
     } else if (audioRef.current) {
-      if (playerState.is_paused) {
+      if (localPlayerState.is_paused) {
         audioRef.current.play();
       } else {
         audioRef.current.pause();
@@ -139,7 +151,7 @@ const AdvancedMusicPlayer = () => {
     const seekBarContainer = e.currentTarget;
     const rect = seekBarContainer.getBoundingClientRect();
     const seekT = e.clientX - rect.left;
-    const currentDuration = isUsingSpotifyPlayer ? playerState.duration / 1000 : playerState.duration / 1000;
+    const currentDuration = isUsingSpotifyPlayer ? currentPlayerState.duration / 1000 : currentPlayerState.duration / 1000;
     const seekLoc = currentDuration * (seekT / seekBarContainer.offsetWidth);
     
     setSeekHoverPosition(seekT);
@@ -166,13 +178,14 @@ const AdvancedMusicPlayer = () => {
     const seekBarContainer = e.currentTarget;
     const rect = seekBarContainer.getBoundingClientRect();
     const seekT = e.clientX - rect.left;
-    const currentDuration = isUsingSpotifyPlayer ? playerState.duration / 1000 : playerState.duration / 1000;
+    const currentDuration = isUsingSpotifyPlayer ? currentPlayerState.duration / 1000 : currentPlayerState.duration / 1000;
     const seekLoc = currentDuration * (seekT / seekBarContainer.offsetWidth);
     
     if (isUsingSpotifyPlayer && isReady) {
       seek(seekLoc * 1000); // Convert to milliseconds for Spotify
     } else if (audioRef.current) {
       audioRef.current.currentTime = seekLoc;
+      setLocalPlayerState(prev => ({ ...prev, position: seekLoc * 1000 }));
     }
     
     setSeekHoverPosition(0);
@@ -187,6 +200,7 @@ const AdvancedMusicPlayer = () => {
         setVolume(volumeValue);
       } else if (audioRef.current) {
         audioRef.current.volume = volumeValue;
+        setLocalPlayerState(prev => ({ ...prev, volume: volumeValue }));
       }
     }
   }, [isUsingSpotifyPlayer, isReady, setVolume]);
@@ -212,13 +226,15 @@ const AdvancedMusicPlayer = () => {
         setVolume(previousVolume);
       } else if (audioRef.current) {
         audioRef.current.volume = previousVolume;
+        setLocalPlayerState(prev => ({ ...prev, volume: previousVolume }));
       }
     } else {
-      setPreviousVolume(playerState.volume);
+      setPreviousVolume(currentPlayerState.volume);
       if (isUsingSpotifyPlayer && isReady) {
         setVolume(0);
       } else if (audioRef.current) {
         audioRef.current.volume = 0;
+        setLocalPlayerState(prev => ({ ...prev, volume: 0 }));
       }
     }
     setIsMuted(!isMuted);
@@ -277,6 +293,55 @@ const AdvancedMusicPlayer = () => {
     }
   };
 
+  // Set audio source when current song changes
+  useEffect(() => {
+    if (audioRef.current && songs.length > 0 && songs[0].url) {
+      audioRef.current.src = songs[0].url;
+      audioRef.current.load(); // Reload the audio element with new source
+    }
+  }, [songs]);
+
+  // Add audio event listeners for local playback
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || isUsingSpotifyPlayer) return; // Only handle local audio when not using Spotify
+
+    const handlePlay = () => {
+      setLocalPlayerState(prev => ({ ...prev, is_paused: false, is_active: true }));
+    };
+
+    const handlePause = () => {
+      setLocalPlayerState(prev => ({ ...prev, is_paused: true }));
+    };
+
+    const handleTimeUpdate = () => {
+      setLocalPlayerState(prev => ({ 
+        ...prev, 
+        position: audio.currentTime * 1000,
+        duration: audio.duration * 1000 || prev.duration
+      }));
+    };
+
+    const handleLoadedMetadata = () => {
+      setLocalPlayerState(prev => ({ 
+        ...prev, 
+        duration: audio.duration * 1000 || prev.duration
+      }));
+    };
+
+    audio.addEventListener('play', handlePlay);
+    audio.addEventListener('pause', handlePause);
+    audio.addEventListener('timeupdate', handleTimeUpdate);
+    audio.addEventListener('loadedmetadata', handleLoadedMetadata);
+
+    return () => {
+      audio.removeEventListener('play', handlePlay);
+      audio.removeEventListener('pause', handlePause);
+      audio.removeEventListener('timeupdate', handleTimeUpdate);
+      audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
+    };
+  }, [isUsingSpotifyPlayer]);
+
   useEffect(() => {
     if (isDraggingVolume) {
       window.addEventListener('mousemove', handleVolumeMouseMove);
@@ -299,7 +364,7 @@ const AdvancedMusicPlayer = () => {
       }}>
         <div id="player-track" style={{
           position: 'absolute',
-          top: (!playerState.is_paused && playerState.is_active) ? '-92px' : '0',
+          top: (!currentPlayerState.is_paused && currentPlayerState.is_active) ? '-92px' : '0',
           right: '15px',
           left: '15px',
           padding: '13px 22px 10px 184px',
@@ -363,20 +428,20 @@ const AdvancedMusicPlayer = () => {
           }}>
             <div id="current-time" style={{
               float: 'left',
-              color: (!playerState.is_paused && playerState.is_active) ? '#8f8f9d' : 'transparent',
+              color: (!currentPlayerState.is_paused && currentPlayerState.is_active) ? '#8f8f9d' : 'transparent',
               fontSize: '11px',
-              backgroundColor: (!playerState.is_paused && playerState.is_active) ? 'transparent' : '#252529',
+              backgroundColor: (!currentPlayerState.is_paused && currentPlayerState.is_active) ? 'transparent' : '#252529',
               borderRadius: '10px',
               transition: '0.3s ease all'
-            }}>{formatTime(playerState.position / 1000)}</div>
+            }}>{formatTime(currentPlayerState.position / 1000)}</div>
             <div id="track-length" style={{
               float: 'right',
-              color: (!playerState.is_paused && playerState.is_active) ? '#8f8f9d' : 'transparent',
+              color: (!currentPlayerState.is_paused && currentPlayerState.is_active) ? '#8f8f9d' : 'transparent',
               fontSize: '11px',
-              backgroundColor: (!playerState.is_paused && playerState.is_active) ? 'transparent' : '#252529',
+              backgroundColor: (!currentPlayerState.is_paused && currentPlayerState.is_active) ? 'transparent' : '#252529',
               borderRadius: '10px',
               transition: '0.3s ease all'
-            }}>{formatTime(playerState.duration / 1000)}</div>
+            }}>{formatTime(currentPlayerState.duration / 1000)}</div>
           </div>
           <div id="seek-bar-container" 
             style={{
@@ -419,7 +484,7 @@ const AdvancedMusicPlayer = () => {
               top: 0,
               bottom: 0,
               left: 0,
-              width: `${playerState.duration > 0 ? (playerState.position / playerState.duration) * 100 : 0}%`,
+              width: `${currentPlayerState.duration > 0 ? (currentPlayerState.position / currentPlayerState.duration) * 100 : 0}%`,
               backgroundColor: '#8f8f9d',
               transition: '0.2s ease width',
               zIndex: 1
@@ -437,13 +502,13 @@ const AdvancedMusicPlayer = () => {
         }}>
           <div id="album-art" style={{
             position: 'absolute',
-            top: (!playerState.is_paused && playerState.is_active) ? '-60px' : '-40px',
+            top: (!currentPlayerState.is_paused && currentPlayerState.is_active) ? '-60px' : '-40px',
             width: '115px',
             height: '115px',
             marginLeft: '40px',
             transform: 'rotateZ(0)',
             transition: '0.3s ease all',
-            boxShadow: (!playerState.is_paused && playerState.is_active) ? '0 0 0 4px #23232b, 0 30px 50px -15px #23232b' : '0 0 0 10px #18181f',
+            boxShadow: (!currentPlayerState.is_paused && currentPlayerState.is_active) ? '0 0 0 4px #23232b, 0 30px 50px -15px #23232b' : '0 0 0 10px #18181f',
             borderRadius: '50%',
             overflow: 'hidden',
             backgroundColor: '#151518'
@@ -462,7 +527,7 @@ const AdvancedMusicPlayer = () => {
               }}
               className="w-full h-full object-cover"
               style={{
-                animation: (!playerState.is_paused && playerState.is_active) ? 'rotateAlbumArt 3s linear 0s infinite forwards' : 'none'
+                animation: (!currentPlayerState.is_paused && currentPlayerState.is_active) ? 'rotateAlbumArt 3s linear 0s infinite forwards' : 'none'
               }}
             />
             <div style={{
@@ -495,7 +560,7 @@ const AdvancedMusicPlayer = () => {
               padding: '6px',
               margin: '-12px auto 0 auto',
               backgroundColor: 'rgba(36, 36, 48, 0.7)',
-              opacity: (!playerState.is_active && isReady) ? 1 : 0,
+              opacity: (!currentPlayerState.is_active && isReady) ? 1 : 0,
               zIndex: 2
             }}>Buffering ...</div>
           </div>
@@ -587,7 +652,7 @@ const AdvancedMusicPlayer = () => {
                 <i style={{
                   color: '#b0b3c6',
                   fontSize: '26px'
-                }} className={playerState.is_paused ? "fas fa-play" : "fas fa-pause"}></i>
+                }} className={currentPlayerState.is_paused ? "fas fa-play" : "fas fa-pause"}></i>
               </div>
             </div>
             <div className="control" style={{
@@ -651,7 +716,7 @@ const AdvancedMusicPlayer = () => {
             <i style={{
               color: '#8f8f9d',
               fontSize: '16px'
-            }} className={isMuted ? "fas fa-volume-mute" : playerState.volume === 0 ? "fas fa-volume-off" : playerState.volume < 0.5 ? "fas fa-volume-down" : "fas fa-volume-up"}></i>
+            }} className={isMuted ? "fas fa-volume-mute" : currentPlayerState.volume === 0 ? "fas fa-volume-off" : currentPlayerState.volume < 0.5 ? "fas fa-volume-down" : "fas fa-volume-up"}></i>
           </div>
           <div id="volume-bar-container" 
             ref={volumeBarRef}
@@ -671,7 +736,7 @@ const AdvancedMusicPlayer = () => {
               top: 0,
               bottom: 0,
               left: 0,
-              width: `${playerState.volume * 100}%`,
+              width: `${currentPlayerState.volume * 100}%`,
               backgroundColor: '#fff',
               transition: '0.2s ease width',
               borderRadius: '4px'
