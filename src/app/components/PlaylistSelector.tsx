@@ -203,7 +203,7 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
                           objectFit: 'cover'
                         }}
                         onError={(e) => {
-                          console.error('Playlist image failed to load:', playlist.images?.[0]?.url);
+                          console.warn('Playlist image failed to load:', playlist.images?.[0]?.url);
                           e.currentTarget.style.display = 'none';
                           // Show fallback icon
                           const fallback = e.currentTarget.nextElementSibling as HTMLElement;

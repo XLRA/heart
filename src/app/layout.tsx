@@ -26,6 +26,16 @@ export default function RootLayout({
           href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
         />
         <script src="https://sdk.scdn.co/spotify-player.js" async></script>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              window.onSpotifyWebPlaybackSDKReady = function() {
+                console.log('Spotify Web Playback SDK is ready');
+                window.dispatchEvent(new CustomEvent('spotifySDKReady'));
+              };
+            `,
+          }}
+        />
       </head>
       <body className={`${inter.className} bg-black`}>
         {children}

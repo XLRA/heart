@@ -454,7 +454,7 @@ const AdvancedMusicPlayer = () => {
               width={115}
               height={115}
               onError={(e) => {
-                console.error('Image loading error for:', songs[0]?.cover);
+                console.warn('Image loading error for:', songs[0]?.cover);
                 e.currentTarget.style.display = 'none';
                 // Show fallback
                 const fallback = e.currentTarget.nextElementSibling as HTMLElement;

@@ -80,8 +80,15 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
 
+    // Disconnect existing player if any
     if (playerRef.current) {
       playerRef.current.disconnect();
+    }
+
+    // Prevent multiple initializations
+    if (isReady) {
+      console.log('Web Player already initialized, skipping...');
+      return;
     }
 
     const newPlayer = new window.Spotify.Player({

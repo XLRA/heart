@@ -41,8 +41,16 @@ const SpotifyLogin = () => {
         if (window.Spotify) {
           initializePlayer(token);
         } else {
-          window.onSpotifyWebPlaybackSDKReady = () => {
+          // Listen for the custom SDK ready event
+          const handleSDKReady = () => {
+            console.log('Spotify Web Playback SDK is ready via event');
             initializePlayer(token);
+          };
+          
+          window.addEventListener('spotifySDKReady', handleSDKReady);
+          
+          return () => {
+            window.removeEventListener('spotifySDKReady', handleSDKReady);
           };
         }
       }
@@ -75,7 +83,7 @@ const SpotifyLogin = () => {
                 objectFit: 'cover'
               }}
               onError={(e) => {
-                console.error('User image failed to load:', user.images?.[0]?.url);
+                console.warn('User image failed to load:', user.images?.[0]?.url);
                 e.currentTarget.style.display = 'none';
               }}
             />
