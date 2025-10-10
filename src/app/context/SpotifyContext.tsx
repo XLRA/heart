@@ -128,11 +128,11 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
         }
       }, 1000);
       
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error loading user data:', error);
       
       // Check if it's a rate limit error
-      if (error.status === 429) {
+      if (error && typeof error === 'object' && 'status' in error && (error as { status: number }).status === 429) {
         console.log('Rate limit hit, retrying in 5 seconds...');
         // Dispatch event to notify UI
         window.dispatchEvent(new CustomEvent('spotifyRateLimited'));
@@ -145,7 +145,7 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
       }
       
       // Only logout for non-rate-limit errors
-      if (error.status !== 429) {
+      if (!(error && typeof error === 'object' && 'status' in error && (error as { status: number }).status === 429)) {
         logout();
       }
     } finally {
