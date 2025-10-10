@@ -85,9 +85,16 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
   const playerRef = useRef<SpotifyPlayer | null>(null);
   const isInitializingRef = useRef<boolean>(false);
 
-  const checkAvailableDevices = (): Promise<boolean> => {
+  const checkAvailableDevices = (targetDeviceId?: string): Promise<boolean> => {
     const token = localStorage.getItem('spotify_access_token');
     if (!token) return Promise.resolve(false);
+
+    // Use the provided device ID or fall back to the state device ID
+    const checkDeviceId = targetDeviceId || deviceId;
+    if (!checkDeviceId) {
+      console.log('No device ID available for verification');
+      return Promise.resolve(false);
+    }
 
     return fetch('https://api.spotify.com/v1/me/player/devices', {
       headers: {
@@ -100,13 +107,15 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       return response.json();
     }).then(data => {
       console.log('Available devices:', data.devices);
-      const ourDevice = data.devices.find((device: SpotifyDevice) => device.id === deviceId);
+      console.log('Looking for device ID:', checkDeviceId);
+      const ourDevice = data.devices.find((device: SpotifyDevice) => device.id === checkDeviceId);
       if (ourDevice) {
         console.log('Our device found:', ourDevice);
         console.log('Device is active:', ourDevice.is_active);
         return true;
       } else {
         console.log('Our device not found in available devices list');
+        console.log('Available device IDs:', data.devices.map((d: SpotifyDevice) => d.id));
         return false;
       }
     }).catch(error => {
@@ -115,10 +124,10 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     });
   };
 
-  const waitForDeviceRegistration = async (maxAttempts: number = 10, delay: number = 1000): Promise<boolean> => {
+  const waitForDeviceRegistration = async (targetDeviceId: string, maxAttempts: number = 10, delay: number = 1000): Promise<boolean> => {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       console.log(`Checking device registration (attempt ${attempt}/${maxAttempts})`);
-      const isRegistered = await checkAvailableDevices();
+      const isRegistered = await checkAvailableDevices(targetDeviceId);
       if (isRegistered) {
         console.log('Device successfully registered with Spotify');
         return true;
@@ -236,7 +245,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       }));
       
       // Wait for device to be registered with Spotify servers
-      const isRegistered = await waitForDeviceRegistration();
+      const isRegistered = await waitForDeviceRegistration(data.device_id);
       if (isRegistered) {
         setIsReady(true);
         console.log('Web Player is fully ready and registered');
@@ -315,7 +324,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     console.log('Token (first 20 chars):', token.substring(0, 20) + '...');
 
     // Verify device is still registered before attempting playback
-    const isDeviceRegistered = await checkAvailableDevices();
+    const isDeviceRegistered = await checkAvailableDevices(deviceId);
     if (!isDeviceRegistered) {
       console.error('Device not registered with Spotify, cannot start playback');
       return;
@@ -355,7 +364,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     }
 
     // Verify device is still registered before attempting playback
-    const isDeviceRegistered = await checkAvailableDevices();
+    const isDeviceRegistered = await checkAvailableDevices(deviceId);
     if (!isDeviceRegistered) {
       console.error('Device not registered with Spotify, cannot toggle playback');
       return;
@@ -390,7 +399,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     }
 
     // Verify device is still registered before attempting playback
-    const isDeviceRegistered = await checkAvailableDevices();
+    const isDeviceRegistered = await checkAvailableDevices(deviceId);
     if (!isDeviceRegistered) {
       console.error('Device not registered with Spotify, cannot skip to next track');
       return;
@@ -421,7 +430,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     }
 
     // Verify device is still registered before attempting playback
-    const isDeviceRegistered = await checkAvailableDevices();
+    const isDeviceRegistered = await checkAvailableDevices(deviceId);
     if (!isDeviceRegistered) {
       console.error('Device not registered with Spotify, cannot skip to previous track');
       return;
@@ -452,7 +461,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     }
 
     // Verify device is still registered before attempting playback
-    const isDeviceRegistered = await checkAvailableDevices();
+    const isDeviceRegistered = await checkAvailableDevices(deviceId);
     if (!isDeviceRegistered) {
       console.error('Device not registered with Spotify, cannot set volume');
       return;
@@ -483,7 +492,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     }
 
     // Verify device is still registered before attempting playback
-    const isDeviceRegistered = await checkAvailableDevices();
+    const isDeviceRegistered = await checkAvailableDevices(deviceId);
     if (!isDeviceRegistered) {
       console.error('Device not registered with Spotify, cannot seek');
       return;
