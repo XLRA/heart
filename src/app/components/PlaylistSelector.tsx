@@ -202,10 +202,27 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
                           height: '100%',
                           objectFit: 'cover'
                         }}
+                        onError={(e) => {
+                          console.error('Playlist image failed to load:', playlist.images?.[0]?.url);
+                          e.currentTarget.style.display = 'none';
+                          // Show fallback icon
+                          const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                          if (fallback) fallback.style.display = 'flex';
+                        }}
                       />
-                    ) : (
-                      <i className="fas fa-music" style={{ color: '#8f8f9d', fontSize: '20px' }}></i>
-                    )}
+                    ) : null}
+                    <i 
+                      className="fas fa-music" 
+                      style={{ 
+                        color: '#8f8f9d', 
+                        fontSize: '20px',
+                        display: playlist.images && playlist.images.length > 0 ? 'none' : 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: '100%',
+                        height: '100%'
+                      }}
+                    ></i>
                   </div>
 
                   {/* Playlist Info */}

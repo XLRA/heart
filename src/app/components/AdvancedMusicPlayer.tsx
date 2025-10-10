@@ -478,12 +478,33 @@ const AdvancedMusicPlayer = () => {
               alt={`${songs[currentSongIndex].title} cover`}
               width={115}
               height={115}
-              onError={() => console.error('Image loading error for:', songs[currentSongIndex].cover)}
+              onError={(e) => {
+                console.error('Image loading error for:', songs[currentSongIndex].cover);
+                e.currentTarget.style.display = 'none';
+                // Show fallback
+                const fallback = e.currentTarget.nextElementSibling as HTMLElement;
+                if (fallback) fallback.style.display = 'flex';
+              }}
               className="w-full h-full object-cover"
               style={{
                 animation: isPlaying ? 'rotateAlbumArt 3s linear 0s infinite forwards' : 'none'
               }}
             />
+            <div style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              display: 'none',
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: '#252529',
+              color: '#8f8f9d',
+              fontSize: '24px'
+            }}>
+              <i className="fas fa-music"></i>
+            </div>
             <div id="buffer-box" style={{
               position: 'absolute',
               top: '50%',

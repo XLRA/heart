@@ -45,6 +45,10 @@ const SpotifyLogin = () => {
                 borderRadius: '50%',
                 objectFit: 'cover'
               }}
+              onError={(e) => {
+                console.error('User image failed to load:', user.images[0].url);
+                e.currentTarget.style.display = 'none';
+              }}
             />
           )}
           <div style={{ flex: 1, minWidth: 0 }}>
