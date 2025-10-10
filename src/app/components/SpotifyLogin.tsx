@@ -1,10 +1,24 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import Image from 'next/image';
 import { useSpotify } from '../context/SpotifyContext';
 
 const SpotifyLogin = () => {
   const { login, isAuthenticated, user, logout } = useSpotify();
+  const [isRateLimited, setIsRateLimited] = useState(false);
+
+  // Listen for rate limit events
+  useEffect(() => {
+    const handleRateLimit = () => {
+      setIsRateLimited(true);
+      setTimeout(() => setIsRateLimited(false), 5000);
+    };
+
+    // You could dispatch this event from the context when rate limited
+    window.addEventListener('spotifyRateLimited', handleRateLimit);
+    return () => window.removeEventListener('spotifyRateLimited', handleRateLimit);
+  }, []);
 
   if (isAuthenticated && user) {
     return (
@@ -45,10 +59,18 @@ const SpotifyLogin = () => {
               {user.display_name || 'User'}
             </div>
             <div style={{
-              color: '#8f8f9d',
+              color: isRateLimited ? '#ff6b6b' : '#8f8f9d',
               fontSize: '12px'
             }}>
-              Connected to Spotify
+              {isRateLimited ? 'Loading... (Rate limited)' : 'Connected to Spotify'}
+            </div>
+            {/* Debug info - remove this later */}
+            <div style={{
+              color: '#666',
+              fontSize: '10px',
+              marginTop: '2px'
+            }}>
+              Token: {localStorage.getItem('spotify_access_token') ? 'Present' : 'Missing'}
             </div>
           </div>
           <button

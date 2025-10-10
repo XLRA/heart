@@ -81,6 +81,7 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
   const [playlists, setPlaylists] = useState<SpotifyPlaylist[]>([]);
   const [currentPlaylist, setCurrentPlaylist] = useState<SpotifyPlaylist | null>(null);
   const [spotifyApi, setSpotifyApi] = useState<SpotifyWebApi.SpotifyWebApiJs | null>(null);
+  const [isLoadingUserData, setIsLoadingUserData] = useState(false);
 
   const logout = useCallback(() => {
     localStorage.removeItem('spotify_access_token');
@@ -106,15 +107,51 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
   }, [spotifyApi]);
 
   const loadUserData = useCallback(async (api: SpotifyWebApi.SpotifyWebApiJs) => {
+    if (isLoadingUserData) {
+      console.log('Already loading user data, skipping...');
+      return;
+    }
+    
+    setIsLoadingUserData(true);
+    
     try {
       const userData = await api.getMe();
       setUser(userData);
-      await loadUserPlaylists(api);
-    } catch (error) {
+      
+      // Add a small delay before loading playlists to avoid rate limiting
+      setTimeout(async () => {
+        try {
+          await loadUserPlaylists(api);
+        } catch (playlistError) {
+          console.error('Error loading playlists (non-critical):', playlistError);
+          // Don't logout for playlist errors, just log them
+        }
+      }, 1000);
+      
+    } catch (error: any) {
       console.error('Error loading user data:', error);
-      logout();
+      
+      // Check if it's a rate limit error
+      if (error.status === 429) {
+        console.log('Rate limit hit, retrying in 5 seconds...');
+        // Dispatch event to notify UI
+        window.dispatchEvent(new CustomEvent('spotifyRateLimited'));
+        // Retry after 5 seconds for rate limit errors
+        setTimeout(() => {
+          setIsLoadingUserData(false);
+          loadUserData(api);
+        }, 5000);
+        return;
+      }
+      
+      // Only logout for non-rate-limit errors
+      if (error.status !== 429) {
+        logout();
+      }
+    } finally {
+      setIsLoadingUserData(false);
     }
-  }, [logout, loadUserPlaylists]);
+  }, [logout, loadUserPlaylists, isLoadingUserData]);
 
   const checkAuthState = useCallback(() => {
     const token = localStorage.getItem('spotify_access_token');
@@ -126,7 +163,11 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
       api.setAccessToken(token);
       setSpotifyApi(api);
       setIsAuthenticated(true);
-      loadUserData(api);
+      
+      // Add a small delay to prevent rapid-fire API calls
+      setTimeout(() => {
+        loadUserData(api);
+      }, 500);
     } else {
       console.log('No existing token found, user not authenticated');
       setIsAuthenticated(false);

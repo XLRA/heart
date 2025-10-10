@@ -40,12 +40,11 @@ export async function POST(request: NextRequest) {
 
     if (!tokenResponse.ok) {
       const errorData = await tokenResponse.text();
-      console.error('API Route: Spotify token exchange error:', errorData);
+      console.error('Spotify token exchange error:', errorData);
       return NextResponse.json({ error: 'Failed to exchange code for token' }, { status: 400 });
     }
 
     const tokenData = await tokenResponse.json();
-    console.log('API Route: Token exchange successful, returning tokens');
 
     return NextResponse.json({
       access_token: tokenData.access_token,
