@@ -20,6 +20,8 @@ export default function Callback() {
 
       if (code) {
         try {
+          console.log('Authorization code received:', code);
+          
           // Exchange authorization code for access token
           const response = await fetch('/api/spotify/token', {
             method: 'POST',
@@ -29,15 +31,22 @@ export default function Callback() {
             body: JSON.stringify({ code }),
           });
 
+          console.log('Token exchange response status:', response.status);
+
           if (!response.ok) {
-            throw new Error('Failed to exchange code for token');
+            const errorText = await response.text();
+            console.error('Token exchange failed:', errorText);
+            throw new Error(`Failed to exchange code for token: ${errorText}`);
           }
 
           const data = await response.json();
+          console.log('Token exchange successful:', data);
           
           localStorage.setItem('spotify_access_token', data.access_token);
           if (data.token_type) localStorage.setItem('spotify_token_type', data.token_type);
           if (data.expires_in) localStorage.setItem('spotify_expires_in', data.expires_in);
+          
+          console.log('Tokens stored in localStorage');
           
           // Redirect back to home page
           router.push('/');

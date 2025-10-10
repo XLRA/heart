@@ -317,7 +317,7 @@ const AdvancedMusicPlayer = () => {
   return (
     <div className="fixed bottom-8 left-0 z-50" style={{ padding: '0 0 0 20px' }}>
       <div id="player-container" style={{
-        width: '430px',
+        width: '500px',
         height: '100px',
         position: 'relative',
         marginBottom: '50px'
@@ -504,7 +504,7 @@ const AdvancedMusicPlayer = () => {
             }}>Buffering ...</div>
           </div>
           <div id="player-controls" style={{
-            width: '250px',
+            width: '320px',
             height: '100%',
             margin: '0 5px 0 141px',
             float: 'right',
@@ -515,7 +515,7 @@ const AdvancedMusicPlayer = () => {
           }}>
             {/* Playlist Button */}
             <div className="control" style={{
-              width: '33.333%',
+              width: '25%',
               display: 'flex',
               justifyContent: 'center',
               padding: '12px 0'
@@ -543,7 +543,7 @@ const AdvancedMusicPlayer = () => {
               </div>
             </div>
             <div className="control" style={{
-              width: '33.333%',
+              width: '25%',
               display: 'flex',
               justifyContent: 'center',
               padding: '12px 0'
@@ -569,7 +569,7 @@ const AdvancedMusicPlayer = () => {
               </div>
             </div>
             <div className="control" style={{
-              width: '33.333%',
+              width: '25%',
               display: 'flex',
               justifyContent: 'center',
               padding: '12px 0'
@@ -595,7 +595,7 @@ const AdvancedMusicPlayer = () => {
               </div>
             </div>
             <div className="control" style={{
-              width: '33.333%',
+              width: '25%',
               display: 'flex',
               justifyContent: 'center',
               padding: '12px 0'

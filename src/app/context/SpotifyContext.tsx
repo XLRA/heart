@@ -119,12 +119,17 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     // Check for existing access token
     const token = localStorage.getItem('spotify_access_token');
+    console.log('Checking for existing token:', token ? 'Token found' : 'No token');
+    
     if (token) {
+      console.log('Setting up Spotify API with existing token');
       const api = new SpotifyWebApi();
       api.setAccessToken(token);
       setSpotifyApi(api);
       setIsAuthenticated(true);
       loadUserData(api);
+    } else {
+      console.log('No existing token found, user not authenticated');
     }
   }, [loadUserData]);
 
