@@ -46,7 +46,7 @@ const SpotifyLogin = () => {
                 objectFit: 'cover'
               }}
               onError={(e) => {
-                console.error('User image failed to load:', user.images[0].url);
+                console.error('User image failed to load:', user.images?.[0]?.url);
                 e.currentTarget.style.display = 'none';
               }}
             />

@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import SpotifyWebApi from 'spotify-web-api-js';
 
 interface SpotifyTrack {
@@ -83,6 +83,7 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
   const [spotifyApi, setSpotifyApi] = useState<SpotifyWebApi.SpotifyWebApiJs | null>(null);
   const [isLoadingUserData, setIsLoadingUserData] = useState(false);
   const [hasInitialized, setHasInitialized] = useState(false);
+  const eventListenersSetup = useRef(false);
 
   const logout = useCallback(() => {
     localStorage.removeItem('spotify_access_token');
@@ -184,36 +185,41 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
     }
     
     setHasInitialized(true);
-  }, [hasInitialized, isLoadingUserData]); // Add dependencies back but with guards
+  }, [hasInitialized, isLoadingUserData, loadUserData]); // Include loadUserData dependency
 
   useEffect(() => {
     // Only run once on mount
     checkAuthState();
     
-    // Listen for storage changes (when token is added from callback)
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'spotify_access_token' && e.newValue) {
-        console.log('Token storage changed, re-checking auth state');
+    // Only set up event listeners once
+    if (!eventListenersSetup.current) {
+      // Listen for storage changes (when token is added from callback)
+      const handleStorageChange = (e: StorageEvent) => {
+        if (e.key === 'spotify_access_token' && e.newValue) {
+          console.log('Token storage changed, re-checking auth state');
+          setHasInitialized(false); // Reset initialization flag
+          checkAuthState();
+        }
+      };
+      
+      // Listen for custom token update event
+      const handleTokenUpdate = () => {
+        console.log('Custom token update event received, re-checking auth state');
         setHasInitialized(false); // Reset initialization flag
         checkAuthState();
-      }
-    };
-    
-    // Listen for custom token update event
-    const handleTokenUpdate = () => {
-      console.log('Custom token update event received, re-checking auth state');
-      setHasInitialized(false); // Reset initialization flag
-      checkAuthState();
-    };
-    
-    window.addEventListener('storage', handleStorageChange);
-    window.addEventListener('spotifyTokenUpdated', handleTokenUpdate);
-    
-    return () => {
-      window.removeEventListener('storage', handleStorageChange);
-      window.removeEventListener('spotifyTokenUpdated', handleTokenUpdate);
-    };
-  }, []); // Remove checkAuthState dependency to prevent infinite loop
+      };
+      
+      window.addEventListener('storage', handleStorageChange);
+      window.addEventListener('spotifyTokenUpdated', handleTokenUpdate);
+      eventListenersSetup.current = true;
+      
+      return () => {
+        window.removeEventListener('storage', handleStorageChange);
+        window.removeEventListener('spotifyTokenUpdated', handleTokenUpdate);
+        eventListenersSetup.current = false;
+      };
+    }
+  }, [checkAuthState]); // Include checkAuthState dependency
 
   const login = () => {
     const authUrl = `https://accounts.spotify.com/authorize?client_id=${CLIENT_ID}&response_type=code&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(SCOPES)}&show_dialog=true`;
