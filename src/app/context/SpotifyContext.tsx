@@ -116,8 +116,7 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [logout, loadUserPlaylists]);
 
-  useEffect(() => {
-    // Check for existing access token
+  const checkAuthState = useCallback(() => {
     const token = localStorage.getItem('spotify_access_token');
     console.log('Checking for existing token:', token ? 'Token found' : 'No token');
     
@@ -130,8 +129,46 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
       loadUserData(api);
     } else {
       console.log('No existing token found, user not authenticated');
+      setIsAuthenticated(false);
+      setSpotifyApi(null);
+      setUser(null);
     }
   }, [loadUserData]);
+
+  useEffect(() => {
+    checkAuthState();
+    
+    // Listen for storage changes (when token is added from callback)
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'spotify_access_token') {
+        console.log('Token storage changed, re-checking auth state');
+        checkAuthState();
+      }
+    };
+    
+    window.addEventListener('storage', handleStorageChange);
+    
+    // Also listen for focus events to re-check auth state
+    const handleFocus = () => {
+      console.log('Window focused, re-checking auth state');
+      checkAuthState();
+    };
+    
+    // Listen for custom token update event
+    const handleTokenUpdate = () => {
+      console.log('Custom token update event received, re-checking auth state');
+      checkAuthState();
+    };
+    
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('spotifyTokenUpdated', handleTokenUpdate);
+    
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('spotifyTokenUpdated', handleTokenUpdate);
+    };
+  }, [checkAuthState]);
 
   const login = () => {
     const authUrl = `https://accounts.spotify.com/authorize?client_id=${CLIENT_ID}&response_type=code&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(SCOPES)}&show_dialog=true`;

@@ -48,6 +48,9 @@ export default function Callback() {
           
           console.log('Tokens stored in localStorage');
           
+          // Dispatch custom event to notify context of token change
+          window.dispatchEvent(new CustomEvent('spotifyTokenUpdated'));
+          
           // Redirect back to home page
           router.push('/');
         } catch (error) {
