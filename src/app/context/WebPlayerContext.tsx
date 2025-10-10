@@ -84,11 +84,11 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
 
   const playerRef = useRef<SpotifyPlayer | null>(null);
 
-  const checkAvailableDevices = () => {
+  const checkAvailableDevices = (): Promise<boolean> => {
     const token = localStorage.getItem('spotify_access_token');
-    if (!token) return;
+    if (!token) return Promise.resolve(false);
 
-    fetch('https://api.spotify.com/v1/me/player/devices', {
+    return fetch('https://api.spotify.com/v1/me/player/devices', {
       headers: {
         'Authorization': `Bearer ${token}`
       }
@@ -103,12 +103,34 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       if (ourDevice) {
         console.log('Our device found:', ourDevice);
         console.log('Device is active:', ourDevice.is_active);
+        return true;
       } else {
         console.log('Our device not found in available devices list');
+        return false;
       }
     }).catch(error => {
       console.error('Error checking available devices:', error);
+      return false;
     });
+  };
+
+  const waitForDeviceRegistration = async (maxAttempts: number = 10, delay: number = 1000): Promise<boolean> => {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      console.log(`Checking device registration (attempt ${attempt}/${maxAttempts})`);
+      const isRegistered = await checkAvailableDevices();
+      if (isRegistered) {
+        console.log('Device successfully registered with Spotify');
+        return true;
+      }
+      
+      if (attempt < maxAttempts) {
+        console.log(`Device not yet registered, waiting ${delay}ms before retry...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+    
+    console.error('Device failed to register with Spotify after maximum attempts');
+    return false;
   };
 
   const initializePlayer = (token: string) => {
@@ -190,20 +212,24 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     });
 
     // Ready
-    newPlayer.addListener('ready', (...args) => {
+    newPlayer.addListener('ready', async (...args) => {
       const data = args[0] as { device_id: string };
       console.log('Spotify Web Player is ready with Device ID:', data.device_id);
       setDeviceId(data.device_id);
-      setIsReady(true);
       setPlayerState(prev => ({
         ...prev,
         device_id: data.device_id
       }));
       
-      // Check available devices after a short delay
-      setTimeout(() => {
-        checkAvailableDevices();
-      }, 1000);
+      // Wait for device to be registered with Spotify servers
+      const isRegistered = await waitForDeviceRegistration();
+      if (isRegistered) {
+        setIsReady(true);
+        console.log('Web Player is fully ready and registered');
+      } else {
+        console.error('Web Player failed to register with Spotify servers');
+        setIsReady(false);
+      }
     });
 
     // Not Ready
@@ -256,7 +282,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     });
   };
 
-  const playPlaylist = (playlistUri: string) => {
+  const playPlaylist = async (playlistUri: string) => {
     if (!player || !deviceId) {
       console.error('Player not ready or device ID not available');
       return;
@@ -272,10 +298,16 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     console.log('Playlist URI:', playlistUri);
     console.log('Token (first 20 chars):', token.substring(0, 20) + '...');
 
-    // Add a small delay to ensure device is fully registered
-    setTimeout(() => {
-      // Use the Web API to start playlist playback
-      fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+    // Verify device is still registered before attempting playback
+    const isDeviceRegistered = await checkAvailableDevices();
+    if (!isDeviceRegistered) {
+      console.error('Device not registered with Spotify, cannot start playback');
+      return;
+    }
+
+    // Use the Web API to start playlist playback
+    try {
+      const response = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
         method: 'PUT',
         body: JSON.stringify({
           context_uri: playlistUri
@@ -284,26 +316,32 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         }
-      }).then(response => {
-        console.log('Response status:', response.status);
-        console.log('Response headers:', Object.fromEntries(response.headers.entries()));
-        
-        if (!response.ok) {
-          return response.text().then(text => {
-            console.error('Spotify API Error Response:', text);
-            throw new Error(`HTTP error! status: ${response.status}, body: ${text}`);
-          });
-        }
-        console.log('Playlist playback started successfully');
-      }).catch(error => {
-        console.error('Error starting playlist playback:', error);
       });
-    }, 500); // 500ms delay
+
+      console.log('Response status:', response.status);
+      console.log('Response headers:', Object.fromEntries(response.headers.entries()));
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Spotify API Error Response:', errorText);
+        throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
+      }
+      console.log('Playlist playback started successfully');
+    } catch (error) {
+      console.error('Error starting playlist playback:', error);
+    }
   };
 
-  const togglePlay = () => {
+  const togglePlay = async () => {
     if (!player || !deviceId) {
       console.error('Player not available or device ID not available');
+      return;
+    }
+
+    // Verify device is still registered before attempting playback
+    const isDeviceRegistered = await checkAvailableDevices();
+    if (!isDeviceRegistered) {
+      console.error('Device not registered with Spotify, cannot toggle playback');
       return;
     }
 
@@ -311,105 +349,146 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     const action = playerState.is_paused ? 'play' : 'pause';
     console.log(`Toggling playback: ${action} with device ID:`, deviceId);
     
-    fetch(`https://api.spotify.com/v1/me/player/${action}?device_id=${deviceId}`, {
-      method: 'PUT',
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
-      }
-    }).then(response => {
+    try {
+      const response = await fetch(`https://api.spotify.com/v1/me/player/${action}?device_id=${deviceId}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
+        }
+      });
+
       if (!response.ok) {
-        return response.text().then(text => {
-          throw new Error(`HTTP error! status: ${response.status}, body: ${text}`);
-        });
+        const errorText = await response.text();
+        throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
       }
       console.log(`Playback ${action} successful`);
-    }).catch(error => {
+    } catch (error) {
       console.error(`Error ${action}ing playback:`, error);
-    });
+    }
   };
 
-  const nextTrack = () => {
+  const nextTrack = async () => {
     if (!player || !deviceId) {
       console.error('Player not available or device ID not available');
       return;
     }
 
-    fetch(`https://api.spotify.com/v1/me/player/next?device_id=${deviceId}`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
-      }
-    }).then(response => {
+    // Verify device is still registered before attempting playback
+    const isDeviceRegistered = await checkAvailableDevices();
+    if (!isDeviceRegistered) {
+      console.error('Device not registered with Spotify, cannot skip to next track');
+      return;
+    }
+
+    try {
+      const response = await fetch(`https://api.spotify.com/v1/me/player/next?device_id=${deviceId}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
+        }
+      });
+
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
       }
       console.log('Next track successful');
-    }).catch(error => {
+    } catch (error) {
       console.error('Error skipping to next track:', error);
-    });
+    }
   };
 
-  const previousTrack = () => {
+  const previousTrack = async () => {
     if (!player || !deviceId) {
       console.error('Player not available or device ID not available');
       return;
     }
 
-    fetch(`https://api.spotify.com/v1/me/player/previous?device_id=${deviceId}`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
-      }
-    }).then(response => {
+    // Verify device is still registered before attempting playback
+    const isDeviceRegistered = await checkAvailableDevices();
+    if (!isDeviceRegistered) {
+      console.error('Device not registered with Spotify, cannot skip to previous track');
+      return;
+    }
+
+    try {
+      const response = await fetch(`https://api.spotify.com/v1/me/player/previous?device_id=${deviceId}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
+        }
+      });
+
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
       }
       console.log('Previous track successful');
-    }).catch(error => {
+    } catch (error) {
       console.error('Error skipping to previous track:', error);
-    });
+    }
   };
 
-  const setVolume = (volume: number) => {
+  const setVolume = async (volume: number) => {
     if (!player || !deviceId) {
       console.error('Player not available or device ID not available');
       return;
     }
 
-    fetch(`https://api.spotify.com/v1/me/player/volume?volume_percent=${Math.round(volume * 100)}&device_id=${deviceId}`, {
-      method: 'PUT',
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
-      }
-    }).then(response => {
+    // Verify device is still registered before attempting playback
+    const isDeviceRegistered = await checkAvailableDevices();
+    if (!isDeviceRegistered) {
+      console.error('Device not registered with Spotify, cannot set volume');
+      return;
+    }
+
+    try {
+      const response = await fetch(`https://api.spotify.com/v1/me/player/volume?volume_percent=${Math.round(volume * 100)}&device_id=${deviceId}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
+        }
+      });
+
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
       }
       console.log('Volume set successfully');
-    }).catch(error => {
+    } catch (error) {
       console.error('Error setting volume:', error);
-    });
+    }
   };
 
-  const seek = (position: number) => {
+  const seek = async (position: number) => {
     if (!player || !deviceId) {
       console.error('Player not available or device ID not available');
       return;
     }
 
-    fetch(`https://api.spotify.com/v1/me/player/seek?position_ms=${Math.round(position)}&device_id=${deviceId}`, {
-      method: 'PUT',
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
-      }
-    }).then(response => {
+    // Verify device is still registered before attempting playback
+    const isDeviceRegistered = await checkAvailableDevices();
+    if (!isDeviceRegistered) {
+      console.error('Device not registered with Spotify, cannot seek');
+      return;
+    }
+
+    try {
+      const response = await fetch(`https://api.spotify.com/v1/me/player/seek?position_ms=${Math.round(position)}&device_id=${deviceId}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
+        }
+      });
+
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
       }
       console.log('Seek successful');
-    }).catch(error => {
+    } catch (error) {
       console.error('Error seeking:', error);
-    });
+    }
   };
 
   // Cleanup on unmount
