@@ -133,23 +133,38 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
     } catch (error: unknown) {
       console.error('Error loading user data:', error);
       
-      // Check if it's a rate limit error
-      if (error && typeof error === 'object' && 'status' in error && (error as { status: number }).status === 429) {
-        console.log('Rate limit hit, retrying in 5 seconds...');
-        // Dispatch event to notify UI
-        window.dispatchEvent(new CustomEvent('spotifyRateLimited'));
-        // Retry after 5 seconds for rate limit errors
-        setTimeout(() => {
+      // Check error type and handle accordingly
+      if (error && typeof error === 'object' && 'status' in error) {
+        const status = (error as { status: number }).status;
+        
+        if (status === 429) {
+          // Rate limit error - retry after delay
+          console.log('Rate limit hit, retrying in 5 seconds...');
+          window.dispatchEvent(new CustomEvent('spotifyRateLimited'));
+          setTimeout(() => {
+            setIsLoadingUserData(false);
+            loadUserData(api);
+          }, 5000);
+          return;
+        } else if (status === 403) {
+          // Forbidden error - likely regional/account issue
+          console.error('Spotify API access forbidden (403). This may be due to regional restrictions or account limitations.');
+          console.error('Full error details:', error);
+          window.dispatchEvent(new CustomEvent('spotifyAccessForbidden'));
+          // Don't logout immediately, show user-friendly message
           setIsLoadingUserData(false);
-          loadUserData(api);
-        }, 5000);
-        return;
+          return;
+        } else if (status === 401) {
+          // Unauthorized - token expired or invalid
+          console.error('Spotify token expired or invalid (401). Logging out.');
+          logout();
+          return;
+        }
       }
       
-      // Only logout for non-rate-limit errors
-      if (!(error && typeof error === 'object' && 'status' in error && (error as { status: number }).status === 429)) {
-        logout();
-      }
+      // For other errors, logout
+      console.error('Unexpected error, logging out');
+      logout();
     } finally {
       setIsLoadingUserData(false);
     }
