@@ -83,6 +83,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
   });
 
   const playerRef = useRef<SpotifyPlayer | null>(null);
+  const isInitializingRef = useRef<boolean>(false);
 
   const checkAvailableDevices = (): Promise<boolean> => {
     const token = localStorage.getItem('spotify_access_token');
@@ -139,15 +140,25 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
 
-    // Disconnect existing player if any
-    if (playerRef.current) {
-      playerRef.current.disconnect();
+    // Prevent multiple initializations - check if already initializing or ready
+    if (isInitializingRef.current || isReady || playerRef.current) {
+      console.log('Web Player already initialized or initializing, skipping...');
+      return;
     }
 
-    // Prevent multiple initializations
-    if (isReady) {
-      console.log('Web Player already initialized, skipping...');
-      return;
+    // Set initialization flag
+    isInitializingRef.current = true;
+    console.log('Starting Web Player initialization...');
+
+    // Disconnect existing player if any (cleanup)
+    if (playerRef.current) {
+      console.log('Disconnecting existing player before reinitializing...');
+      try {
+        (playerRef.current as SpotifyPlayer).disconnect();
+      } catch (error) {
+        console.warn('Error disconnecting existing player:', error);
+      }
+      playerRef.current = null;
     }
 
     const newPlayer = new window.Spotify.Player({
@@ -162,16 +173,19 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     newPlayer.addListener('initialization_error', (...args) => {
       const error = args[0] as { message: string };
       console.error('Failed to initialize Spotify player:', error.message);
+      isInitializingRef.current = false;
     });
 
     newPlayer.addListener('authentication_error', (...args) => {
       const error = args[0] as { message: string };
       console.error('Failed to authenticate with Spotify:', error.message);
+      isInitializingRef.current = false;
     });
 
     newPlayer.addListener('account_error', (...args) => {
       const error = args[0] as { message: string };
       console.error('Failed to validate Spotify account:', error.message);
+      isInitializingRef.current = false;
     });
 
     newPlayer.addListener('playback_error', (...args) => {
@@ -230,6 +244,9 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         console.error('Web Player failed to register with Spotify servers');
         setIsReady(false);
       }
+      
+      // Clear initialization flag
+      isInitializingRef.current = false;
     });
 
     // Not Ready
@@ -245,14 +262,13 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         console.log('Successfully connected to Spotify Web Player');
         setPlayer(newPlayer);
         playerRef.current = newPlayer;
-        
-        // Wait a bit for the device to be fully registered
-        setTimeout(() => {
-          console.log('Device should be registered now, device ID:', deviceId);
-        }, 2000);
       } else {
         console.error('Failed to connect to Spotify Web Player');
+        isInitializingRef.current = false;
       }
+    }).catch((error) => {
+      console.error('Error connecting to Spotify Web Player:', error);
+      isInitializingRef.current = false;
     });
   };
 
@@ -491,12 +507,36 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  // Cleanup function
+  const cleanup = () => {
+    if (playerRef.current) {
+      console.log('Cleaning up Web Player...');
+      try {
+        (playerRef.current as SpotifyPlayer).disconnect();
+      } catch (error) {
+        console.warn('Error disconnecting player during cleanup:', error);
+      }
+      playerRef.current = null;
+    }
+    setPlayer(null);
+    setIsReady(false);
+    setDeviceId(null);
+    isInitializingRef.current = false;
+    setPlayerState({
+      is_paused: true,
+      is_active: false,
+      current_track: null,
+      position: 0,
+      duration: 0,
+      volume: 0.5,
+      device_id: null
+    });
+  };
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (playerRef.current) {
-        playerRef.current.disconnect();
-      }
+      cleanup();
     };
   }, []);
 
