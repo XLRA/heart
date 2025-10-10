@@ -24,6 +24,16 @@ interface WebPlayerState {
   device_id: string | null;
 }
 
+interface SpotifyDevice {
+  id: string;
+  is_active: boolean;
+  is_private_session: boolean;
+  is_restricted: boolean;
+  name: string;
+  type: string;
+  volume_percent: number;
+}
+
 interface SpotifyPlayer {
   connect(): Promise<boolean>;
   disconnect(): void;
@@ -73,6 +83,33 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
   });
 
   const playerRef = useRef<SpotifyPlayer | null>(null);
+
+  const checkAvailableDevices = () => {
+    const token = localStorage.getItem('spotify_access_token');
+    if (!token) return;
+
+    fetch('https://api.spotify.com/v1/me/player/devices', {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    }).then(response => {
+      if (!response.ok) {
+        throw new Error(`Failed to get devices: ${response.status}`);
+      }
+      return response.json();
+    }).then(data => {
+      console.log('Available devices:', data.devices);
+      const ourDevice = data.devices.find((device: SpotifyDevice) => device.id === deviceId);
+      if (ourDevice) {
+        console.log('Our device found:', ourDevice);
+        console.log('Device is active:', ourDevice.is_active);
+      } else {
+        console.log('Our device not found in available devices list');
+      }
+    }).catch(error => {
+      console.error('Error checking available devices:', error);
+    });
+  };
 
   const initializePlayer = (token: string) => {
     if (typeof window === 'undefined' || !window.Spotify) {
@@ -162,6 +199,11 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         ...prev,
         device_id: data.device_id
       }));
+      
+      // Check available devices after a short delay
+      setTimeout(() => {
+        checkAvailableDevices();
+      }, 1000);
     });
 
     // Not Ready
@@ -177,6 +219,11 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         console.log('Successfully connected to Spotify Web Player');
         setPlayer(newPlayer);
         playerRef.current = newPlayer;
+        
+        // Wait a bit for the device to be fully registered
+        setTimeout(() => {
+          console.log('Device should be registered now, device ID:', deviceId);
+        }, 2000);
       } else {
         console.error('Failed to connect to Spotify Web Player');
       }
@@ -215,24 +262,43 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
 
-    // Use the Web API to start playlist playback directly
-    fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
-      method: 'PUT',
-      body: JSON.stringify({
-        context_uri: playlistUri
-      }),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
-      }
-    }).then(response => {
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      console.log('Playlist playback started successfully');
-    }).catch(error => {
-      console.error('Error starting playlist playback:', error);
-    });
+    const token = localStorage.getItem('spotify_access_token');
+    if (!token) {
+      console.error('No access token found');
+      return;
+    }
+
+    console.log('Starting playlist playback with device ID:', deviceId);
+    console.log('Playlist URI:', playlistUri);
+    console.log('Token (first 20 chars):', token.substring(0, 20) + '...');
+
+    // Add a small delay to ensure device is fully registered
+    setTimeout(() => {
+      // Use the Web API to start playlist playback
+      fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          context_uri: playlistUri
+        }),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      }).then(response => {
+        console.log('Response status:', response.status);
+        console.log('Response headers:', Object.fromEntries(response.headers.entries()));
+        
+        if (!response.ok) {
+          return response.text().then(text => {
+            console.error('Spotify API Error Response:', text);
+            throw new Error(`HTTP error! status: ${response.status}, body: ${text}`);
+          });
+        }
+        console.log('Playlist playback started successfully');
+      }).catch(error => {
+        console.error('Error starting playlist playback:', error);
+      });
+    }, 500); // 500ms delay
   };
 
   const togglePlay = () => {
@@ -243,6 +309,8 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
 
     // Use the Web API to toggle playback
     const action = playerState.is_paused ? 'play' : 'pause';
+    console.log(`Toggling playback: ${action} with device ID:`, deviceId);
+    
     fetch(`https://api.spotify.com/v1/me/player/${action}?device_id=${deviceId}`, {
       method: 'PUT',
       headers: {
@@ -250,7 +318,9 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       }
     }).then(response => {
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        return response.text().then(text => {
+          throw new Error(`HTTP error! status: ${response.status}, body: ${text}`);
+        });
       }
       console.log(`Playback ${action} successful`);
     }).catch(error => {
