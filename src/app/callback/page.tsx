@@ -7,14 +7,10 @@ export default function Callback() {
   const router = useRouter();
 
   useEffect(() => {
-    const handleCallback = () => {
-      const hash = window.location.hash;
-      const params = new URLSearchParams(hash.substring(1));
-      
-      const accessToken = params.get('access_token');
-      const tokenType = params.get('token_type');
-      const expiresIn = params.get('expires_in');
-      const error = params.get('error');
+    const handleCallback = async () => {
+      const urlParams = new URLSearchParams(window.location.search);
+      const code = urlParams.get('code');
+      const error = urlParams.get('error');
 
       if (error) {
         console.error('Spotify authentication error:', error);
@@ -22,13 +18,33 @@ export default function Callback() {
         return;
       }
 
-      if (accessToken) {
-        localStorage.setItem('spotify_access_token', accessToken);
-        if (tokenType) localStorage.setItem('spotify_token_type', tokenType);
-        if (expiresIn) localStorage.setItem('spotify_expires_in', expiresIn);
-        
-        // Redirect back to home page
-        router.push('/');
+      if (code) {
+        try {
+          // Exchange authorization code for access token
+          const response = await fetch('/api/spotify/token', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ code }),
+          });
+
+          if (!response.ok) {
+            throw new Error('Failed to exchange code for token');
+          }
+
+          const data = await response.json();
+          
+          localStorage.setItem('spotify_access_token', data.access_token);
+          if (data.token_type) localStorage.setItem('spotify_token_type', data.token_type);
+          if (data.expires_in) localStorage.setItem('spotify_expires_in', data.expires_in);
+          
+          // Redirect back to home page
+          router.push('/');
+        } catch (error) {
+          console.error('Error exchanging code for token:', error);
+          router.push('/');
+        }
       }
     };
 
