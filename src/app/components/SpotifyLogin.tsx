@@ -64,14 +64,6 @@ const SpotifyLogin = () => {
             }}>
               {isRateLimited ? 'Loading... (Rate limited)' : 'Connected to Spotify'}
             </div>
-            {/* Debug info - remove this later */}
-            <div style={{
-              color: '#666',
-              fontSize: '10px',
-              marginTop: '2px'
-            }}>
-              Token: {localStorage.getItem('spotify_access_token') ? 'Present' : 'Missing'}
-            </div>
           </div>
           <button
             onClick={logout}
