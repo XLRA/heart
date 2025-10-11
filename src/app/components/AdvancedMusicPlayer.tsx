@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import Image from 'next/image';
 import { useSpotify } from '../context/SpotifyContext';
 import { useWebPlayer } from '../context/WebPlayerContext';
+import { useAudioVisualizer } from '../context/AudioVisualizerContext';
 import PlaylistSelector from './PlaylistSelector';
 
 interface Song {
@@ -52,6 +53,7 @@ const AdvancedMusicPlayer = () => {
     setVolume, 
     seek 
   } = useWebPlayer();
+  const { setAudioElement, setIsPlaying, setSpotifyMode, setSpotifyTrackData } = useAudioVisualizer();
   
   const [showSeekTime, setShowSeekTime] = useState(false);
   const [seekTimeValue, setSeekTimeValue] = useState('00:00');
@@ -346,8 +348,10 @@ const AdvancedMusicPlayer = () => {
     if (audioRef.current && songs.length > 0 && songs[0].url) {
       audioRef.current.src = songs[0].url;
       audioRef.current.load(); // Reload the audio element with new source
+      // Set audio element for visualizer
+      setAudioElement(audioRef.current);
     }
-  }, [songs]);
+  }, [songs, setAudioElement]);
 
   // Add audio event listeners for local playback
   useEffect(() => {
@@ -356,10 +360,12 @@ const AdvancedMusicPlayer = () => {
 
     const handlePlay = () => {
       setLocalPlayerState(prev => ({ ...prev, is_paused: false, is_active: true }));
+      setIsPlaying(true);
     };
 
     const handlePause = () => {
       setLocalPlayerState(prev => ({ ...prev, is_paused: true }));
+      setIsPlaying(false);
     };
 
     const handleTimeUpdate = () => {
@@ -388,7 +394,60 @@ const AdvancedMusicPlayer = () => {
       audio.removeEventListener('timeupdate', handleTimeUpdate);
       audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
     };
-  }, [isUsingSpotifyPlayer]);
+  }, [isUsingSpotifyPlayer, setIsPlaying]);
+
+  // Update visualizer state based on Spotify player state
+  useEffect(() => {
+    if (isUsingSpotifyPlayer) {
+      setIsPlaying(!playerState.is_paused && playerState.is_active);
+      setSpotifyMode(true);
+    } else {
+      setSpotifyMode(false);
+      setSpotifyTrackData(null);
+    }
+  }, [isUsingSpotifyPlayer, playerState.is_paused, playerState.is_active, setIsPlaying, setSpotifyMode, setSpotifyTrackData]);
+
+  // Fetch Spotify track audio features for visualization
+  useEffect(() => {
+    if (!isUsingSpotifyPlayer || !playerState.current_track?.id) {
+      setSpotifyTrackData(null);
+      return;
+    }
+
+    const fetchTrackFeatures = async () => {
+      try {
+        const token = localStorage.getItem('spotify_access_token');
+        if (!token) return;
+
+        const response = await fetch(`https://api.spotify.com/v1/audio-features/${playerState.current_track?.id}`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+
+        if (response.ok) {
+          const features = await response.json();
+          setSpotifyTrackData({
+            tempo: features.tempo,
+            energy: features.energy,
+            danceability: features.danceability,
+            valence: features.valence
+          });
+        }
+      } catch (error) {
+        console.error('Error fetching track features:', error);
+        // Fallback to default values
+        setSpotifyTrackData({
+          tempo: 120,
+          energy: 0.5,
+          danceability: 0.5,
+          valence: 0.5
+        });
+      }
+    };
+
+    fetchTrackFeatures();
+  }, [isUsingSpotifyPlayer, playerState.current_track?.id, setSpotifyTrackData]);
 
 
   useEffect(() => {

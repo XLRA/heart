@@ -1,9 +1,239 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-const HeartAnimation = () => {
+interface AudioVisualizerProps {
+  audioElement?: HTMLAudioElement | null;
+  isPlaying?: boolean;
+  isSpotifyMode?: boolean;
+  spotifyTrackData?: {
+    tempo?: number;
+    energy?: number;
+    danceability?: number;
+    valence?: number;
+  } | null;
+}
+
+const HeartAnimation = ({ 
+  audioElement, 
+  isPlaying = false, 
+  isSpotifyMode = false, 
+  spotifyTrackData = null 
+}: AudioVisualizerProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  const [audioData, setAudioData] = useState<{
+    bass: number;
+    mid: number;
+    treble: number;
+    overall: number;
+    beat: boolean;
+  }>({
+    bass: 0,
+    mid: 0,
+    treble: 0,
+    overall: 0,
+    beat: false
+  });
+
+  // Initialize Web Audio API (only for local audio files)
+  useEffect(() => {
+    if (!audioElement || !canvasRef.current || isSpotifyMode) return;
+
+    const initAudioContext = async () => {
+      try {
+        // Create audio context
+        audioContextRef.current = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+        
+        // Resume context if suspended (required for user interaction)
+        if (audioContextRef.current.state === 'suspended') {
+          await audioContextRef.current.resume();
+        }
+        
+        // Create analyser node
+        analyserRef.current = audioContextRef.current.createAnalyser();
+        analyserRef.current.fftSize = 256;
+        analyserRef.current.smoothingTimeConstant = 0.8;
+        
+        // Create source from audio element
+        sourceRef.current = audioContextRef.current.createMediaElementSource(audioElement);
+        
+        // Connect the audio graph
+        sourceRef.current.connect(analyserRef.current);
+        analyserRef.current.connect(audioContextRef.current.destination);
+        
+        console.log('Audio visualizer initialized');
+      } catch (error) {
+        console.error('Error initializing audio context:', error);
+        // Reset refs on error
+        audioContextRef.current = null;
+        analyserRef.current = null;
+        sourceRef.current = null;
+      }
+    };
+
+    initAudioContext();
+
+    return () => {
+      if (sourceRef.current) {
+        sourceRef.current.disconnect();
+      }
+      if (analyserRef.current) {
+        analyserRef.current.disconnect();
+      }
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        audioContextRef.current.close();
+      }
+    };
+  }, [audioElement, isSpotifyMode]);
+
+  // Handle user interaction to resume audio context
+  useEffect(() => {
+    const handleUserInteraction = async () => {
+      if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+        try {
+          await audioContextRef.current.resume();
+          console.log('Audio context resumed after user interaction');
+        } catch (error) {
+          console.error('Error resuming audio context:', error);
+        }
+      }
+    };
+
+    // Add event listeners for user interaction
+    document.addEventListener('click', handleUserInteraction);
+    document.addEventListener('keydown', handleUserInteraction);
+    document.addEventListener('touchstart', handleUserInteraction);
+
+    return () => {
+      document.removeEventListener('click', handleUserInteraction);
+      document.removeEventListener('keydown', handleUserInteraction);
+      document.removeEventListener('touchstart', handleUserInteraction);
+    };
+  }, []);
+
+  // Audio analysis loop (only for local audio files)
+  useEffect(() => {
+    if (!analyserRef.current || !isPlaying || isSpotifyMode) return;
+
+    const bufferLength = analyserRef.current.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    let lastBeatTime = 0;
+    let beatThreshold = 0.3;
+    const beatHistory: number[] = [];
+
+    const analyzeAudio = () => {
+      if (!analyserRef.current) return;
+
+      analyserRef.current.getByteFrequencyData(dataArray);
+      
+      // Calculate frequency bands
+      const bassEnd = Math.floor(bufferLength * 0.1);
+      const midEnd = Math.floor(bufferLength * 0.4);
+      
+      let bassSum = 0;
+      let midSum = 0;
+      let trebleSum = 0;
+      let overallSum = 0;
+      
+      for (let i = 0; i < bufferLength; i++) {
+        const value = dataArray[i] / 255;
+        overallSum += value;
+        
+        if (i < bassEnd) {
+          bassSum += value;
+        } else if (i < midEnd) {
+          midSum += value;
+        } else {
+          trebleSum += value;
+        }
+      }
+      
+      const bass = bassSum / bassEnd;
+      const mid = midSum / (midEnd - bassEnd);
+      const treble = trebleSum / (bufferLength - midEnd);
+      const overall = overallSum / bufferLength;
+      
+      // Beat detection
+      const currentTime = Date.now();
+      const timeSinceLastBeat = currentTime - lastBeatTime;
+      
+      // Dynamic threshold based on recent history
+      if (beatHistory.length > 10) {
+        beatHistory.shift();
+      }
+      beatHistory.push(overall);
+      
+      const avgLevel = beatHistory.reduce((a, b) => a + b, 0) / beatHistory.length;
+      beatThreshold = avgLevel * 1.5;
+      
+      // Detect beat
+      const isBeat = overall > beatThreshold && timeSinceLastBeat > 200;
+      
+      if (isBeat) {
+        lastBeatTime = currentTime;
+      }
+      
+      setAudioData({
+        bass,
+        mid,
+        treble,
+        overall,
+        beat: isBeat
+      });
+      
+      animationFrameRef.current = requestAnimationFrame(analyzeAudio);
+    };
+
+    analyzeAudio();
+
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, [isPlaying, isSpotifyMode]);
+
+  // Spotify mode: Simulate audio-reactive behavior based on track metadata
+  useEffect(() => {
+    if (!isSpotifyMode || !isPlaying || !spotifyTrackData) return;
+
+    const simulateAudioData = () => {
+      const { tempo = 120, energy = 0.5, danceability = 0.5, valence = 0.5 } = spotifyTrackData;
+      
+      // Simulate beat detection based on tempo
+      const beatInterval = 60000 / tempo; // Convert BPM to milliseconds
+      const now = Date.now();
+      const isBeat = (now % beatInterval) < 100; // Beat window of 100ms
+      
+      // Simulate frequency data based on track characteristics
+      const bassIntensity = energy * 0.9 + danceability * 0.1;
+      const midIntensity = energy * 0.7 + valence * 0.3;
+      const trebleIntensity = energy * 0.6 + (1 - valence) * 0.4;
+      
+      // Add some randomness to make it feel more natural
+      const randomFactor = 0.1;
+      const bass = Math.max(0, Math.min(1, bassIntensity + (Math.random() - 0.5) * randomFactor));
+      const mid = Math.max(0, Math.min(1, midIntensity + (Math.random() - 0.5) * randomFactor));
+      const treble = Math.max(0, Math.min(1, trebleIntensity + (Math.random() - 0.5) * randomFactor));
+      const overall = (bass + mid + treble) / 3;
+      
+      setAudioData({
+        bass,
+        mid,
+        treble,
+        overall,
+        beat: isBeat
+      });
+    };
+
+    const interval = setInterval(simulateAudioData, 50); // Update every 50ms for smooth animation
+    
+    return () => clearInterval(interval);
+  }, [isSpotifyMode, isPlaying, spotifyTrackData]);
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -52,9 +282,9 @@ const HeartAnimation = () => {
 
     window.addEventListener('resize', handleResize);
 
-    const traceCount = 50; // Use same particle count for all devices
+    const traceCount = 50;
     const pointsOrigin: [number, number][] = [];
-    const dr = 0.1; // Use same step size for all devices
+    const dr = 0.1;
 
     for (let i = 0; i < Math.PI * 2; i += dr) {
       pointsOrigin.push(scaleAndTranslate(heartPosition(i), 210, 13, 0, 0));
@@ -113,11 +343,45 @@ const HeartAnimation = () => {
     };
 
     let time = 0;
+    let lastBeatTime = 0;
+    
     const loop = () => {
-      const n = -Math.cos(time);
-      pulse((1 + n) * .5, (1 + n) * .5);
-      time += ((Math.sin(time)) < 0 ? 9 : (n > 0.8) ? .2 : 1) * config.timeDelta * 0.5;
-      ctx.fillStyle = "rgba(0,0,0,.1)";
+      // Calculate audio-reactive pulse
+      let audioPulse = 1;
+      let audioIntensity = 0;
+      
+      if (isPlaying && audioData.overall > 0) {
+        // Use overall audio level for base pulse
+        audioIntensity = Math.min(audioData.overall * 2, 1);
+        
+        // Add extra pulse on beat detection
+        if (audioData.beat) {
+          audioPulse = 1.3 + audioData.bass * 0.5;
+          lastBeatTime = time;
+        } else {
+          // Gradual return to normal size
+          const timeSinceBeat = time - lastBeatTime;
+          const beatDecay = Math.max(0, 1 - timeSinceBeat * 0.01);
+          audioPulse = 1 + beatDecay * 0.3;
+        }
+      }
+      
+      // Combine audio-reactive pulse with natural heartbeat
+      const naturalPulse = -Math.cos(time);
+      const combinedPulse = (1 + naturalPulse) * 0.5 * audioPulse;
+      
+      // Add audio intensity to the pulse
+      const finalPulse = combinedPulse + audioIntensity * 0.2;
+      
+      pulse(finalPulse, finalPulse);
+      
+      // Adjust time progression based on audio intensity
+      const timeMultiplier = isPlaying ? (1 + audioData.overall * 0.5) : 1;
+      time += ((Math.sin(time)) < 0 ? 9 : (naturalPulse > 0.8) ? .2 : 1) * config.timeDelta * 0.5 * timeMultiplier;
+      
+      // Adjust trail opacity based on audio
+      const trailOpacity = isPlaying ? 0.05 + audioData.overall * 0.1 : 0.1;
+      ctx.fillStyle = `rgba(0,0,0,${trailOpacity})`;
       ctx.fillRect(0, 0, width, height);
 
       for (let i = e.length; i--;) {
@@ -142,8 +406,10 @@ const HeartAnimation = () => {
           }
         }
 
-        u.vx += -dx / length * u.speed;
-        u.vy += -dy / length * u.speed;
+        // Adjust particle speed based on audio intensity
+        const audioSpeedMultiplier = isPlaying ? (1 + audioData.overall * 0.5) : 1;
+        u.vx += -dx / length * u.speed * audioSpeedMultiplier;
+        u.vy += -dy / length * u.speed * audioSpeedMultiplier;
         u.trace[0].x += u.vx;
         u.trace[0].y += u.vy;
         u.vx *= u.force;
@@ -154,6 +420,12 @@ const HeartAnimation = () => {
           const N = u.trace[++k];
           N.x -= config.traceK * (N.x - T.x);
           N.y -= config.traceK * (N.y - T.y);
+        }
+
+        // Adjust particle color intensity based on audio
+        if (isPlaying) {
+          const colorIntensity = 0.4 + audioData.overall * 0.6;
+          u.f = u.f.replace(/,\s*\.4\)/, `,${colorIntensity})`);
         }
 
         ctx.fillStyle = u.f;
@@ -170,9 +442,34 @@ const HeartAnimation = () => {
     return () => {
       window.removeEventListener('resize', handleResize);
     };
-  }, []);
+  }, [audioData, isPlaying]);
 
-  return <canvas ref={canvasRef} id="heart" />;
+  return (
+    <>
+      <canvas ref={canvasRef} id="heart" />
+      {isPlaying && audioData.overall > 0 && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: '20px',
+            right: '20px',
+            width: '10px',
+            height: '10px',
+            borderRadius: '50%',
+            backgroundColor: isSpotifyMode 
+              ? `hsl(${120 + audioData.overall * 40}, 70%, 60%)` // Green for Spotify mode
+              : `hsl(${280 + audioData.overall * 40}, 70%, 60%)`, // Purple for real-time mode
+            opacity: 0.7,
+            zIndex: 1000,
+            transition: 'all 0.1s ease',
+            transform: `scale(${1 + audioData.overall * 0.5})`,
+            boxShadow: audioData.beat ? '0 0 20px rgba(255, 0, 150, 0.8)' : 'none'
+          }}
+          title={isSpotifyMode ? "Spotify Visualizer (Simulated)" : "Real-time Audio Visualizer"}
+        />
+      )}
+    </>
+  );
 };
 
 export default HeartAnimation; 
