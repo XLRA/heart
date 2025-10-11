@@ -151,7 +151,13 @@ const AdvancedMusicPlayer = () => {
     const seekBarContainer = e.currentTarget;
     const rect = seekBarContainer.getBoundingClientRect();
     const seekT = e.clientX - rect.left;
-    const currentDuration = isUsingSpotifyPlayer ? currentPlayerState.duration / 1000 : currentPlayerState.duration / 1000;
+    // Fix duration calculation - ensure we're working with seconds consistently
+    const currentDuration = isUsingSpotifyPlayer ? 
+      (currentPlayerState.duration > 0 ? currentPlayerState.duration / 1000 : 0) : 
+      (currentPlayerState.duration > 0 ? currentPlayerState.duration / 1000 : 0);
+    
+    if (currentDuration <= 0) return; // Don't show seek time if no duration
+    
     const seekLoc = currentDuration * (seekT / seekBarContainer.offsetWidth);
     
     setSeekHoverPosition(seekT);
@@ -178,7 +184,13 @@ const AdvancedMusicPlayer = () => {
     const seekBarContainer = e.currentTarget;
     const rect = seekBarContainer.getBoundingClientRect();
     const seekT = e.clientX - rect.left;
-    const currentDuration = isUsingSpotifyPlayer ? currentPlayerState.duration / 1000 : currentPlayerState.duration / 1000;
+    // Fix duration calculation - ensure we're working with seconds consistently
+    const currentDuration = isUsingSpotifyPlayer ? 
+      (currentPlayerState.duration > 0 ? currentPlayerState.duration / 1000 : 0) : 
+      (currentPlayerState.duration > 0 ? currentPlayerState.duration / 1000 : 0);
+    
+    if (currentDuration <= 0) return; // Don't seek if no duration
+    
     const seekLoc = currentDuration * (seekT / seekBarContainer.offsetWidth);
     
     if (isUsingSpotifyPlayer && isReady) {
@@ -196,8 +208,13 @@ const AdvancedMusicPlayer = () => {
     if (volumeBarRef.current) {
       const rect = volumeBarRef.current.getBoundingClientRect();
       const volumeValue = Math.max(0, Math.min(1, (e.clientX - rect.left) / volumeBarRef.current.offsetWidth));
-      if (isUsingSpotifyPlayer && isReady) {
-        setVolume(volumeValue);
+      
+      // Update local state immediately for responsive UI
+      if (isUsingSpotifyPlayer) {
+        setLocalPlayerState(prev => ({ ...prev, volume: volumeValue }));
+        if (isReady) {
+          setVolume(volumeValue);
+        }
       } else if (audioRef.current) {
         audioRef.current.volume = volumeValue;
         setLocalPlayerState(prev => ({ ...prev, volume: volumeValue }));
@@ -222,16 +239,24 @@ const AdvancedMusicPlayer = () => {
 
   const handleMuteToggle = () => {
     if (isMuted) {
-      if (isUsingSpotifyPlayer && isReady) {
-        setVolume(previousVolume);
+      // Unmute - restore previous volume
+      if (isUsingSpotifyPlayer) {
+        setLocalPlayerState(prev => ({ ...prev, volume: previousVolume }));
+        if (isReady) {
+          setVolume(previousVolume);
+        }
       } else if (audioRef.current) {
         audioRef.current.volume = previousVolume;
         setLocalPlayerState(prev => ({ ...prev, volume: previousVolume }));
       }
     } else {
+      // Mute - save current volume and set to 0
       setPreviousVolume(currentPlayerState.volume);
-      if (isUsingSpotifyPlayer && isReady) {
-        setVolume(0);
+      if (isUsingSpotifyPlayer) {
+        setLocalPlayerState(prev => ({ ...prev, volume: 0 }));
+        if (isReady) {
+          setVolume(0);
+        }
       } else if (audioRef.current) {
         audioRef.current.volume = 0;
         setLocalPlayerState(prev => ({ ...prev, volume: 0 }));

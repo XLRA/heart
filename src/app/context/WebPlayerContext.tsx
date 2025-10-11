@@ -116,12 +116,21 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
               volume: prev.volume, // Keep current volume
               device_id: deviceId
             }));
+          } else {
+            // If no state, set as inactive
+            setPlayerState(prev => ({
+              ...prev,
+              is_active: false,
+              current_track: null,
+              position: 0,
+              duration: 0
+            }));
           }
         } catch (error) {
           console.warn('Error getting current state:', error);
         }
       }
-    }, 1000); // Check every second
+    }, 500); // Check every 500ms for more responsive updates
   };
 
   const stopStatePolling = () => {
@@ -509,6 +518,12 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
 
+    // Update local state immediately for responsive UI
+    setPlayerState(prev => ({
+      ...prev,
+      volume: volume
+    }));
+
     // Verify device is still registered before attempting playback
     const isDeviceRegistered = await checkAvailableDevices(deviceId);
     if (!isDeviceRegistered) {
@@ -529,12 +544,6 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
       }
       console.log('Volume set successfully');
-      
-      // Update local state to reflect the new volume
-      setPlayerState(prev => ({
-        ...prev,
-        volume: volume
-      }));
     } catch (error) {
       console.error('Error setting volume:', error);
     }
