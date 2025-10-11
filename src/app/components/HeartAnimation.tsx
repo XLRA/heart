@@ -112,7 +112,7 @@ const HeartAnimation = ({
         setSpotifyAnalysis(analysis);
         console.log('Spotify audio analysis loaded:', analysis);
       } else if (response.status === 403) {
-        console.warn('Audio analysis not available (403 Forbidden) - using enhanced simulation');
+        console.warn('Audio analysis endpoint deprecated by Spotify (403 Forbidden) - using enhanced simulation');
         // Don't set analysis, will fall back to enhanced simulation
         setSpotifyAnalysis(null);
       } else {
@@ -307,21 +307,24 @@ const HeartAnimation = ({
       const simulateEnhancedAudioData = () => {
         const currentTimeSeconds = currentPosition / 1000;
         
-        // Create more dynamic simulation based on time and position
-        const timeBasedIntensity = Math.sin(currentTimeSeconds * 0.5) * 0.3 + 0.7;
-        const beatPattern = Math.sin(currentTimeSeconds * 2) > 0.8 ? 1 : 0;
+        // Create more realistic simulation patterns
+        const timeBasedIntensity = Math.sin(currentTimeSeconds * 0.3) * 0.4 + 0.6;
+        const beatPattern = Math.sin(currentTimeSeconds * 1.5) > 0.7 ? 1 : 0;
         
-        // Simulate frequency bands with more variation
-        const bass = timeBasedIntensity * 0.8 + Math.random() * 0.2;
-        const mid = timeBasedIntensity * 0.6 + Math.random() * 0.2;
-        const treble = timeBasedIntensity * 0.4 + Math.random() * 0.2;
+        // Add some randomness for more natural feel
+        const randomVariation = (Math.random() - 0.5) * 0.1;
+        
+        // Simulate frequency bands with more realistic distribution
+        const bass = Math.max(0, Math.min(1, timeBasedIntensity * 0.7 + randomVariation + 0.1));
+        const mid = Math.max(0, Math.min(1, timeBasedIntensity * 0.5 + randomVariation + 0.2));
+        const treble = Math.max(0, Math.min(1, timeBasedIntensity * 0.3 + randomVariation + 0.1));
         const overall = (bass + mid + treble) / 3;
         
         setAudioData({
-          bass: Math.max(0, Math.min(1, bass)),
-          mid: Math.max(0, Math.min(1, mid)),
-          treble: Math.max(0, Math.min(1, treble)),
-          overall: Math.max(0, Math.min(1, overall)),
+          bass,
+          mid,
+          treble,
+          overall,
           beat: Boolean(beatPattern)
         });
       };
@@ -531,32 +534,32 @@ const HeartAnimation = ({
       let bassPulse = 1;
       
       if (currentIsPlaying && currentAudioData.overall > 0) {
-        // Base pulse from overall audio level (more dramatic)
-        basePulse = 1 + (currentAudioData.overall * 0.8);
+        // Base pulse from overall audio level (more reasonable)
+        basePulse = 1 + (currentAudioData.overall * 0.3);
         
         // Bass-driven pulse (heart thumping)
-        bassPulse = 1 + (currentAudioData.bass * 1.2);
+        bassPulse = 1 + (currentAudioData.bass * 0.4);
         
         // Beat detection for strong heart beats
         if (currentAudioData.beat) {
-          beatPulse = 1.8 + (currentAudioData.bass * 0.8); // Strong beat
+          beatPulse = 1.4 + (currentAudioData.bass * 0.3); // Moderate beat
           lastBeatTime = time;
         } else {
           // Beat decay - heart returns to normal size after beat
           const timeSinceBeat = time - lastBeatTime;
           const beatDecay = Math.max(0, 1 - timeSinceBeat * 0.02);
-          beatPulse = 1 + beatDecay * 0.6;
+          beatPulse = 1 + beatDecay * 0.2;
         }
       }
       
-      // Create a more dramatic natural heartbeat rhythm
-      const naturalHeartbeat = Math.sin(time * 2) * 0.3 + 1; // Faster, more pronounced
+      // Create a more reasonable natural heartbeat rhythm
+      const naturalHeartbeat = Math.sin(time * 2) * 0.15 + 1; // More subtle
       
-      // Combine all pulse factors for dramatic effect
+      // Combine all pulse factors for balanced effect
       const finalPulse = basePulse * bassPulse * beatPulse * naturalHeartbeat;
       
-      // Ensure minimum and maximum pulse bounds
-      const clampedPulse = Math.max(0.3, Math.min(3.0, finalPulse));
+      // Ensure minimum and maximum pulse bounds (more reasonable)
+      const clampedPulse = Math.max(0.5, Math.min(1.8, finalPulse));
       
       pulse(clampedPulse, clampedPulse);
       
@@ -591,10 +594,10 @@ const HeartAnimation = ({
           }
         }
 
-        // Adjust particle speed based on audio intensity (more dramatic)
-        const audioSpeedMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 1.2) : 1;
-        const bassMultiplier = currentIsPlaying ? (1 + currentAudioData.bass * 0.8) : 1;
-        const beatMultiplier = currentAudioData.beat ? 2.0 : 1.0;
+        // Adjust particle speed based on audio intensity (more reasonable)
+        const audioSpeedMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.6) : 1;
+        const bassMultiplier = currentIsPlaying ? (1 + currentAudioData.bass * 0.4) : 1;
+        const beatMultiplier = currentAudioData.beat ? 1.5 : 1.0;
         
         const totalSpeedMultiplier = audioSpeedMultiplier * bassMultiplier * beatMultiplier;
         
