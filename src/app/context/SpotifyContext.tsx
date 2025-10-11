@@ -75,7 +75,9 @@ const SCOPES = [
   'user-library-read',
   'streaming',
   'user-read-playback-state',
-  'user-modify-playback-state'
+  'user-modify-playback-state',
+  'user-read-currently-playing',
+  'user-read-recently-played'
 ].join(' ');
 
 export const SpotifyProvider = ({ children }: { children: ReactNode }) => {

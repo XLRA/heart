@@ -89,7 +89,7 @@ const HeartAnimation = ({
     isPlayingRef.current = isPlaying;
   }, [isPlaying]);
 
-  // Fetch Spotify audio analysis data
+  // Fetch Spotify audio analysis data with fallback
   const fetchSpotifyAudioAnalysis = useCallback(async (trackId: string) => {
     if (!trackId) return;
     
@@ -111,11 +111,17 @@ const HeartAnimation = ({
         const analysis = await response.json();
         setSpotifyAnalysis(analysis);
         console.log('Spotify audio analysis loaded:', analysis);
+      } else if (response.status === 403) {
+        console.warn('Audio analysis not available (403 Forbidden) - using enhanced simulation');
+        // Don't set analysis, will fall back to enhanced simulation
+        setSpotifyAnalysis(null);
       } else {
         console.error('Failed to fetch audio analysis:', response.status);
+        setSpotifyAnalysis(null);
       }
     } catch (error) {
       console.error('Error fetching Spotify audio analysis:', error);
+      setSpotifyAnalysis(null);
     } finally {
       setIsLoadingAnalysis(false);
     }
@@ -290,6 +296,40 @@ const HeartAnimation = ({
       }
     };
   }, [isPlaying, isSpotifyMode]);
+
+  // Spotify mode: Enhanced simulation when audio analysis is not available
+  useEffect(() => {
+    if (!isSpotifyMode || !isPlaying || !currentPosition) return;
+    
+    // If we have audio analysis, use it; otherwise use enhanced simulation
+    if (!spotifyAnalysis) {
+      // Enhanced simulation based on track features and time
+      const simulateEnhancedAudioData = () => {
+        const currentTimeSeconds = currentPosition / 1000;
+        
+        // Create more dynamic simulation based on time and position
+        const timeBasedIntensity = Math.sin(currentTimeSeconds * 0.5) * 0.3 + 0.7;
+        const beatPattern = Math.sin(currentTimeSeconds * 2) > 0.8 ? 1 : 0;
+        
+        // Simulate frequency bands with more variation
+        const bass = timeBasedIntensity * 0.8 + Math.random() * 0.2;
+        const mid = timeBasedIntensity * 0.6 + Math.random() * 0.2;
+        const treble = timeBasedIntensity * 0.4 + Math.random() * 0.2;
+        const overall = (bass + mid + treble) / 3;
+        
+        setAudioData({
+          bass: Math.max(0, Math.min(1, bass)),
+          mid: Math.max(0, Math.min(1, mid)),
+          treble: Math.max(0, Math.min(1, treble)),
+          overall: Math.max(0, Math.min(1, overall)),
+          beat: Boolean(beatPattern)
+        });
+      };
+
+      const interval = setInterval(simulateEnhancedAudioData, 50);
+      return () => clearInterval(interval);
+    }
+  }, [isSpotifyMode, isPlaying, currentPosition, spotifyAnalysis]);
 
   // Spotify mode: Real audio-reactive behavior based on audio analysis
   useEffect(() => {
@@ -616,7 +656,7 @@ const HeartAnimation = ({
             backgroundColor: isLoadingAnalysis 
               ? '#ff6b6b' // Red when loading
               : isSpotifyMode 
-                ? (spotifyAnalysis ? `hsl(${120 + audioData.overall * 40}, 70%, 60%)` : '#ffa500') // Green when loaded, orange when no analysis
+                ? (spotifyAnalysis ? `hsl(${120 + audioData.overall * 40}, 70%, 60%)` : `hsl(${30 + audioData.overall * 40}, 70%, 60%)`) // Green when loaded, orange for enhanced simulation
                 : `hsl(${280 + audioData.overall * 40}, 70%, 60%)`, // Purple for real-time mode
             opacity: 0.7,
             zIndex: 1000,
@@ -628,7 +668,7 @@ const HeartAnimation = ({
             isLoadingAnalysis 
               ? "Loading Spotify Audio Analysis..." 
               : isSpotifyMode 
-                ? (spotifyAnalysis ? "Spotify Visualizer (Real Audio Analysis)" : "Spotify Visualizer (No Analysis Data)")
+                ? (spotifyAnalysis ? "Spotify Visualizer (Real Audio Analysis)" : "Spotify Visualizer (Enhanced Simulation)")
                 : "Real-time Audio Visualizer"
           }
         />
