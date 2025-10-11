@@ -4,11 +4,12 @@ import HeartAnimation from './components/HeartAnimation';
 import AdvancedMusicPlayer from './components/AdvancedMusicPlayer';
 import SpotifyLogin from './components/SpotifyLogin';
 import { SpotifyProvider } from './context/SpotifyContext';
-import { WebPlayerProvider } from './context/WebPlayerContext';
+import { WebPlayerProvider, useWebPlayer } from './context/WebPlayerContext';
 import { AudioVisualizerProvider, useAudioVisualizer } from './context/AudioVisualizerContext';
 
 function AppContent() {
-  const { audioElement, isPlaying, isSpotifyMode, spotifyTrackData } = useAudioVisualizer();
+  const { audioElement, isPlaying, isSpotifyMode } = useAudioVisualizer();
+  const { playerState } = useWebPlayer();
   
   return (
     <main className="min-h-screen bg-black relative">
@@ -16,7 +17,8 @@ function AppContent() {
         audioElement={audioElement} 
         isPlaying={isPlaying}
         isSpotifyMode={isSpotifyMode}
-        spotifyTrackData={spotifyTrackData}
+        currentTrackId={playerState.current_track?.id || null}
+        currentPosition={playerState.position}
       />
       <SpotifyLogin />
       <div className="absolute bottom-0 left-0 z-10">
