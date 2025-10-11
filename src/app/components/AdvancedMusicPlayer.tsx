@@ -70,8 +70,6 @@ const AdvancedMusicPlayer = () => {
     volume: 0.5
   });
   
-  const [localPosition, setLocalPosition] = useState(0);
-  const localPositionRef = useRef<NodeJS.Timeout | null>(null);
   const isSeekingRef = useRef<boolean>(false);
   const seekTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
@@ -392,12 +390,6 @@ const AdvancedMusicPlayer = () => {
     };
   }, [isUsingSpotifyPlayer]);
 
-  // Simple position management - just use Spotify position directly
-  useEffect(() => {
-    if (isUsingSpotifyPlayer && playerState.position > 0) {
-      setLocalPosition(playerState.position);
-    }
-  }, [isUsingSpotifyPlayer, playerState.position]);
 
   useEffect(() => {
     if (isDraggingVolume) {

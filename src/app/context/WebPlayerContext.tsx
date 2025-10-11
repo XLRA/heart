@@ -587,37 +587,33 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  // Cleanup function
-  const cleanup = () => {
-    stopStatePolling();
-    if (playerRef.current) {
-      console.log('Cleaning up Web Player...');
-      try {
-        (playerRef.current as SpotifyPlayer).disconnect();
-      } catch (error) {
-        console.warn('Error disconnecting player during cleanup:', error);
-      }
-      playerRef.current = null;
-    }
-    setPlayer(null);
-    setIsReady(false);
-    setDeviceId(null);
-    isInitializingRef.current = false;
-    setPlayerState({
-      is_paused: true,
-      is_active: false,
-      current_track: null,
-      position: 0,
-      duration: 0,
-      volume: 0.5,
-      device_id: null
-    });
-  };
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      cleanup();
+      stopStatePolling();
+      if (playerRef.current) {
+        console.log('Cleaning up Web Player...');
+        try {
+          (playerRef.current as SpotifyPlayer).disconnect();
+        } catch (error) {
+          console.warn('Error disconnecting player during cleanup:', error);
+        }
+        playerRef.current = null;
+      }
+      setPlayer(null);
+      setIsReady(false);
+      setDeviceId(null);
+      isInitializingRef.current = false;
+      setPlayerState({
+        is_paused: true,
+        is_active: false,
+        current_track: null,
+        position: 0,
+        duration: 0,
+        volume: 0.5,
+        device_id: null
+      });
     };
   }, []);
 
