@@ -330,9 +330,9 @@ const HeartAnimation = ({
           (currentSegment.loudness_max + 60) / 60 // Normalize from -60dB to 0dB
         ));
         
-        // Beat detection based on actual beat timing
+        // Enhanced beat detection based on actual beat timing
         const isBeat = currentBeat && 
-          (currentTimeSeconds - currentBeat.start) < 0.1; // Within 100ms of beat start
+          (currentTimeSeconds - currentBeat.start) < 0.15; // Within 150ms of beat start for more responsive detection
         
         setAudioData({
           bass: Math.max(0, Math.min(1, bass)),
@@ -342,15 +342,20 @@ const HeartAnimation = ({
           beat: Boolean(isBeat)
         });
       } else if (currentSection) {
-        // Fallback to section data
+        // Fallback to section data with more dramatic values
         const loudnessNormalized = Math.max(0, Math.min(1, 
           (currentSection.loudness + 60) / 60
         ));
         
+        // Create more dynamic frequency distribution
+        const bass = loudnessNormalized * 0.9 + Math.random() * 0.1;
+        const mid = loudnessNormalized * 0.7 + Math.random() * 0.1;
+        const treble = loudnessNormalized * 0.5 + Math.random() * 0.1;
+        
         setAudioData({
-          bass: loudnessNormalized * 0.8,
-          mid: loudnessNormalized * 0.6,
-          treble: loudnessNormalized * 0.4,
+          bass: Math.max(0, Math.min(1, bass)),
+          mid: Math.max(0, Math.min(1, mid)),
+          treble: Math.max(0, Math.min(1, treble)),
           overall: loudnessNormalized,
           beat: false
         });
@@ -480,41 +485,47 @@ const HeartAnimation = ({
       const currentAudioData = audioDataRef.current;
       const currentIsPlaying = isPlayingRef.current;
       
-      // Calculate audio-reactive pulse
-      let audioPulse = 1;
-      let audioIntensity = 0;
+      // Calculate dramatic audio-reactive pulse
+      let basePulse = 1;
+      let beatPulse = 1;
+      let bassPulse = 1;
       
       if (currentIsPlaying && currentAudioData.overall > 0) {
-        // Use overall audio level for base pulse
-        audioIntensity = Math.min(currentAudioData.overall * 2, 1);
+        // Base pulse from overall audio level (more dramatic)
+        basePulse = 1 + (currentAudioData.overall * 0.8);
         
-        // Add extra pulse on beat detection
+        // Bass-driven pulse (heart thumping)
+        bassPulse = 1 + (currentAudioData.bass * 1.2);
+        
+        // Beat detection for strong heart beats
         if (currentAudioData.beat) {
-          audioPulse = 1.3 + currentAudioData.bass * 0.5;
+          beatPulse = 1.8 + (currentAudioData.bass * 0.8); // Strong beat
           lastBeatTime = time;
         } else {
-          // Gradual return to normal size
+          // Beat decay - heart returns to normal size after beat
           const timeSinceBeat = time - lastBeatTime;
-          const beatDecay = Math.max(0, 1 - timeSinceBeat * 0.01);
-          audioPulse = 1 + beatDecay * 0.3;
+          const beatDecay = Math.max(0, 1 - timeSinceBeat * 0.02);
+          beatPulse = 1 + beatDecay * 0.6;
         }
       }
       
-      // Combine audio-reactive pulse with natural heartbeat
-      const naturalPulse = -Math.cos(time);
-      const combinedPulse = (1 + naturalPulse) * 0.5 * audioPulse;
+      // Create a more dramatic natural heartbeat rhythm
+      const naturalHeartbeat = Math.sin(time * 2) * 0.3 + 1; // Faster, more pronounced
       
-      // Add audio intensity to the pulse
-      const finalPulse = combinedPulse + audioIntensity * 0.2;
+      // Combine all pulse factors for dramatic effect
+      const finalPulse = basePulse * bassPulse * beatPulse * naturalHeartbeat;
       
-      pulse(finalPulse, finalPulse);
+      // Ensure minimum and maximum pulse bounds
+      const clampedPulse = Math.max(0.3, Math.min(3.0, finalPulse));
       
-      // Adjust time progression based on audio intensity
-      const timeMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.5) : 1;
-      time += ((Math.sin(time)) < 0 ? 9 : (naturalPulse > 0.8) ? .2 : 1) * config.timeDelta * 0.5 * timeMultiplier;
+      pulse(clampedPulse, clampedPulse);
       
-      // Adjust trail opacity based on audio
-      const trailOpacity = currentIsPlaying ? 0.05 + currentAudioData.overall * 0.1 : 0.1;
+      // Adjust time progression based on audio intensity for more dynamic movement
+      const timeMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.8) : 1;
+      time += ((Math.sin(time)) < 0 ? 12 : (naturalHeartbeat > 1.2) ? .3 : 1.5) * config.timeDelta * timeMultiplier;
+      
+      // Adjust trail opacity based on audio (more dramatic)
+      const trailOpacity = currentIsPlaying ? 0.02 + currentAudioData.overall * 0.15 : 0.08;
       ctx.fillStyle = `rgba(0,0,0,${trailOpacity})`;
       ctx.fillRect(0, 0, width, height);
 
@@ -540,10 +551,15 @@ const HeartAnimation = ({
           }
         }
 
-        // Adjust particle speed based on audio intensity
-        const audioSpeedMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.5) : 1;
-        u.vx += -dx / length * u.speed * audioSpeedMultiplier;
-        u.vy += -dy / length * u.speed * audioSpeedMultiplier;
+        // Adjust particle speed based on audio intensity (more dramatic)
+        const audioSpeedMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 1.2) : 1;
+        const bassMultiplier = currentIsPlaying ? (1 + currentAudioData.bass * 0.8) : 1;
+        const beatMultiplier = currentAudioData.beat ? 2.0 : 1.0;
+        
+        const totalSpeedMultiplier = audioSpeedMultiplier * bassMultiplier * beatMultiplier;
+        
+        u.vx += -dx / length * u.speed * totalSpeedMultiplier;
+        u.vy += -dy / length * u.speed * totalSpeedMultiplier;
         u.trace[0].x += u.vx;
         u.trace[0].y += u.vy;
         u.vx *= u.force;
@@ -556,10 +572,13 @@ const HeartAnimation = ({
           N.y -= config.traceK * (N.y - T.y);
         }
 
-        // Adjust particle color intensity based on audio
+        // Adjust particle color intensity based on audio (more dramatic)
         if (currentIsPlaying) {
-          const colorIntensity = 0.4 + currentAudioData.overall * 0.6;
-          u.f = u.f.replace(/,\s*\.4\)/, `,${colorIntensity})`);
+          const baseIntensity = 0.3 + currentAudioData.overall * 0.7;
+          const bassIntensity = currentAudioData.bass * 0.3;
+          const beatIntensity = currentAudioData.beat ? 0.4 : 0;
+          const colorIntensity = Math.min(1.0, baseIntensity + bassIntensity + beatIntensity);
+          u.f = u.f.replace(/,\s*[\d.]+\)/, `,${colorIntensity})`);
         }
 
         ctx.fillStyle = u.f;
