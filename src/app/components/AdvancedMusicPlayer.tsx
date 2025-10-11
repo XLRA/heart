@@ -70,6 +70,9 @@ const AdvancedMusicPlayer = () => {
     volume: 0.5
   });
   
+  const [localPosition, setLocalPosition] = useState(0);
+  const localPositionRef = useRef<NodeJS.Timeout | null>(null);
+  
   const audioRef = useRef<HTMLAudioElement>(null);
   const volumeBarRef = useRef<HTMLDivElement>(null);
 
@@ -109,8 +112,14 @@ const AdvancedMusicPlayer = () => {
 
   // Use appropriate player state based on whether we're using Spotify or local audio
   const currentPlayerState = useMemo(() => {
-    return isUsingSpotifyPlayer ? playerState : localPlayerState;
-  }, [isUsingSpotifyPlayer, playerState, localPlayerState]);
+    if (isUsingSpotifyPlayer) {
+      return {
+        ...playerState,
+        position: localPosition // Use local position for smooth updates
+      };
+    }
+    return localPlayerState;
+  }, [isUsingSpotifyPlayer, playerState, localPlayerState, localPosition]);
 
   const formatTime = (time: number): string => {
     if (isNaN(time)) return '00:00';
@@ -195,6 +204,7 @@ const AdvancedMusicPlayer = () => {
     
     if (isUsingSpotifyPlayer && isReady) {
       seek(seekLoc * 1000); // Convert to milliseconds for Spotify
+      setLocalPosition(seekLoc * 1000); // Update local position immediately
     } else if (audioRef.current) {
       audioRef.current.currentTime = seekLoc;
       setLocalPlayerState(prev => ({ ...prev, position: seekLoc * 1000 }));
@@ -366,6 +376,43 @@ const AdvancedMusicPlayer = () => {
       audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
     };
   }, [isUsingSpotifyPlayer]);
+
+  // Local position timer for smooth seek bar updates
+  useEffect(() => {
+    if (isUsingSpotifyPlayer && playerState.is_active && !playerState.is_paused) {
+      // Start local position timer for smooth updates
+      localPositionRef.current = setInterval(() => {
+        setLocalPosition(prev => {
+          const newPosition = prev + 1000; // Add 1 second (1000ms)
+          // Don't exceed the track duration
+          if (playerState.duration > 0 && newPosition >= playerState.duration) {
+            return playerState.duration;
+          }
+          return newPosition;
+        });
+      }, 1000); // Update every second
+    } else {
+      // Stop timer when paused or not active
+      if (localPositionRef.current) {
+        clearInterval(localPositionRef.current);
+        localPositionRef.current = null;
+      }
+    }
+    
+    return () => {
+      if (localPositionRef.current) {
+        clearInterval(localPositionRef.current);
+        localPositionRef.current = null;
+      }
+    };
+  }, [isUsingSpotifyPlayer, playerState.is_active, playerState.is_paused, playerState.duration]);
+
+  // Sync local position with Spotify position when it updates
+  useEffect(() => {
+    if (isUsingSpotifyPlayer && playerState.position !== localPosition) {
+      setLocalPosition(playerState.position);
+    }
+  }, [isUsingSpotifyPlayer, playerState.position, localPosition]);
 
   useEffect(() => {
     if (isDraggingVolume) {
