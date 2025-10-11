@@ -72,6 +72,8 @@ const AdvancedMusicPlayer = () => {
   
   const [localPosition, setLocalPosition] = useState(0);
   const localPositionRef = useRef<NodeJS.Timeout | null>(null);
+  const isSeekingRef = useRef<boolean>(false);
+  const seekTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
   const audioRef = useRef<HTMLAudioElement>(null);
   const volumeBarRef = useRef<HTMLDivElement>(null);
@@ -202,9 +204,25 @@ const AdvancedMusicPlayer = () => {
     
     const seekLoc = currentDuration * (seekT / seekBarContainer.offsetWidth);
     
+    // Prevent multiple seek operations
+    if (isSeekingRef.current) return;
+    
     if (isUsingSpotifyPlayer && isReady) {
-      seek(seekLoc * 1000); // Convert to milliseconds for Spotify
-      setLocalPosition(seekLoc * 1000); // Update local position immediately
+      isSeekingRef.current = true;
+      
+      // Clear any existing seek timeout
+      if (seekTimeoutRef.current) {
+        clearTimeout(seekTimeoutRef.current);
+      }
+      
+      // Update local position immediately for responsive UI
+      setLocalPosition(seekLoc * 1000);
+      
+      // Debounce the actual seek operation
+      seekTimeoutRef.current = setTimeout(() => {
+        seek(seekLoc * 1000); // Convert to milliseconds for Spotify
+        isSeekingRef.current = false;
+      }, 100); // Small delay to prevent rapid-fire seeks
     } else if (audioRef.current) {
       audioRef.current.currentTime = seekLoc;
       setLocalPlayerState(prev => ({ ...prev, position: seekLoc * 1000 }));
@@ -407,10 +425,14 @@ const AdvancedMusicPlayer = () => {
     };
   }, [isUsingSpotifyPlayer, playerState.is_active, playerState.is_paused, playerState.duration]);
 
-  // Sync local position with Spotify position when it updates
+  // Sync local position with Spotify position when it updates (but only if significantly different)
   useEffect(() => {
-    if (isUsingSpotifyPlayer && playerState.position !== localPosition) {
-      setLocalPosition(playerState.position);
+    if (isUsingSpotifyPlayer && playerState.position > 0 && !isSeekingRef.current) {
+      const positionDiff = Math.abs(playerState.position - localPosition);
+      // Only sync if the difference is more than 3 seconds to avoid conflicts with local timer
+      if (positionDiff > 3000) {
+        setLocalPosition(playerState.position);
+      }
     }
   }, [isUsingSpotifyPlayer, playerState.position, localPosition]);
 
@@ -425,6 +447,15 @@ const AdvancedMusicPlayer = () => {
       window.removeEventListener('mouseup', handleVolumeMouseUp);
     };
   }, [isDraggingVolume, handleVolumeMouseMove]);
+
+  // Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (seekTimeoutRef.current) {
+        clearTimeout(seekTimeoutRef.current);
+      }
+    };
+  }, []);
 
   return (
     <div className="fixed bottom-8 left-0 z-50" style={{ padding: '0 0 0 20px' }}>
