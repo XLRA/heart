@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { ReccoBeatsAudioFeatures } from '../../types/reccobeats';
 
 interface AudioVisualizerProps {
   audioElement?: HTMLAudioElement | null;
@@ -12,6 +13,7 @@ interface AudioVisualizerProps {
     danceability?: number;
     valence?: number;
   } | null;
+  reccoBeatsData?: ReccoBeatsAudioFeatures | null;
   currentTrackId?: string | null;
   currentPosition?: number;
 }
@@ -51,6 +53,8 @@ const HeartAnimation = ({
   audioElement, 
   isPlaying = false, 
   isSpotifyMode = false, 
+  spotifyTrackData = null,
+  reccoBeatsData = null,
   currentTrackId = null,
   currentPosition = 0
 }: AudioVisualizerProps) => {
@@ -307,17 +311,37 @@ const HeartAnimation = ({
       const simulateEnhancedAudioData = () => {
         const currentTimeSeconds = currentPosition / 1000;
         
-        // Create more realistic simulation patterns
-        const timeBasedIntensity = Math.sin(currentTimeSeconds * 0.3) * 0.4 + 0.6;
+        // Use ReccoBeats data if available for more accurate simulation, fallback to Spotify track data
+        let baseIntensity = 0.6;
+        let energyMultiplier = 1;
+        let danceabilityMultiplier = 1;
+        let valenceMultiplier = 1;
+        
+        if (reccoBeatsData) {
+          // Use passed ReccoBeats data (preferred)
+          baseIntensity = reccoBeatsData.energy;
+          energyMultiplier = reccoBeatsData.energy;
+          danceabilityMultiplier = reccoBeatsData.danceability;
+          valenceMultiplier = reccoBeatsData.valence;
+        } else if (spotifyTrackData) {
+          // Fallback to Spotify track data
+          baseIntensity = spotifyTrackData.energy || 0.6;
+          energyMultiplier = spotifyTrackData.energy || 1;
+          danceabilityMultiplier = spotifyTrackData.danceability || 1;
+          valenceMultiplier = spotifyTrackData.valence || 1;
+        }
+        
+        // Create more realistic simulation patterns based on audio features
+        const timeBasedIntensity = Math.sin(currentTimeSeconds * 0.3) * 0.4 + baseIntensity;
         const beatPattern = Math.sin(currentTimeSeconds * 1.5) > 0.7 ? 1 : 0;
         
         // Add some randomness for more natural feel
         const randomVariation = (Math.random() - 0.5) * 0.1;
         
-        // Simulate frequency bands with more realistic distribution
-        const bass = Math.max(0, Math.min(1, timeBasedIntensity * 0.7 + randomVariation + 0.1));
-        const mid = Math.max(0, Math.min(1, timeBasedIntensity * 0.5 + randomVariation + 0.2));
-        const treble = Math.max(0, Math.min(1, timeBasedIntensity * 0.3 + randomVariation + 0.1));
+        // Simulate frequency bands with more realistic distribution based on audio features
+        const bass = Math.max(0, Math.min(1, timeBasedIntensity * 0.7 * energyMultiplier + randomVariation + 0.1));
+        const mid = Math.max(0, Math.min(1, timeBasedIntensity * 0.5 * danceabilityMultiplier + randomVariation + 0.2));
+        const treble = Math.max(0, Math.min(1, timeBasedIntensity * 0.3 * valenceMultiplier + randomVariation + 0.1));
         const overall = (bass + mid + treble) / 3;
         
         setAudioData({
@@ -332,7 +356,7 @@ const HeartAnimation = ({
       const interval = setInterval(simulateEnhancedAudioData, 50);
       return () => clearInterval(interval);
     }
-  }, [isSpotifyMode, isPlaying, currentPosition, spotifyAnalysis]);
+  }, [isSpotifyMode, isPlaying, currentPosition, spotifyAnalysis, reccoBeatsData, spotifyTrackData]);
 
   // Spotify mode: Real audio-reactive behavior based on audio analysis
   useEffect(() => {
@@ -656,7 +680,7 @@ const HeartAnimation = ({
             width: '10px',
             height: '10px',
             borderRadius: '50%',
-            backgroundColor: isLoadingAnalysis 
+            backgroundColor: isLoadingAnalysis
               ? '#ff6b6b' // Red when loading
               : isSpotifyMode 
                 ? (spotifyAnalysis ? `hsl(${120 + audioData.overall * 40}, 70%, 60%)` : `hsl(${30 + audioData.overall * 40}, 70%, 60%)`) // Green when loaded, orange for enhanced simulation
@@ -668,10 +692,10 @@ const HeartAnimation = ({
             boxShadow: audioData.beat ? '0 0 20px rgba(255, 0, 150, 0.8)' : 'none'
           }}
           title={
-            isLoadingAnalysis 
-              ? "Loading Spotify Audio Analysis..." 
+            isLoadingAnalysis
+              ? "Loading Audio Analysis..." 
               : isSpotifyMode 
-                ? (spotifyAnalysis ? "Spotify Visualizer (Real Audio Analysis)" : "Spotify Visualizer (Enhanced Simulation)")
+                ? (spotifyAnalysis ? "Spotify Visualizer (Real Audio Analysis)" : "Spotify Visualizer (Enhanced Simulation with ReccoBeats)")
                 : "Real-time Audio Visualizer"
           }
         />

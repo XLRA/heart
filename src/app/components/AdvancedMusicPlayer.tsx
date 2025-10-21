@@ -5,6 +5,7 @@ import Image from 'next/image';
 import { useSpotify } from '../context/SpotifyContext';
 import { useWebPlayer } from '../context/WebPlayerContext';
 import { useAudioVisualizer } from '../context/AudioVisualizerContext';
+import { reccoBeatsService } from '../../services/reccobeats';
 import PlaylistSelector from './PlaylistSelector';
 
 interface Song {
@@ -53,7 +54,7 @@ const AdvancedMusicPlayer = () => {
     setVolume, 
     seek 
   } = useWebPlayer();
-  const { setAudioElement, setIsPlaying, setSpotifyMode, setSpotifyTrackData } = useAudioVisualizer();
+  const { setAudioElement, setIsPlaying, setSpotifyMode, setSpotifyTrackData, setReccoBeatsData } = useAudioVisualizer();
   
   const [showSeekTime, setShowSeekTime] = useState(false);
   const [seekTimeValue, setSeekTimeValue] = useState('00:00');
@@ -407,10 +408,25 @@ const AdvancedMusicPlayer = () => {
     }
   }, [isUsingSpotifyPlayer, playerState.is_paused, playerState.is_active, setIsPlaying, setSpotifyMode, setSpotifyTrackData]);
 
+  // Fetch ReccoBeats audio features for visualization
+  const fetchReccoBeatsFeatures = useCallback(async (trackId: string) => {
+    if (!trackId) return;
+    
+    try {
+      const features = await reccoBeatsService.getTrackAudioFeatures(trackId);
+      setReccoBeatsData(features);
+      console.log('ReccoBeats audio features loaded:', features);
+    } catch (error) {
+      console.error('Error fetching ReccoBeats audio features:', error);
+      setReccoBeatsData(null);
+    }
+  }, [setReccoBeatsData]);
+
   // Fetch Spotify track audio features for visualization
   useEffect(() => {
     if (!isUsingSpotifyPlayer || !playerState.current_track?.id) {
       setSpotifyTrackData(null);
+      setReccoBeatsData(null);
       return;
     }
 
@@ -447,7 +463,8 @@ const AdvancedMusicPlayer = () => {
     };
 
     fetchTrackFeatures();
-  }, [isUsingSpotifyPlayer, playerState.current_track?.id, setSpotifyTrackData]);
+    fetchReccoBeatsFeatures(playerState.current_track.id);
+  }, [isUsingSpotifyPlayer, playerState.current_track?.id, setSpotifyTrackData, setReccoBeatsData, fetchReccoBeatsFeatures]);
 
 
   useEffect(() => {

@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, useContext, useState, ReactNode } from 'react';
+import { ReccoBeatsAudioFeatures } from '../../types/reccobeats';
 
 interface AudioVisualizerContextType {
   audioElement: HTMLAudioElement | null;
@@ -12,6 +13,7 @@ interface AudioVisualizerContextType {
     danceability?: number;
     valence?: number;
   } | null;
+  reccoBeatsData: ReccoBeatsAudioFeatures | null;
   setAudioElement: (element: HTMLAudioElement | null) => void;
   setIsPlaying: (playing: boolean) => void;
   setSpotifyMode: (isSpotify: boolean) => void;
@@ -21,6 +23,7 @@ interface AudioVisualizerContextType {
     danceability?: number;
     valence?: number;
   } | null) => void;
+  setReccoBeatsData: (data: ReccoBeatsAudioFeatures | null) => void;
 }
 
 const AudioVisualizerContext = createContext<AudioVisualizerContextType | undefined>(undefined);
@@ -47,6 +50,7 @@ export const AudioVisualizerProvider = ({ children }: AudioVisualizerProviderPro
     danceability?: number;
     valence?: number;
   } | null>(null);
+  const [reccoBeatsData, setReccoBeatsData] = useState<ReccoBeatsAudioFeatures | null>(null);
 
   return (
     <AudioVisualizerContext.Provider
@@ -55,10 +59,12 @@ export const AudioVisualizerProvider = ({ children }: AudioVisualizerProviderPro
         isPlaying,
         isSpotifyMode,
         spotifyTrackData,
+        reccoBeatsData,
         setAudioElement,
         setIsPlaying,
         setSpotifyMode,
         setSpotifyTrackData,
+        setReccoBeatsData,
       }}
     >
       {children}
