@@ -1,5 +1,10 @@
 import Meyda from 'meyda';
 
+interface MeydaAnalyzer {
+  start(): void;
+  stop(): void;
+}
+
 interface MeydaAudioFeatures {
   rms: number;
   spectralCentroid: number;
@@ -25,7 +30,7 @@ class MeydaAudioService {
   private lastRequestTime = 0;
   private requestQueue: Array<() => Promise<unknown>> = [];
   private isProcessingQueue = false;
-  private currentAnalyzer: any = null;
+  private currentAnalyzer: MeydaAnalyzer | null = null;
   private audioContext: AudioContext | null = null;
   private sourceNode: MediaElementAudioSourceNode | null = null;
 
@@ -65,7 +70,7 @@ class MeydaAudioService {
   async initializeAudioContext(audioElement: HTMLAudioElement): Promise<void> {
     try {
       // Create audio context
-      this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      this.audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
       
       // Resume context if suspended (required for user interaction)
       if (this.audioContext.state === 'suspended') {
@@ -114,7 +119,7 @@ class MeydaAudioService {
           'mfcc',
           'chroma'
         ],
-        callback: (features: any) => {
+        callback: (features: Record<string, unknown>) => {
           if (features) {
             // Normalize and process features
             const processedFeatures: MeydaAudioFeatures = {
@@ -164,52 +169,73 @@ class MeydaAudioService {
   }
 
   // Normalization methods for different features
-  private normalizeRMS(rms: number): number {
+  private normalizeRMS(rms: unknown): number {
     // RMS is typically between 0 and 1, but can be higher
-    return Math.min(1, Math.max(0, rms));
+    const rmsValue = typeof rms === 'number' ? rms : 0;
+    return Math.min(1, Math.max(0, rmsValue));
   }
 
-  private normalizeSpectralCentroid(centroid: number): number {
+  private normalizeSpectralCentroid(centroid: unknown): number {
     // Spectral centroid is in Hz, normalize to 0-1 based on typical range
-    return Math.min(1, Math.max(0, centroid / 8000)); // Assuming max 8kHz
+    const centroidValue = typeof centroid === 'number' ? centroid : 0;
+    return Math.min(1, Math.max(0, centroidValue / 8000)); // Assuming max 8kHz
   }
 
-  private normalizeSpectralRolloff(rolloff: number): number {
+  private normalizeSpectralRolloff(rolloff: unknown): number {
     // Spectral rolloff is in Hz, normalize to 0-1
-    return Math.min(1, Math.max(0, rolloff / 22050)); // Nyquist frequency
+    const rolloffValue = typeof rolloff === 'number' ? rolloff : 0;
+    return Math.min(1, Math.max(0, rolloffValue / 22050)); // Nyquist frequency
   }
 
-  private normalizeSpectralFlux(flux: number): number {
+  private normalizeSpectralFlux(flux: unknown): number {
     // Spectral flux can be any positive number, normalize based on typical range
-    return Math.min(1, Math.max(0, flux / 10));
+    const fluxValue = typeof flux === 'number' ? flux : 0;
+    return Math.min(1, Math.max(0, fluxValue / 10));
   }
 
-  private normalizeSpectralSpread(spread: number): number {
+  private normalizeSpectralSpread(spread: unknown): number {
     // Spectral spread is in Hz, normalize to 0-1
-    return Math.min(1, Math.max(0, spread / 4000));
+    const spreadValue = typeof spread === 'number' ? spread : 0;
+    return Math.min(1, Math.max(0, spreadValue / 4000));
   }
 
-  private normalizeSpectralKurtosis(kurtosis: number): number {
+  private normalizeSpectralKurtosis(kurtosis: unknown): number {
     // Spectral kurtosis is typically between 0 and 1
-    return Math.min(1, Math.max(0, kurtosis));
+    const kurtosisValue = typeof kurtosis === 'number' ? kurtosis : 0;
+    return Math.min(1, Math.max(0, kurtosisValue));
   }
 
-  private normalizeLoudness(loudness: any): number {
+  private normalizeLoudness(loudness: unknown): number {
     // Loudness has .total property, normalize to 0-1
-    if (loudness && typeof loudness.total === 'number') {
-      return Math.min(1, Math.max(0, loudness.total / 100));
+    if (loudness && typeof loudness === 'object' && loudness !== null && 'total' in loudness) {
+      const totalValue = (loudness as { total: unknown }).total;
+      if (typeof totalValue === 'number') {
+        return Math.min(1, Math.max(0, totalValue / 100));
+      }
     }
     return 0;
   }
 
-  private normalizeMFCC(mfcc: number[]): number[] {
+  private normalizeMFCC(mfcc: unknown): number[] {
     // MFCC coefficients are typically between -10 and 10
-    return mfcc.map(coeff => Math.min(1, Math.max(0, (coeff + 10) / 20)));
+    if (Array.isArray(mfcc)) {
+      return mfcc.map(coeff => {
+        const coeffValue = typeof coeff === 'number' ? coeff : 0;
+        return Math.min(1, Math.max(0, (coeffValue + 10) / 20));
+      });
+    }
+    return [];
   }
 
-  private normalizeChroma(chroma: number[]): number[] {
+  private normalizeChroma(chroma: unknown): number[] {
     // Chroma values are typically between 0 and 1
-    return chroma.map(val => Math.min(1, Math.max(0, val)));
+    if (Array.isArray(chroma)) {
+      return chroma.map(val => {
+        const valValue = typeof val === 'number' ? val : 0;
+        return Math.min(1, Math.max(0, valValue));
+      });
+    }
+    return [];
   }
 
   // Cache management
@@ -235,7 +261,7 @@ class MeydaAudioService {
   }
 
   getCacheStats(): { size: number; entries: Array<{ trackId: string; age: number }> } {
-    const entries = Array.from(this.cache.entries()).map(([key, entry]) => ({
+    const entries = Array.from(this.cache.entries()).map(([, entry]) => ({
       trackId: entry.trackId,
       age: Date.now() - entry.timestamp
     }));
