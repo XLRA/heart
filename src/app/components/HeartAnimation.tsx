@@ -102,6 +102,40 @@ const HeartAnimation = ({
     isPlayingRef.current = isPlaying;
   }, [isPlaying]);
 
+  // Convert Meyda real-time data to audioData format for heart animation
+  useEffect(() => {
+    if (!meydaData || !isPlaying) return;
+
+    const convertMeydaToAudioData = () => {
+      // Convert Meyda features to audioData format
+      const bass = Math.max(0, Math.min(1, meydaData.rms * 2)); // RMS for bass
+      const mid = Math.max(0, Math.min(1, meydaData.spectralCentroid)); // Spectral centroid for mid
+      const treble = Math.max(0, Math.min(1, meydaData.spectralRolloff / 20000)); // Spectral rolloff for treble
+      const overall = Math.max(0, Math.min(1, meydaData.loudness / 100)); // Loudness for overall
+      
+      // Beat detection from spectral flux (if available) or RMS changes
+      const beat = meydaData.spectralFlux > 0.1 || meydaData.rms > 0.3;
+
+      console.log('Converting Meyda to audioData:', { bass, mid, treble, overall, beat, meydaData });
+
+      setAudioData({
+        bass,
+        mid,
+        treble,
+        overall,
+        beat
+      });
+    };
+
+    // Update immediately
+    convertMeydaToAudioData();
+
+    // Set up interval for continuous updates
+    const interval = setInterval(convertMeydaToAudioData, 50); // Update every 50ms
+    
+    return () => clearInterval(interval);
+  }, [meydaData, isPlaying]);
+
   // Fetch Spotify audio analysis data with fallback
   const fetchSpotifyAudioAnalysis = useCallback(async (trackId: string) => {
     if (!trackId) return;
@@ -314,26 +348,23 @@ const HeartAnimation = ({
   useEffect(() => {
     if (!isSpotifyMode || !isPlaying || !currentPosition) return;
     
+    // If we have Meyda real-time data, don't override it with simulation
+    if (meydaData) return;
+    
     // If we have audio analysis, use it; otherwise use enhanced simulation
     if (!spotifyAnalysis) {
       // Enhanced simulation based on track features and time
       const simulateEnhancedAudioData = () => {
         const currentTimeSeconds = currentPosition / 1000;
         
-        // Use Meyda data if available for more accurate simulation, fallback to Spotify track data
+        // Use Spotify track data for simulation (Meyda data is handled separately)
         let baseIntensity = 0.6;
         let energyMultiplier = 1;
         let danceabilityMultiplier = 1;
         let valenceMultiplier = 1;
         
-        if (meydaData) {
-          // Use Meyda real-time audio features (preferred)
-          baseIntensity = meydaData.rms;
-          energyMultiplier = meydaData.loudness;
-          danceabilityMultiplier = meydaData.spectralSpread;
-          valenceMultiplier = meydaData.spectralCentroid;
-        } else if (spotifyTrackData) {
-          // Fallback to Spotify track data
+        if (spotifyTrackData) {
+          // Use Spotify track data for simulation
           baseIntensity = spotifyTrackData.energy || 0.6;
           energyMultiplier = spotifyTrackData.energy || 1;
           danceabilityMultiplier = spotifyTrackData.danceability || 1;
@@ -567,21 +598,21 @@ const HeartAnimation = ({
       let bassPulse = 1;
       
       if (currentIsPlaying && currentAudioData.overall > 0) {
-        // Base pulse from overall audio level (more reasonable)
-        basePulse = 1 + (currentAudioData.overall * 0.3);
+        // Base pulse from overall audio level (enhanced for Meyda)
+        basePulse = 1 + (currentAudioData.overall * 0.5);
         
-        // Bass-driven pulse (heart thumping)
-        bassPulse = 1 + (currentAudioData.bass * 0.4);
+        // Bass-driven pulse (heart thumping) - more dramatic
+        bassPulse = 1 + (currentAudioData.bass * 0.6);
         
-        // Beat detection for strong heart beats
+        // Beat detection for strong heart beats - more responsive
         if (currentAudioData.beat) {
-          beatPulse = 1.4 + (currentAudioData.bass * 0.3); // Moderate beat
+          beatPulse = 1.6 + (currentAudioData.bass * 0.5); // More dramatic beat
           lastBeatTime = time;
         } else {
           // Beat decay - heart returns to normal size after beat
           const timeSinceBeat = time - lastBeatTime;
-          const beatDecay = Math.max(0, 1 - timeSinceBeat * 0.02);
-          beatPulse = 1 + beatDecay * 0.2;
+          const beatDecay = Math.max(0, 1 - timeSinceBeat * 0.03);
+          beatPulse = 1 + beatDecay * 0.3;
         }
       }
       
@@ -597,7 +628,7 @@ const HeartAnimation = ({
       pulse(clampedPulse, clampedPulse);
       
       // Adjust time progression based on audio intensity for more dynamic movement
-      const timeMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.8) : 1;
+      const timeMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 1.2) : 1;
       time += ((Math.sin(time)) < 0 ? 12 : (naturalHeartbeat > 1.2) ? .3 : 1.5) * config.timeDelta * timeMultiplier;
       
       // Adjust trail opacity based on audio (more dramatic)
