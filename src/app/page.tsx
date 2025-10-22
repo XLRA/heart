@@ -8,7 +8,7 @@ import { WebPlayerProvider, useWebPlayer } from './context/WebPlayerContext';
 import { AudioVisualizerProvider, useAudioVisualizer } from './context/AudioVisualizerContext';
 
 function AppContent() {
-  const { audioElement, isPlaying, isSpotifyMode, reccoBeatsData, spotifyTrackData } = useAudioVisualizer();
+  const { audioElement, isPlaying, isSpotifyMode, meydaData, spotifyTrackData } = useAudioVisualizer();
   const { playerState } = useWebPlayer();
   
   return (
@@ -18,7 +18,7 @@ function AppContent() {
         isPlaying={isPlaying}
         isSpotifyMode={isSpotifyMode}
         spotifyTrackData={spotifyTrackData}
-        reccoBeatsData={reccoBeatsData}
+        meydaData={meydaData}
         currentTrackId={playerState.current_track?.id || null}
         currentPosition={playerState.position}
       />

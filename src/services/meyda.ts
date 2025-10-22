@@ -1,0 +1,252 @@
+import Meyda from 'meyda';
+
+interface MeydaAudioFeatures {
+  rms: number;
+  spectralCentroid: number;
+  spectralRolloff: number;
+  spectralFlux: number;
+  spectralSpread: number;
+  spectralKurtosis: number;
+  loudness: number;
+  mfcc: number[];
+  chroma: number[];
+}
+
+interface CacheEntry {
+  data: MeydaAudioFeatures;
+  timestamp: number;
+  trackId: string;
+}
+
+class MeydaAudioService {
+  private cache = new Map<string, CacheEntry>();
+  private readonly CACHE_DURATION = 2 * 60 * 1000; // 2 minutes
+  private readonly RATE_LIMIT_DELAY = 100; // 100ms between requests
+  private lastRequestTime = 0;
+  private requestQueue: Array<() => Promise<unknown>> = [];
+  private isProcessingQueue = false;
+  private currentAnalyzer: any = null;
+  private audioContext: AudioContext | null = null;
+  private sourceNode: MediaElementAudioSourceNode | null = null;
+
+  private async rateLimit(): Promise<void> {
+    const now = Date.now();
+    const timeSinceLastRequest = now - this.lastRequestTime;
+    
+    if (timeSinceLastRequest < this.RATE_LIMIT_DELAY) {
+      const delay = this.RATE_LIMIT_DELAY - timeSinceLastRequest;
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+    
+    this.lastRequestTime = Date.now();
+  }
+
+  private async processQueue(): Promise<void> {
+    if (this.isProcessingQueue || this.requestQueue.length === 0) {
+      return;
+    }
+
+    this.isProcessingQueue = true;
+
+    while (this.requestQueue.length > 0) {
+      const request = this.requestQueue.shift();
+      if (request) {
+        try {
+          await request();
+        } catch (error) {
+          console.error('Error processing Meyda request:', error);
+        }
+      }
+    }
+
+    this.isProcessingQueue = false;
+  }
+
+  async initializeAudioContext(audioElement: HTMLAudioElement): Promise<void> {
+    try {
+      // Create audio context
+      this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      
+      // Resume context if suspended (required for user interaction)
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume();
+      }
+      
+      // Create source from audio element
+      this.sourceNode = this.audioContext.createMediaElementSource(audioElement);
+      
+      // Connect the audio graph
+      this.sourceNode.connect(this.audioContext.destination);
+      
+      console.log('Meyda audio context initialized');
+    } catch (error) {
+      console.error('Error initializing Meyda audio context:', error);
+      this.audioContext = null;
+      this.sourceNode = null;
+    }
+  }
+
+  startAnalysis(callback: (features: MeydaAudioFeatures) => void): void {
+    if (!this.audioContext || !this.sourceNode) {
+      console.error('Audio context not initialized');
+      return;
+    }
+
+    // Stop existing analyzer if running
+    if (this.currentAnalyzer) {
+      this.currentAnalyzer.stop();
+    }
+
+    try {
+      // Create Meyda analyzer with comprehensive feature extraction
+      this.currentAnalyzer = Meyda.createMeydaAnalyzer({
+        audioContext: this.audioContext,
+        source: this.sourceNode,
+        bufferSize: 512,
+        featureExtractors: [
+          'rms',
+          'spectralCentroid',
+          'spectralRolloff',
+          'spectralFlux',
+          'spectralSpread',
+          'spectralKurtosis',
+          'loudness',
+          'mfcc',
+          'chroma'
+        ],
+        callback: (features: any) => {
+          if (features) {
+            // Normalize and process features
+            const processedFeatures: MeydaAudioFeatures = {
+              rms: this.normalizeRMS(features.rms),
+              spectralCentroid: this.normalizeSpectralCentroid(features.spectralCentroid),
+              spectralRolloff: this.normalizeSpectralRolloff(features.spectralRolloff),
+              spectralFlux: this.normalizeSpectralFlux(features.spectralFlux),
+              spectralSpread: this.normalizeSpectralSpread(features.spectralSpread),
+              spectralKurtosis: this.normalizeSpectralKurtosis(features.spectralKurtosis),
+              loudness: this.normalizeLoudness(features.loudness),
+              mfcc: this.normalizeMFCC(features.mfcc),
+              chroma: this.normalizeChroma(features.chroma)
+            };
+            
+            callback(processedFeatures);
+          }
+        }
+      });
+
+      this.currentAnalyzer.start();
+      console.log('Meyda analysis started');
+    } catch (error) {
+      console.error('Error starting Meyda analysis:', error);
+    }
+  }
+
+  stopAnalysis(): void {
+    if (this.currentAnalyzer) {
+      this.currentAnalyzer.stop();
+      this.currentAnalyzer = null;
+      console.log('Meyda analysis stopped');
+    }
+  }
+
+  cleanup(): void {
+    this.stopAnalysis();
+    
+    if (this.sourceNode) {
+      this.sourceNode.disconnect();
+      this.sourceNode = null;
+    }
+    
+    if (this.audioContext && this.audioContext.state !== 'closed') {
+      this.audioContext.close();
+      this.audioContext = null;
+    }
+  }
+
+  // Normalization methods for different features
+  private normalizeRMS(rms: number): number {
+    // RMS is typically between 0 and 1, but can be higher
+    return Math.min(1, Math.max(0, rms));
+  }
+
+  private normalizeSpectralCentroid(centroid: number): number {
+    // Spectral centroid is in Hz, normalize to 0-1 based on typical range
+    return Math.min(1, Math.max(0, centroid / 8000)); // Assuming max 8kHz
+  }
+
+  private normalizeSpectralRolloff(rolloff: number): number {
+    // Spectral rolloff is in Hz, normalize to 0-1
+    return Math.min(1, Math.max(0, rolloff / 22050)); // Nyquist frequency
+  }
+
+  private normalizeSpectralFlux(flux: number): number {
+    // Spectral flux can be any positive number, normalize based on typical range
+    return Math.min(1, Math.max(0, flux / 10));
+  }
+
+  private normalizeSpectralSpread(spread: number): number {
+    // Spectral spread is in Hz, normalize to 0-1
+    return Math.min(1, Math.max(0, spread / 4000));
+  }
+
+  private normalizeSpectralKurtosis(kurtosis: number): number {
+    // Spectral kurtosis is typically between 0 and 1
+    return Math.min(1, Math.max(0, kurtosis));
+  }
+
+  private normalizeLoudness(loudness: any): number {
+    // Loudness has .total property, normalize to 0-1
+    if (loudness && typeof loudness.total === 'number') {
+      return Math.min(1, Math.max(0, loudness.total / 100));
+    }
+    return 0;
+  }
+
+  private normalizeMFCC(mfcc: number[]): number[] {
+    // MFCC coefficients are typically between -10 and 10
+    return mfcc.map(coeff => Math.min(1, Math.max(0, (coeff + 10) / 20)));
+  }
+
+  private normalizeChroma(chroma: number[]): number[] {
+    // Chroma values are typically between 0 and 1
+    return chroma.map(val => Math.min(1, Math.max(0, val)));
+  }
+
+  // Cache management
+  setCacheEntry(trackId: string, features: MeydaAudioFeatures): void {
+    this.cache.set(trackId, {
+      data: features,
+      timestamp: Date.now(),
+      trackId
+    });
+  }
+
+  getCacheEntry(trackId: string): MeydaAudioFeatures | null {
+    const entry = this.cache.get(trackId);
+    if (entry && Date.now() - entry.timestamp < this.CACHE_DURATION) {
+      return entry.data;
+    }
+    return null;
+  }
+
+  clearCache(): void {
+    this.cache.clear();
+    console.log('Meyda cache cleared');
+  }
+
+  getCacheStats(): { size: number; entries: Array<{ trackId: string; age: number }> } {
+    const entries = Array.from(this.cache.entries()).map(([key, entry]) => ({
+      trackId: entry.trackId,
+      age: Date.now() - entry.timestamp
+    }));
+
+    return {
+      size: this.cache.size,
+      entries
+    };
+  }
+}
+
+// Export singleton instance
+export const meydaAudioService = new MeydaAudioService();
+export default meydaAudioService;

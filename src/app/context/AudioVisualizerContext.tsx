@@ -1,7 +1,6 @@
 'use client';
 
 import { createContext, useContext, useState, ReactNode } from 'react';
-import { ReccoBeatsAudioFeatures } from '../../types/reccobeats';
 
 interface AudioVisualizerContextType {
   audioElement: HTMLAudioElement | null;
@@ -13,7 +12,17 @@ interface AudioVisualizerContextType {
     danceability?: number;
     valence?: number;
   } | null;
-  reccoBeatsData: ReccoBeatsAudioFeatures | null;
+  meydaData: {
+    rms: number;
+    spectralCentroid: number;
+    spectralRolloff: number;
+    spectralFlux: number;
+    spectralSpread: number;
+    spectralKurtosis: number;
+    loudness: number;
+    mfcc: number[];
+    chroma: number[];
+  } | null;
   setAudioElement: (element: HTMLAudioElement | null) => void;
   setIsPlaying: (playing: boolean) => void;
   setSpotifyMode: (isSpotify: boolean) => void;
@@ -23,7 +32,17 @@ interface AudioVisualizerContextType {
     danceability?: number;
     valence?: number;
   } | null) => void;
-  setReccoBeatsData: (data: ReccoBeatsAudioFeatures | null) => void;
+  setMeydaData: (data: {
+    rms: number;
+    spectralCentroid: number;
+    spectralRolloff: number;
+    spectralFlux: number;
+    spectralSpread: number;
+    spectralKurtosis: number;
+    loudness: number;
+    mfcc: number[];
+    chroma: number[];
+  } | null) => void;
 }
 
 const AudioVisualizerContext = createContext<AudioVisualizerContextType | undefined>(undefined);
@@ -50,7 +69,17 @@ export const AudioVisualizerProvider = ({ children }: AudioVisualizerProviderPro
     danceability?: number;
     valence?: number;
   } | null>(null);
-  const [reccoBeatsData, setReccoBeatsData] = useState<ReccoBeatsAudioFeatures | null>(null);
+  const [meydaData, setMeydaData] = useState<{
+    rms: number;
+    spectralCentroid: number;
+    spectralRolloff: number;
+    spectralFlux: number;
+    spectralSpread: number;
+    spectralKurtosis: number;
+    loudness: number;
+    mfcc: number[];
+    chroma: number[];
+  } | null>(null);
 
   return (
     <AudioVisualizerContext.Provider
@@ -59,12 +88,12 @@ export const AudioVisualizerProvider = ({ children }: AudioVisualizerProviderPro
         isPlaying,
         isSpotifyMode,
         spotifyTrackData,
-        reccoBeatsData,
+        meydaData,
         setAudioElement,
         setIsPlaying,
         setSpotifyMode,
         setSpotifyTrackData,
-        setReccoBeatsData,
+        setMeydaData,
       }}
     >
       {children}

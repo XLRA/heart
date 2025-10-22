@@ -5,7 +5,7 @@ import Image from 'next/image';
 import { useSpotify } from '../context/SpotifyContext';
 import { useWebPlayer } from '../context/WebPlayerContext';
 import { useAudioVisualizer } from '../context/AudioVisualizerContext';
-import { reccoBeatsService } from '../../services/reccobeats';
+import { meydaAudioService } from '../../services/meyda';
 import PlaylistSelector from './PlaylistSelector';
 
 interface Song {
@@ -54,7 +54,7 @@ const AdvancedMusicPlayer = () => {
     setVolume, 
     seek 
   } = useWebPlayer();
-  const { setAudioElement, setIsPlaying, setSpotifyMode, setSpotifyTrackData, setReccoBeatsData } = useAudioVisualizer();
+  const { setAudioElement, setIsPlaying, setSpotifyMode, setSpotifyTrackData, setMeydaData } = useAudioVisualizer();
   
   const [showSeekTime, setShowSeekTime] = useState(false);
   const [seekTimeValue, setSeekTimeValue] = useState('00:00');
@@ -408,25 +408,32 @@ const AdvancedMusicPlayer = () => {
     }
   }, [isUsingSpotifyPlayer, playerState.is_paused, playerState.is_active, setIsPlaying, setSpotifyMode, setSpotifyTrackData]);
 
-  // Fetch ReccoBeats audio features for visualization
-  const fetchReccoBeatsFeatures = useCallback(async (trackId: string) => {
-    if (!trackId) return;
+  // Initialize Meyda audio analysis for Spotify tracks
+  const initializeMeydaAnalysis = useCallback(async (audioElement: HTMLAudioElement) => {
+    if (!audioElement) return;
     
     try {
-      const features = await reccoBeatsService.getTrackAudioFeatures(trackId);
-      setReccoBeatsData(features);
-      console.log('ReccoBeats audio features loaded:', features);
+      // Initialize Meyda audio context
+      await meydaAudioService.initializeAudioContext(audioElement);
+      
+      // Start Meyda analysis with callback
+      meydaAudioService.startAnalysis((features) => {
+        setMeydaData(features);
+        console.log('Meyda audio features:', features);
+      });
+      
+      console.log('Meyda audio analysis initialized');
     } catch (error) {
-      console.error('Error fetching ReccoBeats audio features:', error);
-      setReccoBeatsData(null);
+      console.error('Error initializing Meyda analysis:', error);
+      setMeydaData(null);
     }
-  }, [setReccoBeatsData]);
+  }, [setMeydaData]);
 
-  // Fetch Spotify track audio features for visualization
+  // Fetch Spotify track audio features and initialize Meyda analysis
   useEffect(() => {
     if (!isUsingSpotifyPlayer || !playerState.current_track?.id) {
       setSpotifyTrackData(null);
-      setReccoBeatsData(null);
+      setMeydaData(null);
       return;
     }
 
@@ -463,8 +470,12 @@ const AdvancedMusicPlayer = () => {
     };
 
     fetchTrackFeatures();
-    fetchReccoBeatsFeatures(playerState.current_track.id);
-  }, [isUsingSpotifyPlayer, playerState.current_track?.id, setSpotifyTrackData, setReccoBeatsData, fetchReccoBeatsFeatures]);
+    
+    // Initialize Meyda analysis for real-time audio features
+    if (audioRef.current) {
+      initializeMeydaAnalysis(audioRef.current);
+    }
+  }, [isUsingSpotifyPlayer, playerState.current_track?.id, setSpotifyTrackData, setMeydaData, initializeMeydaAnalysis]);
 
 
   useEffect(() => {
