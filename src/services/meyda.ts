@@ -1,5 +1,5 @@
 // Dynamic import for Meyda to handle potential build issues
-let Meyda: any = null;
+let Meyda: unknown = null;
 
 // Try to load Meyda dynamically
 const loadMeyda = async () => {
@@ -11,8 +11,9 @@ const loadMeyda = async () => {
       const meydaModule = await import('meyda');
       Meyda = meydaModule.default || meydaModule;
     } else {
-      // Server-side: use require
-      Meyda = require('meyda');
+      // Server-side: use dynamic import
+      const meydaModule = await import('meyda');
+      Meyda = meydaModule.default || meydaModule;
     }
     return Meyda;
   } catch (error) {
@@ -22,9 +23,20 @@ const loadMeyda = async () => {
 };
 
 // Meyda analyzer interface
-interface MeydaAnalyzerInstance {
+interface MeydaAnalyzer {
   start(): void;
   stop(): void;
+}
+
+// Meyda module interface
+interface MeydaModule {
+  createMeydaAnalyzer: (config: {
+    audioContext: AudioContext;
+    source: MediaElementAudioSourceNode;
+    bufferSize: number;
+    featureExtractors: string[];
+    callback: (features: Record<string, unknown>) => void;
+  }) => MeydaAnalyzer;
 }
 
 interface MeydaAudioFeatures {
@@ -52,7 +64,7 @@ class MeydaAudioService {
   private lastRequestTime = 0;
   private requestQueue: Array<() => Promise<unknown>> = [];
   private isProcessingQueue = false;
-  private currentAnalyzer: { start(): void; stop(): void } | null = null;
+  private currentAnalyzer: MeydaAnalyzer | null = null;
   private audioContext: AudioContext | null = null;
   private sourceNode: MediaElementAudioSourceNode | null = null;
 
@@ -151,7 +163,7 @@ class MeydaAudioService {
 
     try {
       // Create Meyda analyzer with comprehensive feature extraction
-      this.currentAnalyzer = meyda.createMeydaAnalyzer({
+      this.currentAnalyzer = (meyda as MeydaModule).createMeydaAnalyzer({
         audioContext: this.audioContext,
         source: this.sourceNode,
         bufferSize: 512,
