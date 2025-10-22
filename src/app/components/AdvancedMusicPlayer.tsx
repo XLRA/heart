@@ -417,7 +417,7 @@ const AdvancedMusicPlayer = () => {
       await meydaAudioService.initializeAudioContext(audioElement);
       
       // Start Meyda analysis with callback
-      meydaAudioService.startAnalysis((features) => {
+      await meydaAudioService.startAnalysis((features) => {
         setMeydaData(features);
         console.log('Meyda audio features:', features);
       });

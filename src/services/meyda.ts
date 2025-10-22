@@ -1,4 +1,25 @@
-import Meyda from 'meyda';
+// Dynamic import for Meyda to handle potential build issues
+let Meyda: any = null;
+
+// Try to load Meyda dynamically
+const loadMeyda = async () => {
+  if (Meyda) return Meyda;
+  
+  try {
+    if (typeof window !== 'undefined') {
+      // Client-side: use dynamic import
+      const meydaModule = await import('meyda');
+      Meyda = meydaModule.default || meydaModule;
+    } else {
+      // Server-side: use require
+      Meyda = require('meyda');
+    }
+    return Meyda;
+  } catch (error) {
+    console.warn('Meyda not available, using fallback implementation:', error);
+    return null;
+  }
+};
 
 // Meyda analyzer interface
 interface MeydaAnalyzerInstance {
@@ -69,6 +90,12 @@ class MeydaAudioService {
   }
 
   async initializeAudioContext(audioElement: HTMLAudioElement): Promise<void> {
+    const meyda = await loadMeyda();
+    if (!meyda) {
+      console.warn('Meyda not available, skipping audio context initialization');
+      return;
+    }
+
     try {
       // Create audio context
       this.audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
@@ -92,7 +119,26 @@ class MeydaAudioService {
     }
   }
 
-  startAnalysis(callback: (features: MeydaAudioFeatures) => void): void {
+  async startAnalysis(callback: (features: MeydaAudioFeatures) => void): Promise<void> {
+    const meyda = await loadMeyda();
+    if (!meyda) {
+      console.warn('Meyda not available, using fallback features');
+      // Provide fallback features
+      const fallbackFeatures: MeydaAudioFeatures = {
+        rms: 0.5,
+        spectralCentroid: 0.5,
+        spectralRolloff: 0.5,
+        spectralFlux: 0.3,
+        spectralSpread: 0.5,
+        spectralKurtosis: 0.5,
+        loudness: 0.5,
+        mfcc: Array(13).fill(0.5),
+        chroma: Array(12).fill(0.5)
+      };
+      callback(fallbackFeatures);
+      return;
+    }
+
     if (!this.audioContext || !this.sourceNode) {
       console.error('Audio context not initialized');
       return;
@@ -105,7 +151,7 @@ class MeydaAudioService {
 
     try {
       // Create Meyda analyzer with comprehensive feature extraction
-      this.currentAnalyzer = Meyda.createMeydaAnalyzer({
+      this.currentAnalyzer = meyda.createMeydaAnalyzer({
         audioContext: this.audioContext,
         source: this.sourceNode,
         bufferSize: 512,
@@ -140,14 +186,22 @@ class MeydaAudioService {
         }
       });
 
-      this.currentAnalyzer.start();
-      console.log('Meyda analysis started');
+      if (this.currentAnalyzer) {
+        this.currentAnalyzer.start();
+        console.log('Meyda analysis started');
+      }
     } catch (error) {
       console.error('Error starting Meyda analysis:', error);
     }
   }
 
-  stopAnalysis(): void {
+  async stopAnalysis(): Promise<void> {
+    const meyda = await loadMeyda();
+    if (!meyda) {
+      console.warn('Meyda not available, nothing to stop');
+      return;
+    }
+
     if (this.currentAnalyzer) {
       this.currentAnalyzer.stop();
       this.currentAnalyzer = null;
