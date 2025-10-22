@@ -101,7 +101,7 @@ class MeydaAudioService {
     this.isProcessingQueue = false;
   }
 
-  async initializeAudioContext(audioElement?: HTMLAudioElement): Promise<void> {
+  async initializeAudioContext(): Promise<void> {
     const meyda = await loadMeyda();
     if (!meyda) {
       console.warn('Meyda not available, skipping audio context initialization');
@@ -433,7 +433,7 @@ class MeydaAudioService {
         clearInterval(interval);
         this.currentAnalyzer = null;
       }
-    } as any;
+    } as MeydaAnalyzer;
   }
 
   // Cache management

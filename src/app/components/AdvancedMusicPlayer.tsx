@@ -410,13 +410,13 @@ const AdvancedMusicPlayer = () => {
   }, [isUsingSpotifyPlayer, playerState.is_paused, playerState.is_active, setIsPlaying, setSpotifyMode, setSpotifyTrackData]);
 
   // Initialize Meyda audio analysis for Spotify tracks
-  const initializeMeydaAnalysis = useCallback(async (audioElement?: HTMLAudioElement) => {
+  const initializeMeydaAnalysis = useCallback(async () => {
     try {
       // Show permission notification
       setShowMicrophonePermission(true);
       
       // Initialize Meyda audio context (will create synthetic audio source for Spotify)
-      await meydaAudioService.initializeAudioContext(audioElement);
+      await meydaAudioService.initializeAudioContext();
       
       // Start Meyda analysis with callback and track data
       await meydaAudioService.startAnalysis((features) => {
