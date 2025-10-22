@@ -1,6 +1,7 @@
 import Meyda from 'meyda';
 
-interface MeydaAnalyzer {
+// Meyda analyzer interface
+interface MeydaAnalyzerInstance {
   start(): void;
   stop(): void;
 }
@@ -30,7 +31,7 @@ class MeydaAudioService {
   private lastRequestTime = 0;
   private requestQueue: Array<() => Promise<unknown>> = [];
   private isProcessingQueue = false;
-  private currentAnalyzer: MeydaAnalyzer | null = null;
+  private currentAnalyzer: { start(): void; stop(): void } | null = null;
   private audioContext: AudioContext | null = null;
   private sourceNode: MediaElementAudioSourceNode | null = null;
 
