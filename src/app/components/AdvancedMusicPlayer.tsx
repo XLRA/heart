@@ -65,6 +65,7 @@ const AdvancedMusicPlayer = () => {
   const [showPlaylistSelector, setShowPlaylistSelector] = useState(false);
   const [currentPlaylistSongs, setCurrentPlaylistSongs] = useState<Song[]>([]);
   const [isUsingSpotifyPlayer, setIsUsingSpotifyPlayer] = useState(false);
+  const [showMicrophonePermission, setShowMicrophonePermission] = useState(false);
   const [localPlayerState, setLocalPlayerState] = useState({
     is_paused: true,
     is_active: false,
@@ -409,11 +410,12 @@ const AdvancedMusicPlayer = () => {
   }, [isUsingSpotifyPlayer, playerState.is_paused, playerState.is_active, setIsPlaying, setSpotifyMode, setSpotifyTrackData]);
 
   // Initialize Meyda audio analysis for Spotify tracks
-  const initializeMeydaAnalysis = useCallback(async (audioElement: HTMLAudioElement) => {
-    if (!audioElement) return;
-    
+  const initializeMeydaAnalysis = useCallback(async (audioElement?: HTMLAudioElement) => {
     try {
-      // Initialize Meyda audio context
+      // Show permission notification
+      setShowMicrophonePermission(true);
+      
+      // Initialize Meyda audio context (will request microphone permission for Spotify)
       await meydaAudioService.initializeAudioContext(audioElement);
       
       // Start Meyda analysis with callback
@@ -423,9 +425,11 @@ const AdvancedMusicPlayer = () => {
       });
       
       console.log('Meyda audio analysis initialized');
+      setShowMicrophonePermission(false);
     } catch (error) {
       console.error('Error initializing Meyda analysis:', error);
       setMeydaData(null);
+      setShowMicrophonePermission(false);
     }
   }, [setMeydaData]);
 
@@ -442,6 +446,7 @@ const AdvancedMusicPlayer = () => {
         const token = localStorage.getItem('spotify_access_token');
         if (!token) return;
 
+        // Try the audio-features endpoint first
         const response = await fetch(`https://api.spotify.com/v1/audio-features/${playerState.current_track?.id}`, {
           headers: {
             'Authorization': `Bearer ${token}`
@@ -455,6 +460,23 @@ const AdvancedMusicPlayer = () => {
             energy: features.energy,
             danceability: features.danceability,
             valence: features.valence
+          });
+        } else if (response.status === 403) {
+          console.warn('Spotify audio-features endpoint deprecated (403), using fallback values');
+          // Use fallback values when API is deprecated
+          setSpotifyTrackData({
+            tempo: 120,
+            energy: 0.5,
+            danceability: 0.5,
+            valence: 0.5
+          });
+        } else {
+          console.warn(`Spotify audio-features failed with status ${response.status}, using fallback values`);
+          setSpotifyTrackData({
+            tempo: 120,
+            energy: 0.5,
+            danceability: 0.5,
+            valence: 0.5
           });
         }
       } catch (error) {
@@ -472,9 +494,8 @@ const AdvancedMusicPlayer = () => {
     fetchTrackFeatures();
     
     // Initialize Meyda analysis for real-time audio features
-    if (audioRef.current) {
-      initializeMeydaAnalysis(audioRef.current);
-    }
+    // For Spotify tracks, this will request microphone permission to capture the audio being played
+    initializeMeydaAnalysis();
   }, [isUsingSpotifyPlayer, playerState.current_track?.id, setSpotifyTrackData, setMeydaData, initializeMeydaAnalysis]);
 
 
@@ -500,7 +521,30 @@ const AdvancedMusicPlayer = () => {
   }, []);
 
   return (
-    <div className="fixed bottom-8 left-0 z-50" style={{ padding: '0 0 0 20px' }}>
+    <>
+      {/* Microphone Permission Notification */}
+      {showMicrophonePermission && (
+        <div style={{
+          position: 'fixed',
+          top: '20px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          backgroundColor: '#1db954',
+          color: 'white',
+          padding: '12px 20px',
+          borderRadius: '8px',
+          zIndex: 10000,
+          fontSize: '14px',
+          fontWeight: '500',
+          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)',
+          textAlign: 'center',
+          maxWidth: '400px'
+        }}>
+          🎤 Allow microphone access to analyze Spotify audio in real-time
+        </div>
+      )}
+      
+      <div className="fixed bottom-8 left-0 z-50" style={{ padding: '0 0 0 20px' }}>
       <div id="player-container" style={{
         width: '500px',
         height: '100px',
@@ -937,6 +981,7 @@ const AdvancedMusicPlayer = () => {
         }
       `}</style>
     </div>
+    </>
   );
 };
 

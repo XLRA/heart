@@ -101,7 +101,7 @@ class MeydaAudioService {
     this.isProcessingQueue = false;
   }
 
-  async initializeAudioContext(audioElement: HTMLAudioElement): Promise<void> {
+  async initializeAudioContext(audioElement?: HTMLAudioElement): Promise<void> {
     const meyda = await loadMeyda();
     if (!meyda) {
       console.warn('Meyda not available, skipping audio context initialization');
@@ -109,6 +109,9 @@ class MeydaAudioService {
     }
 
     try {
+      // Clean up existing connections first
+      this.cleanup();
+      
       // Create audio context
       this.audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
       
@@ -117,13 +120,42 @@ class MeydaAudioService {
         await this.audioContext.resume();
       }
       
-      // Create source from audio element
-      this.sourceNode = this.audioContext.createMediaElementSource(audioElement);
-      
-      // Connect the audio graph
-      this.sourceNode.connect(this.audioContext.destination);
-      
-      console.log('Meyda audio context initialized');
+      // For Spotify Web Player, we need a different approach
+      // Since Spotify Web Player doesn't give us direct access to the audio element,
+      // we'll use a microphone-based approach to capture the audio being played
+      try {
+        // Request microphone access to capture the audio being played through speakers
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false
+          }
+        });
+        
+        this.sourceNode = this.audioContext.createMediaStreamSource(stream) as unknown as MediaElementAudioSourceNode;
+        this.sourceNode.connect(this.audioContext.destination);
+        console.log('Meyda audio context initialized with microphone capture');
+        console.log('Note: Make sure your speakers are playing the Spotify audio for analysis');
+      } catch {
+        console.warn('Microphone access not available, trying alternative approach');
+        
+        // Fallback: Try to use the provided audio element if available
+        if (audioElement) {
+          try {
+            this.sourceNode = this.audioContext.createMediaElementSource(audioElement);
+            this.sourceNode.connect(this.audioContext.destination);
+            console.log('Meyda audio context initialized with provided audio element');
+            return;
+          } catch {
+            console.warn('Audio element already connected, using fallback features');
+          }
+        }
+        
+        // If all else fails, we'll use fallback features
+        this.audioContext = null;
+        this.sourceNode = null;
+      }
     } catch (error) {
       console.error('Error initializing Meyda audio context:', error);
       this.audioContext = null;
@@ -152,7 +184,20 @@ class MeydaAudioService {
     }
 
     if (!this.audioContext || !this.sourceNode) {
-      console.error('Audio context not initialized');
+      console.warn('Audio context not initialized, using fallback features');
+      // Provide fallback features when audio context fails
+      const fallbackFeatures: MeydaAudioFeatures = {
+        rms: 0.5,
+        spectralCentroid: 0.5,
+        spectralRolloff: 0.5,
+        spectralFlux: 0.3,
+        spectralSpread: 0.5,
+        spectralKurtosis: 0.5,
+        loudness: 0.5,
+        mfcc: Array(13).fill(0.5),
+        chroma: Array(12).fill(0.5)
+      };
+      callback(fallbackFeatures);
       return;
     }
 
