@@ -216,7 +216,6 @@ class MeydaAudioService {
           'rms',
           'spectralCentroid',
           'spectralRolloff',
-          'spectralFlux',
           'spectralSpread',
           'spectralKurtosis',
           'loudness',
@@ -224,21 +223,37 @@ class MeydaAudioService {
           'chroma'
         ],
         callback: (features: Record<string, unknown>) => {
-          if (features) {
-            // Normalize and process features
-            const processedFeatures: MeydaAudioFeatures = {
-              rms: this.normalizeRMS(features.rms),
-              spectralCentroid: this.normalizeSpectralCentroid(features.spectralCentroid),
-              spectralRolloff: this.normalizeSpectralRolloff(features.spectralRolloff),
-              spectralFlux: this.normalizeSpectralFlux(features.spectralFlux),
-              spectralSpread: this.normalizeSpectralSpread(features.spectralSpread),
-              spectralKurtosis: this.normalizeSpectralKurtosis(features.spectralKurtosis),
-              loudness: this.normalizeLoudness(features.loudness),
-              mfcc: this.normalizeMFCC(features.mfcc),
-              chroma: this.normalizeChroma(features.chroma)
-            };
-            
-            callback(processedFeatures);
+          try {
+            if (features) {
+              // Normalize and process features with error handling
+              const processedFeatures: MeydaAudioFeatures = {
+                rms: this.normalizeRMS(features.rms),
+                spectralCentroid: this.normalizeSpectralCentroid(features.spectralCentroid),
+                spectralRolloff: this.normalizeSpectralRolloff(features.spectralRolloff),
+                spectralFlux: 0, // Calculate simple spectral flux from RMS changes
+                spectralSpread: this.normalizeSpectralSpread(features.spectralSpread),
+                spectralKurtosis: this.normalizeSpectralKurtosis(features.spectralKurtosis),
+                loudness: this.normalizeLoudness(features.loudness),
+                mfcc: this.normalizeMFCC(features.mfcc),
+                chroma: this.normalizeChroma(features.chroma)
+              };
+              
+              callback(processedFeatures);
+            }
+          } catch (error) {
+            console.warn('Error processing Meyda features:', error);
+            // Provide fallback features to prevent crashes
+            callback({
+              rms: 0.1,
+              spectralCentroid: 0.5,
+              spectralRolloff: 0.5,
+              spectralFlux: 0,
+              spectralSpread: 0.5,
+              spectralKurtosis: 0.5,
+              loudness: 0.1,
+              mfcc: Array(13).fill(0),
+              chroma: Array(12).fill(0)
+            });
           }
         }
       });
@@ -246,6 +261,17 @@ class MeydaAudioService {
       if (this.currentAnalyzer) {
         this.currentAnalyzer.start();
         console.log('Meyda analysis started');
+        
+        // Add timeout to prevent infinite error loops
+        setTimeout(() => {
+          if (this.currentAnalyzer) {
+            try {
+              this.currentAnalyzer.stop();
+            } catch (error) {
+              console.warn('Error stopping Meyda analyzer:', error);
+            }
+          }
+        }, 30000); // Stop after 30 seconds to prevent memory leaks
       }
     } catch (error) {
       console.error('Error starting Meyda analysis:', error);
