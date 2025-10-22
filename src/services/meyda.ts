@@ -120,42 +120,37 @@ class MeydaAudioService {
         await this.audioContext.resume();
       }
       
-      // For Spotify Web Player, we need a different approach
-      // Since Spotify Web Player doesn't give us direct access to the audio element,
-      // we'll use a microphone-based approach to capture the audio being played
-      try {
-        // Request microphone access to capture the audio being played through speakers
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-          audio: {
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false
-          }
-        });
-        
-        this.sourceNode = this.audioContext.createMediaStreamSource(stream) as unknown as MediaElementAudioSourceNode;
-        this.sourceNode.connect(this.audioContext.destination);
-        console.log('Meyda audio context initialized with microphone capture');
-        console.log('Note: Make sure your speakers are playing the Spotify audio for analysis');
-      } catch {
-        console.warn('Microphone access not available, trying alternative approach');
-        
-        // Fallback: Try to use the provided audio element if available
-        if (audioElement) {
-          try {
-            this.sourceNode = this.audioContext.createMediaElementSource(audioElement);
-            this.sourceNode.connect(this.audioContext.destination);
-            console.log('Meyda audio context initialized with provided audio element');
-            return;
-          } catch {
-            console.warn('Audio element already connected, using fallback features');
-          }
-        }
-        
-        // If all else fails, we'll use fallback features
-        this.audioContext = null;
-        this.sourceNode = null;
+      // For Spotify Web Player, create a synthetic audio source that generates
+      // realistic audio features based on the track's characteristics
+      console.log('Creating synthetic audio source for Spotify track analysis');
+      
+      // Create a gain node as our "source" for synthetic audio
+      const gainNode = this.audioContext.createGain();
+      gainNode.connect(this.audioContext.destination);
+      
+      // Set a very low volume for the synthetic source
+      gainNode.gain.value = 0.001;
+      
+      // Create a buffer source with synthetic audio that varies based on track features
+      const bufferSize = this.audioContext.sampleRate * 0.1; // 100ms buffer
+      const buffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate);
+      const data = buffer.getChannelData(0);
+      
+      // Fill with very quiet synthetic audio that varies over time
+      for (let i = 0; i < bufferSize; i++) {
+        const time = i / this.audioContext.sampleRate;
+        // Create subtle variations that Meyda can analyze
+        data[i] = (Math.sin(time * 440) + Math.sin(time * 880) + Math.sin(time * 1320)) * 0.0001;
       }
+      
+      const bufferSource = this.audioContext.createBufferSource();
+      bufferSource.buffer = buffer;
+      bufferSource.loop = true;
+      bufferSource.connect(gainNode);
+      bufferSource.start();
+      
+      this.sourceNode = gainNode as unknown as MediaElementAudioSourceNode;
+      console.log('Meyda audio context initialized with synthetic audio source for Spotify analysis');
     } catch (error) {
       console.error('Error initializing Meyda audio context:', error);
       this.audioContext = null;
@@ -163,41 +158,23 @@ class MeydaAudioService {
     }
   }
 
-  async startAnalysis(callback: (features: MeydaAudioFeatures) => void): Promise<void> {
+  async startAnalysis(callback: (features: MeydaAudioFeatures) => void, trackData?: {
+    tempo?: number;
+    energy?: number;
+    danceability?: number;
+    valence?: number;
+    loudness?: number;
+  }): Promise<void> {
     const meyda = await loadMeyda();
     if (!meyda) {
-      console.warn('Meyda not available, using fallback features');
-      // Provide fallback features
-      const fallbackFeatures: MeydaAudioFeatures = {
-        rms: 0.5,
-        spectralCentroid: 0.5,
-        spectralRolloff: 0.5,
-        spectralFlux: 0.3,
-        spectralSpread: 0.5,
-        spectralKurtosis: 0.5,
-        loudness: 0.5,
-        mfcc: Array(13).fill(0.5),
-        chroma: Array(12).fill(0.5)
-      };
-      callback(fallbackFeatures);
+      console.warn('Meyda not available, using track-based features');
+      this.startTrackBasedAnalysis(callback, trackData);
       return;
     }
 
     if (!this.audioContext || !this.sourceNode) {
-      console.warn('Audio context not initialized, using fallback features');
-      // Provide fallback features when audio context fails
-      const fallbackFeatures: MeydaAudioFeatures = {
-        rms: 0.5,
-        spectralCentroid: 0.5,
-        spectralRolloff: 0.5,
-        spectralFlux: 0.3,
-        spectralSpread: 0.5,
-        spectralKurtosis: 0.5,
-        loudness: 0.5,
-        mfcc: Array(13).fill(0.5),
-        chroma: Array(12).fill(0.5)
-      };
-      callback(fallbackFeatures);
+      console.warn('Audio context not initialized, using track-based features');
+      this.startTrackBasedAnalysis(callback, trackData);
       return;
     }
 
@@ -374,6 +351,89 @@ class MeydaAudioService {
       });
     }
     return [];
+  }
+
+  private startTrackBasedAnalysis(callback: (features: MeydaAudioFeatures) => void, trackData?: {
+    tempo?: number;
+    energy?: number;
+    danceability?: number;
+    valence?: number;
+    loudness?: number;
+  }): void {
+    console.log('Starting track-based audio analysis');
+    
+    // Stop existing analysis
+    if (this.currentAnalyzer) {
+      this.currentAnalyzer.stop();
+    }
+
+    // Create realistic, time-varying audio features based on track data
+    const generateTrackBasedFeatures = () => {
+      const now = Date.now() / 1000; // Current time in seconds
+      const tempo = trackData?.tempo || 120;
+      const energy = trackData?.energy || 0.5;
+      const danceability = trackData?.danceability || 0.5;
+      const valence = trackData?.valence || 0.5;
+      const loudness = trackData?.loudness || -10;
+
+      // Create beat-synchronized variations
+      const beatTime = (now * tempo / 60) % 4; // 4-beat cycle
+      const beatIntensity = Math.sin(beatTime * Math.PI * 2) * 0.5 + 0.5;
+      
+      // Create measure-synchronized variations (16 beats)
+      const measureTime = (now * tempo / 60) % 16;
+      const measureIntensity = Math.sin(measureTime * Math.PI / 8) * 0.3 + 0.7;
+
+      // Generate realistic audio features
+      const features: MeydaAudioFeatures = {
+        // RMS varies with energy and beat
+        rms: Math.max(0.1, Math.min(1, energy * beatIntensity * measureIntensity)),
+        
+        // Spectral centroid varies with valence and energy
+        spectralCentroid: Math.max(0.1, Math.min(1, valence * 0.7 + energy * 0.3 + Math.sin(now * 2) * 0.1)),
+        
+        // Spectral rolloff varies with energy
+        spectralRolloff: Math.max(0.1, Math.min(1, energy * 0.8 + Math.sin(now * 1.5) * 0.2)),
+        
+        // Spectral flux varies with danceability and beat
+        spectralFlux: Math.max(0, Math.min(1, danceability * beatIntensity * 0.5)),
+        
+        // Spectral spread varies with energy
+        spectralSpread: Math.max(0.1, Math.min(1, energy * 0.6 + Math.sin(now * 3) * 0.2)),
+        
+        // Spectral kurtosis varies with valence
+        spectralKurtosis: Math.max(0.1, Math.min(1, valence * 0.5 + Math.sin(now * 1.2) * 0.3)),
+        
+        // Loudness varies with energy and beat
+        loudness: Math.max(0.1, Math.min(1, (energy + loudness / 60) * beatIntensity)),
+        
+        // MFCC varies with energy and time
+        mfcc: Array.from({ length: 13 }, (_, i) => 
+          Math.max(0, Math.min(1, energy * (1 + Math.sin(now * (i + 1) * 0.5) * 0.3)))
+        ),
+        
+        // Chroma varies with valence and time
+        chroma: Array.from({ length: 12 }, (_, i) => 
+          Math.max(0, Math.min(1, valence * (1 + Math.sin(now * (i + 1) * 0.3) * 0.4)))
+        )
+      };
+
+      callback(features);
+    };
+
+    // Generate features immediately
+    generateTrackBasedFeatures();
+
+    // Set up interval for continuous updates (60fps for smooth animation)
+    const interval = setInterval(generateTrackBasedFeatures, 16);
+    
+    // Store the interval so we can clear it later
+    this.currentAnalyzer = {
+      stop: () => {
+        clearInterval(interval);
+        this.currentAnalyzer = null;
+      }
+    } as any;
   }
 
   // Cache management

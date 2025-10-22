@@ -107,36 +107,22 @@ const HeartAnimation = ({
     if (!meydaData || !isPlaying) return;
 
     const convertMeydaToAudioData = () => {
-      // Convert Meyda features to audioData format with aggressive amplification
-      const bass = Math.max(0.3, Math.min(1, meydaData.rms * 500)); // Much more amplification for bass
-      const mid = Math.max(0.3, Math.min(1, meydaData.spectralCentroid * 50)); // Much more amplification for mid
-      const treble = Math.max(0.3, Math.min(1, meydaData.spectralRolloff / 100)); // Much more amplification for treble
-      const overall = Math.max(0.4, Math.min(1, meydaData.loudness * 10)); // Much more amplification for overall
+      // Convert Meyda features to audioData format (normal amplification)
+      const bass = Math.max(0.1, Math.min(1, meydaData.rms * 2)); // Normal amplification for bass
+      const mid = Math.max(0.1, Math.min(1, meydaData.spectralCentroid)); // Normal amplification for mid
+      const treble = Math.max(0.1, Math.min(1, meydaData.spectralRolloff / 20000)); // Normal amplification for treble
+      const overall = Math.max(0.2, Math.min(1, meydaData.loudness / 100)); // Normal amplification for overall
       
-      // More sensitive beat detection with artificial movement
-      const beat = meydaData.spectralFlux > 0.001 || meydaData.rms > 0.0001 || Math.random() < 0.3; // More frequent beats
+      // Beat detection from spectral flux and RMS
+      const beat = meydaData.spectralFlux > 0.1 || meydaData.rms > 0.3;
 
-      // Add some artificial variation to ensure movement even with quiet audio
-      const timeVariation = Math.sin(Date.now() * 0.001) * 0.2;
-      const artificialBass = bass + timeVariation;
-      const artificialMid = mid + timeVariation * 0.5;
-      const artificialTreble = treble + timeVariation * 0.3;
-      const artificialOverall = overall + timeVariation;
-
-      console.log('Converting Meyda to audioData:', { 
-        bass: artificialBass, 
-        mid: artificialMid, 
-        treble: artificialTreble, 
-        overall: artificialOverall, 
-        beat, 
-        meydaData 
-      });
+      console.log('Converting Meyda to audioData:', { bass, mid, treble, overall, beat, meydaData });
 
       setAudioData({
-        bass: Math.max(0.3, Math.min(1, artificialBass)),
-        mid: Math.max(0.3, Math.min(1, artificialMid)),
-        treble: Math.max(0.3, Math.min(1, artificialTreble)),
-        overall: Math.max(0.4, Math.min(1, artificialOverall)),
+        bass,
+        mid,
+        treble,
+        overall,
         beat
       });
     };
@@ -612,21 +598,21 @@ const HeartAnimation = ({
       let bassPulse = 1;
       
       if (currentIsPlaying && currentAudioData.overall > 0) {
-        // Base pulse from overall audio level (much more dramatic for Meyda)
-        basePulse = 1 + (currentAudioData.overall * 1.5);
+        // Base pulse from overall audio level (reasonable for track-based analysis)
+        basePulse = 1 + (currentAudioData.overall * 0.8);
         
-        // Bass-driven pulse (heart thumping) - very dramatic
-        bassPulse = 1 + (currentAudioData.bass * 1.2);
+        // Bass-driven pulse (heart thumping) - reasonable
+        bassPulse = 1 + (currentAudioData.bass * 0.8);
         
-        // Beat detection for strong heart beats - very responsive
+        // Beat detection for strong heart beats - responsive
         if (currentAudioData.beat) {
-          beatPulse = 2.0 + (currentAudioData.bass * 1.0); // Very dramatic beat
+          beatPulse = 1.5 + (currentAudioData.bass * 0.5); // Reasonable beat
           lastBeatTime = time;
         } else {
           // Beat decay - heart returns to normal size after beat
           const timeSinceBeat = time - lastBeatTime;
-          const beatDecay = Math.max(0, 1 - timeSinceBeat * 0.05);
-          beatPulse = 1 + beatDecay * 0.5;
+          const beatDecay = Math.max(0, 1 - timeSinceBeat * 0.03);
+          beatPulse = 1 + beatDecay * 0.3;
         }
       }
       
@@ -636,13 +622,13 @@ const HeartAnimation = ({
       // Combine all pulse factors for balanced effect
       const finalPulse = basePulse * bassPulse * beatPulse * naturalHeartbeat;
       
-      // Ensure minimum and maximum pulse bounds (allow for more dramatic effects)
-      const clampedPulse = Math.max(0.3, Math.min(3.0, finalPulse));
+      // Ensure minimum and maximum pulse bounds (reasonable effects)
+      const clampedPulse = Math.max(0.5, Math.min(2.0, finalPulse));
       
       pulse(clampedPulse, clampedPulse);
       
       // Adjust time progression based on audio intensity for more dynamic movement
-      const timeMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 2.0) : 1;
+      const timeMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 1.0) : 1;
       time += ((Math.sin(time)) < 0 ? 12 : (naturalHeartbeat > 1.2) ? .3 : 1.5) * config.timeDelta * timeMultiplier;
       
       // Adjust trail opacity based on audio (more dramatic)
@@ -742,7 +728,7 @@ const HeartAnimation = ({
             opacity: 0.7,
             zIndex: 1000,
             transition: 'all 0.1s ease',
-            transform: `scale(${1 + audioData.overall * 2.0})`,
+            transform: `scale(${1 + audioData.overall * 0.5})`,
             boxShadow: audioData.beat ? '0 0 20px rgba(255, 0, 150, 0.8)' : 'none'
           }}
             title={

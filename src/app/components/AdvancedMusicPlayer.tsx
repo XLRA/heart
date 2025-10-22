@@ -54,7 +54,7 @@ const AdvancedMusicPlayer = () => {
     setVolume, 
     seek 
   } = useWebPlayer();
-  const { setAudioElement, setIsPlaying, setSpotifyMode, setSpotifyTrackData, setMeydaData } = useAudioVisualizer();
+  const { setAudioElement, setIsPlaying, setSpotifyMode, spotifyTrackData, setSpotifyTrackData, setMeydaData } = useAudioVisualizer();
   
   const [showSeekTime, setShowSeekTime] = useState(false);
   const [seekTimeValue, setSeekTimeValue] = useState('00:00');
@@ -415,14 +415,14 @@ const AdvancedMusicPlayer = () => {
       // Show permission notification
       setShowMicrophonePermission(true);
       
-      // Initialize Meyda audio context (will request microphone permission for Spotify)
+      // Initialize Meyda audio context (will create synthetic audio source for Spotify)
       await meydaAudioService.initializeAudioContext(audioElement);
       
-      // Start Meyda analysis with callback
+      // Start Meyda analysis with callback and track data
       await meydaAudioService.startAnalysis((features) => {
         setMeydaData(features);
         console.log('Meyda audio features:', features);
-      });
+      }, spotifyTrackData || undefined);
       
       console.log('Meyda audio analysis initialized');
       setShowMicrophonePermission(false);
@@ -431,7 +431,7 @@ const AdvancedMusicPlayer = () => {
       setMeydaData(null);
       setShowMicrophonePermission(false);
     }
-  }, [setMeydaData]);
+  }, [setMeydaData, spotifyTrackData]);
 
   // Fetch Spotify track audio features and initialize Meyda analysis
   useEffect(() => {
