@@ -20,6 +20,7 @@ interface SpotifyPlaylistData {
         album: { images: Array<{ url: string }> };
         duration_ms: number;
         id: string;
+        uri?: string;
         external_urls?: { spotify: string };
       };
     }>;
@@ -34,7 +35,7 @@ interface PlaylistSelectorProps {
 }
 
 const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSelectorProps) => {
-  const { playlists, loadUserPlaylists, loadPlaylistTracks } = useSpotify();
+  const { playlists, loadUserPlaylists, loadPlaylistTracks, spotifyApi } = useSpotify();
   const [loading, setLoading] = useState(false);
   const [selectedPlaylist, setSelectedPlaylist] = useState<SpotifyPlaylistData | null>(null);
 
@@ -48,16 +49,46 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
     setLoading(true);
     setSelectedPlaylist(playlist);
     
-    try {
-      const tracks = await loadPlaylistTracks(playlist.id);
-      const playlistWithTracks: SpotifyPlaylistData = {
-        ...playlist,
-        tracks: {
-          total: tracks.length,
-          items: tracks.map(track => ({ track }))
-        }
-      };
-      onPlaylistSelect(playlistWithTracks);
+      try {
+        // Load all tracks (not just those with preview URLs) for Web Player compatibility
+        if (spotifyApi) {
+        const tracksData = await spotifyApi.getPlaylistTracks(playlist.id);
+        const allTracks = tracksData.items
+          .map(item => item.track)
+          .filter((track): track is SpotifyApi.TrackObjectFull => 
+            track !== null && track !== undefined && 'type' in track && track.type === 'track'
+          )
+          .map(track => ({
+            name: track.name,
+            artists: track.artists || [],
+            album: track.album || { images: [] },
+            duration_ms: track.duration_ms || 0,
+            id: track.id,
+            preview_url: track.preview_url || null,
+            uri: track.uri || `spotify:track:${track.id}`,
+            external_urls: track.external_urls || { spotify: `https://open.spotify.com/track/${track.id}` }
+          }));
+        
+        const playlistWithTracks: SpotifyPlaylistData = {
+          ...playlist,
+          tracks: {
+            total: allTracks.length,
+            items: allTracks.map(track => ({ track }))
+          }
+        };
+        onPlaylistSelect(playlistWithTracks);
+      } else {
+        // Fallback to preview URLs only if no API available
+        const tracks = await loadPlaylistTracks(playlist.id);
+        const playlistWithTracks: SpotifyPlaylistData = {
+          ...playlist,
+          tracks: {
+            total: tracks.length,
+            items: tracks.map(track => ({ track }))
+          }
+        };
+        onPlaylistSelect(playlistWithTracks);
+      }
     } catch (error) {
       console.error('Error loading playlist tracks:', error);
     } finally {
@@ -133,11 +164,14 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
         </div>
 
         {/* Playlist List */}
-        <div style={{
-          flex: 1,
-          overflowY: 'auto',
-          padding: '16px 24px'
-        }}>
+        <div 
+          className="playlist-list-container"
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            padding: '16px 24px'
+          }}>
           {playlists.length === 0 ? (
             <div style={{
               textAlign: 'center',
@@ -288,6 +322,30 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
         @keyframes spin {
           0% { transform: rotate(0deg); }
           100% { transform: rotate(360deg); }
+        }
+      `}</style>
+      <style jsx global>{`
+        .playlist-list-container::-webkit-scrollbar {
+          width: 8px;
+        }
+        
+        .playlist-list-container::-webkit-scrollbar-track {
+          background: #151518;
+          border-radius: 4px;
+        }
+        
+        .playlist-list-container::-webkit-scrollbar-thumb {
+          background: #252529;
+          border-radius: 4px;
+        }
+        
+        .playlist-list-container::-webkit-scrollbar-thumb:hover {
+          background: #353539;
+        }
+        
+        .playlist-list-container {
+          scrollbar-width: thin;
+          scrollbar-color: #252529 #151518;
         }
       `}</style>
     </div>

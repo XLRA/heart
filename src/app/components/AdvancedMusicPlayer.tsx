@@ -7,6 +7,7 @@ import { useWebPlayer } from '../context/WebPlayerContext';
 import { useAudioVisualizer } from '../context/AudioVisualizerContext';
 import { meydaAudioService } from '../../services/meyda';
 import PlaylistSelector from './PlaylistSelector';
+import PlaylistSongList from './PlaylistSongList';
 
 interface Song {
   title: string;
@@ -63,6 +64,7 @@ const AdvancedMusicPlayer = () => {
   const [isMuted, setIsMuted] = useState(false);
   const [isDraggingVolume, setIsDraggingVolume] = useState(false);
   const [showPlaylistSelector, setShowPlaylistSelector] = useState(false);
+  const [showPlaylistSongs, setShowPlaylistSongs] = useState(false);
   const [currentPlaylistSongs, setCurrentPlaylistSongs] = useState<Song[]>([]);
   const [isUsingSpotifyPlayer, setIsUsingSpotifyPlayer] = useState(false);
   const [showMicrophonePermission, setShowMicrophonePermission] = useState(false);
@@ -300,6 +302,7 @@ const AdvancedMusicPlayer = () => {
       setCurrentPlaylist(playlist);
       setIsUsingSpotifyPlayer(true);
       setShowPlaylistSelector(false);
+      setShowPlaylistSongs(true); // Show playlist songs panel
     } else {
       // Fallback to preview URLs (limited functionality)
       const spotifySongs: Song[] = (playlist.tracks?.items || []).map((item) => {
@@ -319,6 +322,7 @@ const AdvancedMusicPlayer = () => {
       setCurrentPlaylist(playlist);
       setIsUsingSpotifyPlayer(false);
       setShowPlaylistSelector(false);
+      setShowPlaylistSongs(true); // Show playlist songs panel
     }
   };
 
@@ -332,6 +336,7 @@ const AdvancedMusicPlayer = () => {
     setCurrentPlaylistSongs([]);
     setCurrentPlaylist(null);
     setIsUsingSpotifyPlayer(false);
+    setShowPlaylistSongs(false);
     // Stop Spotify playback if active
     if (isReady && deviceId) {
       fetch('https://api.spotify.com/v1/me/player/pause', {
@@ -342,6 +347,12 @@ const AdvancedMusicPlayer = () => {
       }).catch(error => {
         console.error('Error pausing Spotify playback:', error);
       });
+    }
+  };
+
+  const handlePlaylistSongsToggle = () => {
+    if (currentPlaylist) {
+      setShowPlaylistSongs(!showPlaylistSongs);
     }
   };
 
@@ -551,6 +562,14 @@ const AdvancedMusicPlayer = () => {
         position: 'relative',
         marginBottom: '50px'
       }}>
+        {currentPlaylist && (
+          <PlaylistSongList
+            playlist={currentPlaylist}
+            isVisible={showPlaylistSongs}
+            onClose={() => setShowPlaylistSongs(false)}
+            currentTrackId={playerState.current_track?.id || null}
+          />
+        )}
         <div id="player-track" style={{
           position: 'absolute',
           top: (!currentPlayerState.is_paused && currentPlayerState.is_active) ? '-92px' : '0',
@@ -572,30 +591,56 @@ const AdvancedMusicPlayer = () => {
               flex: 1
             }}>{songs[0]?.title || 'No track'}</div>
             {currentPlaylist && (
-              <button
-                onClick={handleBackToDefault}
-                style={{
-                  backgroundColor: 'transparent',
-                  border: 'none',
-                  color: '#8f8f9d',
-                  cursor: 'pointer',
-                  padding: '4px',
-                  borderRadius: '4px',
-                  fontSize: '12px',
-                  transition: 'all 0.2s ease'
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = '#252529';
-                  e.currentTarget.style.color = '#ffffff';
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = 'transparent';
-                  e.currentTarget.style.color = '#8f8f9d';
-                }}
-                title="Back to default playlist"
-              >
-                <i className="fas fa-times"></i>
-              </button>
+              <>
+                <button
+                  onClick={handlePlaylistSongsToggle}
+                  style={{
+                    backgroundColor: 'transparent',
+                    border: 'none',
+                    color: showPlaylistSongs ? '#1db954' : '#8f8f9d',
+                    cursor: 'pointer',
+                    padding: '4px',
+                    borderRadius: '4px',
+                    fontSize: '12px',
+                    transition: 'all 0.2s ease'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.backgroundColor = '#252529';
+                    e.currentTarget.style.color = showPlaylistSongs ? '#1db954' : '#ffffff';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = 'transparent';
+                    e.currentTarget.style.color = showPlaylistSongs ? '#1db954' : '#8f8f9d';
+                  }}
+                  title={showPlaylistSongs ? "Hide playlist" : "Show playlist"}
+                >
+                  <i className={`fas ${showPlaylistSongs ? 'fa-chevron-down' : 'fa-chevron-up'}`}></i>
+                </button>
+                <button
+                  onClick={handleBackToDefault}
+                  style={{
+                    backgroundColor: 'transparent',
+                    border: 'none',
+                    color: '#8f8f9d',
+                    cursor: 'pointer',
+                    padding: '4px',
+                    borderRadius: '4px',
+                    fontSize: '12px',
+                    transition: 'all 0.2s ease'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.backgroundColor = '#252529';
+                    e.currentTarget.style.color = '#ffffff';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = 'transparent';
+                    e.currentTarget.style.color = '#8f8f9d';
+                  }}
+                  title="Back to default playlist"
+                >
+                  <i className="fas fa-times"></i>
+                </button>
+              </>
             )}
           </div>
           <div id="track-name" style={{
