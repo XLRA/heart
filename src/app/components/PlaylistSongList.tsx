@@ -34,7 +34,7 @@ const PlaylistSongList = ({ playlist, isVisible, onClose, currentTrackId }: Play
   const { playTrack, isReady, deviceId } = useWebPlayer();
   const [hoveredTrackId, setHoveredTrackId] = useState<string | null>(null);
 
-  if (!isVisible || !playlist.tracks?.items) return null;
+  if (!playlist.tracks?.items) return null;
 
   const tracks = playlist.tracks.items.filter(item => item.track).map(item => item.track);
 
@@ -74,7 +74,7 @@ const PlaylistSongList = ({ playlist, isVisible, onClose, currentTrackId }: Play
   return (
     <div style={{
       position: 'absolute',
-      bottom: '100%',
+      bottom: 'calc(100% + 75px)',
       left: '15px',
       right: '15px',
       maxHeight: '400px',
@@ -84,9 +84,13 @@ const PlaylistSongList = ({ playlist, isVisible, onClose, currentTrackId }: Play
       borderBottom: 'none',
       display: 'flex',
       flexDirection: 'column',
-      zIndex: 3,
+      zIndex: 1,
       overflow: 'hidden',
-      boxShadow: '0 -4px 20px rgba(0, 0, 0, 0.3)'
+      boxShadow: '0 -4px 20px rgba(0, 0, 0, 0.3)',
+      transform: isVisible ? 'translateY(0)' : 'translateY(calc(100% + 75px))',
+      opacity: isVisible ? 1 : 0,
+      transition: 'transform 0.3s ease-out, opacity 0.3s ease-out',
+      pointerEvents: isVisible ? 'auto' : 'none'
     }}>
       {/* Header */}
       <div style={{
