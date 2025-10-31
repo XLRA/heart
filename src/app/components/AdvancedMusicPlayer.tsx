@@ -136,7 +136,7 @@ const AdvancedMusicPlayer = () => {
     return `${minutes < 10 ? '0' + minutes : minutes}:${seconds < 10 ? '0' + seconds : seconds}`;
   };
 
-  const handleTogglePlay = () => {
+  const handleTogglePlay = useCallback(() => {
     if (isUsingSpotifyPlayer && isReady) {
       togglePlay();
     } else if (audioRef.current) {
@@ -146,21 +146,21 @@ const AdvancedMusicPlayer = () => {
         audioRef.current.pause();
       }
     }
-  };
+  }, [isUsingSpotifyPlayer, isReady, togglePlay, localPlayerState.is_paused]);
 
-  const handleNextSong = () => {
+  const handleNextSong = useCallback(() => {
     if (isUsingSpotifyPlayer && isReady) {
       nextTrack();
     }
     // For local songs, we'd need to implement this differently
-  };
+  }, [isUsingSpotifyPlayer, isReady, nextTrack]);
 
-  const handlePreviousSong = () => {
+  const handlePreviousSong = useCallback(() => {
     if (isUsingSpotifyPlayer && isReady) {
       previousTrack();
     }
     // For local songs, we'd need to implement this differently
-  };
+  }, [isUsingSpotifyPlayer, isReady, previousTrack]);
 
   const handleSeekHover = (e: React.MouseEvent<HTMLDivElement>) => {
     const seekBarContainer = e.currentTarget;
@@ -294,7 +294,7 @@ const AdvancedMusicPlayer = () => {
     setIsMuted(!isMuted);
   };
 
-  const handlePlaylistSelect = (playlist: SpotifyPlaylistData) => {
+  const handlePlaylistSelect = useCallback((playlist: SpotifyPlaylistData) => {
     if (isReady && deviceId) {
       // Use Spotify Web Player for full playback
       const playlistUri = `spotify:playlist:${playlist.id}`;
@@ -324,7 +324,7 @@ const AdvancedMusicPlayer = () => {
       setShowPlaylistSelector(false);
       setShowPlaylistSongs(true); // Show playlist songs panel
     }
-  };
+  }, [isReady, deviceId, playPlaylist, setCurrentPlaylist]);
 
   const handlePlaylistToggle = () => {
     if (isAuthenticated) {
@@ -432,10 +432,8 @@ const AdvancedMusicPlayer = () => {
       // Start Meyda analysis with callback and track data
       await meydaAudioService.startAnalysis((features) => {
         setMeydaData(features);
-        console.log('Meyda audio features:', features);
       }, spotifyTrackData || undefined);
       
-      console.log('Meyda audio analysis initialized');
       setShowMicrophonePermission(false);
     } catch (error) {
       console.error('Error initializing Meyda analysis:', error);
@@ -453,9 +451,31 @@ const AdvancedMusicPlayer = () => {
     }
 
     const fetchTrackFeatures = async () => {
+      // Check if audio-features endpoint is deprecated (cached)
+      const isDeprecated = localStorage.getItem('spotify_audio_features_deprecated') === 'true';
+      
+      if (isDeprecated) {
+        // Skip API call and use fallback values immediately
+        setSpotifyTrackData({
+          tempo: 120,
+          energy: 0.5,
+          danceability: 0.5,
+          valence: 0.5
+        });
+        return;
+      }
+
       try {
         const token = localStorage.getItem('spotify_access_token');
-        if (!token) return;
+        if (!token) {
+          setSpotifyTrackData({
+            tempo: 120,
+            energy: 0.5,
+            danceability: 0.5,
+            valence: 0.5
+          });
+          return;
+        }
 
         // Try the audio-features endpoint first
         const response = await fetch(`https://api.spotify.com/v1/audio-features/${playerState.current_track?.id}`, {
@@ -473,7 +493,8 @@ const AdvancedMusicPlayer = () => {
             valence: features.valence
           });
         } else if (response.status === 403) {
-          console.warn('Spotify audio-features endpoint deprecated (403), using fallback values');
+          // Cache deprecation status to avoid repeated calls
+          localStorage.setItem('spotify_audio_features_deprecated', 'true');
           // Use fallback values when API is deprecated
           setSpotifyTrackData({
             tempo: 120,
@@ -482,7 +503,6 @@ const AdvancedMusicPlayer = () => {
             valence: 0.5
           });
         } else {
-          console.warn(`Spotify audio-features failed with status ${response.status}, using fallback values`);
           setSpotifyTrackData({
             tempo: 120,
             energy: 0.5,
@@ -491,7 +511,6 @@ const AdvancedMusicPlayer = () => {
           });
         }
       } catch (error) {
-        console.error('Error fetching track features:', error);
         // Fallback to default values
         setSpotifyTrackData({
           tempo: 120,
@@ -507,7 +526,7 @@ const AdvancedMusicPlayer = () => {
     // Initialize Meyda analysis for real-time audio features
     // For Spotify tracks, this will request microphone permission to capture the audio being played
     initializeMeydaAnalysis();
-  }, [isUsingSpotifyPlayer, playerState.current_track?.id, setSpotifyTrackData, setMeydaData, initializeMeydaAnalysis]);
+  }, [isUsingSpotifyPlayer, playerState.current_track?.id, initializeMeydaAnalysis]);
 
 
   useEffect(() => {

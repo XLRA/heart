@@ -38,9 +38,6 @@ const PlaylistSongList = ({ playlist, isVisible, onClose, currentTrackId, isPlay
   if (!playlist.tracks?.items) return null;
 
   const tracks = playlist.tracks.items.filter(item => item.track).map(item => item.track);
-  
-  // Adjust position based on whether player-track panel is extended (92px) or collapsed (0px)
-  const playerTrackOffset = isPlayerExtended ? 92 : 0;
 
   const handleTrackClick = (track: SpotifyTrack) => {
     if (!isReady || !deviceId) {
@@ -75,10 +72,20 @@ const PlaylistSongList = ({ playlist, isVisible, onClose, currentTrackId, isPlay
     return `${minutes}:${remainingSeconds < 10 ? '0' : ''}${remainingSeconds}`;
   };
 
+  // Calculate transform: when visible, adjust for player-track position, when hidden, slide up and fade
+  const getTransform = () => {
+    if (!isVisible) {
+      return 'translate3d(0, -30px, 0)'; // Hidden: slide up slightly and fade (avoids going under player)
+    }
+    // Visible: account for player-track being extended (it's 92px higher when extended)
+    const playerOffset = isPlayerExtended ? -92 : 0;
+    return `translate3d(0, ${playerOffset}px, 0)`;
+  };
+
   return (
     <div style={{
       position: 'absolute',
-      bottom: `calc(100% + ${75 + playerTrackOffset}px)`,
+      bottom: '100%',
       left: '15px',
       right: '15px',
       maxHeight: '400px',
@@ -91,9 +98,9 @@ const PlaylistSongList = ({ playlist, isVisible, onClose, currentTrackId, isPlay
       zIndex: 1,
       overflow: 'hidden',
       boxShadow: '0 -4px 20px rgba(0, 0, 0, 0.3)',
-      transform: isVisible ? 'translate3d(0, 0, 0)' : `translate3d(0, calc(100% + ${75 + playerTrackOffset}px), 0)`,
+      transform: getTransform(),
       opacity: isVisible ? 1 : 0,
-      transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+      transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
       pointerEvents: isVisible ? 'auto' : 'none',
       willChange: 'transform, opacity',
       backfaceVisibility: 'hidden',

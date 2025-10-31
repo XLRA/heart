@@ -140,11 +140,22 @@ const HeartAnimation = ({
   const fetchSpotifyAudioAnalysis = useCallback(async (trackId: string) => {
     if (!trackId) return;
     
+    // Check if audio-analysis endpoint is deprecated (cached)
+    const isDeprecated = localStorage.getItem('spotify_audio_analysis_deprecated') === 'true';
+    
+    if (isDeprecated) {
+      // Skip API call and use enhanced simulation
+      setSpotifyAnalysis(null);
+      setIsLoadingAnalysis(false);
+      return;
+    }
+    
     setIsLoadingAnalysis(true);
     try {
       const token = localStorage.getItem('spotify_access_token');
       if (!token) {
-        console.error('No Spotify access token found');
+        setSpotifyAnalysis(null);
+        setIsLoadingAnalysis(false);
         return;
       }
 
@@ -157,17 +168,15 @@ const HeartAnimation = ({
       if (response.ok) {
         const analysis = await response.json();
         setSpotifyAnalysis(analysis);
-        console.log('Spotify audio analysis loaded:', analysis);
       } else if (response.status === 403) {
-        console.warn('Audio analysis endpoint deprecated by Spotify (403 Forbidden) - using enhanced simulation');
+        // Cache deprecation status to avoid repeated calls
+        localStorage.setItem('spotify_audio_analysis_deprecated', 'true');
         // Don't set analysis, will fall back to enhanced simulation
         setSpotifyAnalysis(null);
       } else {
-        console.error('Failed to fetch audio analysis:', response.status);
         setSpotifyAnalysis(null);
       }
     } catch (error) {
-      console.error('Error fetching Spotify audio analysis:', error);
       setSpotifyAnalysis(null);
     } finally {
       setIsLoadingAnalysis(false);

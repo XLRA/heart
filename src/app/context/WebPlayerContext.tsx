@@ -463,13 +463,6 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
 
-    // Verify device is still registered before attempting playback
-    const isDeviceRegistered = await checkAvailableDevices(deviceId, false);
-    if (!isDeviceRegistered) {
-      console.error('Device not registered with Spotify, cannot skip to next track');
-      return;
-    }
-
     try {
       const response = await fetch(`https://api.spotify.com/v1/me/player/next?device_id=${deviceId}`, {
         method: 'POST',
@@ -479,10 +472,17 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       });
 
       if (!response.ok) {
+        // If 403 or 404, the device might need to be checked
+        if (response.status === 403 || response.status === 404) {
+          const isDeviceRegistered = await checkAvailableDevices(deviceId, false);
+          if (!isDeviceRegistered) {
+            console.error('Device not registered with Spotify, cannot skip to next track');
+            return;
+          }
+        }
         const errorText = await response.text();
         throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
       }
-      console.log('Next track successful');
     } catch (error) {
       console.error('Error skipping to next track:', error);
     }
