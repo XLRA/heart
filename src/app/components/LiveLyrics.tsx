@@ -128,16 +128,17 @@ const LiveLyrics = ({
     ? lyrics[currentLineIndex] 
     : null;
 
-  const nextLine = currentLineIndex >= 0 && currentLineIndex + 1 < lyrics.length 
-    ? lyrics[currentLineIndex + 1] 
-    : null;
+  // Check if we're at the end of the song (past the last lyric)
+  const isAtEnd = currentLineIndex === lyrics.length - 1 && 
+                  lyrics.length > 0 && 
+                  currentPosition > lyrics[lyrics.length - 1].startTime + 5000; // 5s after last line
 
   return (
     <div style={{
       position: 'fixed',
-      top: '55%',
+      bottom: '20%', // Position in bottom-middle area (above player, below heart)
       left: '50%',
-      transform: 'translate(-50%, -50%)',
+      transform: 'translateX(-50%)',
       zIndex: 5,
       pointerEvents: 'none',
       width: '90%',
@@ -173,7 +174,7 @@ const LiveLyrics = ({
         </div>
       )}
 
-      {/* Current line (prominent) */}
+      {/* Current line (prominent) - with fade-out at end */}
       {currentLine && !isLoading && !error && (
         <div
           key={`current-${currentLineIndex}`}
@@ -183,7 +184,7 @@ const LiveLyrics = ({
             fontWeight: '700',
             textAlign: 'center',
             textShadow: '0 2px 8px rgba(0, 0, 0, 0.8), 0 0 20px rgba(255, 255, 255, 0.3)',
-            animation: 'lyricsSlideIn 0.4s ease-out',
+            animation: isAtEnd ? 'lyricsSlideOut 1.5s ease-out forwards' : 'lyricsSlideIn 0.4s ease-out',
             letterSpacing: '0.5px',
             lineHeight: '1.4',
             maxWidth: '100%',
@@ -191,27 +192,6 @@ const LiveLyrics = ({
           }}
         >
           {currentLine.text}
-        </div>
-      )}
-
-      {/* Next line (subtle preview) */}
-      {nextLine && !isLoading && !error && (
-        <div
-          key={`next-${currentLineIndex + 1}`}
-          style={{
-            color: 'rgba(255, 255, 255, 0.4)',
-            fontSize: '20px',
-            fontWeight: '500',
-            textAlign: 'center',
-            textShadow: '0 1px 4px rgba(0, 0, 0, 0.6)',
-            animation: 'fadeIn 0.5s ease-in-out',
-            letterSpacing: '0.3px',
-            lineHeight: '1.4',
-            maxWidth: '100%',
-            padding: '0 20px'
-          }}
-        >
-          {nextLine.text}
         </div>
       )}
 
@@ -224,6 +204,17 @@ const LiveLyrics = ({
           100% {
             opacity: 1;
             transform: translateY(0);
+          }
+        }
+
+        @keyframes lyricsSlideOut {
+          0% {
+            opacity: 1;
+            transform: translateY(0);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(-20px);
           }
         }
 
