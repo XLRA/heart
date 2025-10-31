@@ -11,102 +11,99 @@ interface LyricsResponse {
   source: string;
 }
 
+// Lyricstify API response types
+interface LyricstifyLine {
+  startTimeMs: string;
+  words: string;
+  syllables?: any[];
+  endTimeMs: string;
+}
+
+interface LyricstifyResponse {
+  lyrics: {
+    syncType: string;
+    lines: LyricstifyLine[];
+    language: string;
+  };
+}
+
 // In-memory cache for lyrics (optional, helps reduce API calls)
 const lyricsCache = new Map<string, { data: LyricsResponse; timestamp: number }>();
 const CACHE_DURATION = 1000 * 60 * 60; // 1 hour
 
 /**
- * Parse plain text lyrics into timed lines
- * This is a simple parser that estimates timing based on track duration
+ * Fetch time-synced lyrics from Lyricstify API
+ * Returns lyrics with ACTUAL timestamps from Spotify!
  */
-function parsePlainLyrics(plainText: string, estimatedDuration: number = 180000): LyricsLine[] {
-  // Split by lines and filter empty lines
-  const lines = plainText
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line => line.length > 0 && !line.startsWith('[') && !line.startsWith('#'));
-
-  if (lines.length === 0) {
-    return [];
-  }
-
-  // Estimate timing: distribute lines evenly across the track duration
-  const averageLineTime = estimatedDuration / lines.length;
-  
-  return lines.map((text, index) => ({
-    text,
-    startTime: Math.floor(index * averageLineTime),
-    endTime: Math.floor((index + 1) * averageLineTime)
-  }));
-}
-
-
-/**
- * Fetch lyrics from Lyrics.ovh API (FREE, no API key required!)
- * Primary lyrics source - simple, reliable, and free!
- */
-async function fetchFromLyricsOvh(track: string, artist: string): Promise<LyricsResponse | null> {
+async function fetchFromLyricstify(trackId: string): Promise<LyricsResponse | null> {
   try {
-    console.log(`[Lyrics.ovh] Attempting to fetch lyrics for: "${track}" by "${artist}"`);
+    console.log(`[Lyricstify] Attempting to fetch synced lyrics for track ID: ${trackId}`);
     
-    const url = `https://api.lyrics.ovh/v1/${encodeURIComponent(artist)}/${encodeURIComponent(track)}`;
-    console.log(`[Lyrics.ovh] API URL: ${url}`);
+    const url = `https://lyricstify.vercel.app/api/v1/lyrics/${trackId}`;
+    console.log(`[Lyricstify] API URL: ${url}`);
     
     const response = await fetch(url);
     
-    console.log(`[Lyrics.ovh] Response status: ${response.status}`);
+    console.log(`[Lyricstify] Response status: ${response.status}`);
     
     if (!response.ok) {
-      console.error(`[Lyrics.ovh] API failed: ${response.status}`);
+      console.error(`[Lyricstify] API failed: ${response.status}`);
       return null;
     }
 
-    const data = await response.json();
+    const data: LyricstifyResponse = await response.json();
     
-    if (data.lyrics) {
-      const lines = parsePlainLyrics(data.lyrics);
-      console.log(`[Lyrics.ovh] ✅ Successfully fetched ${lines.length} lyrics lines`);
+    if (data.lyrics && data.lyrics.lines && Array.isArray(data.lyrics.lines)) {
+      const lines = data.lyrics.lines
+        .filter(line => line.words && line.words.trim() !== '')
+        .map((line, index, array) => ({
+          text: line.words,
+          startTime: parseInt(line.startTimeMs, 10),
+          endTime: parseInt(line.endTimeMs, 10)
+        }));
+      
+      console.log(`[Lyricstify] ✅ Successfully fetched ${lines.length} synced lyrics lines (syncType: ${data.lyrics.syncType})`);
       
       return {
         lyrics: lines,
-        source: 'lyrics.ovh'
+        source: 'lyricstify (time-synced)'
       };
     }
     
-    console.log('[Lyrics.ovh] No lyrics in response');
+    console.log('[Lyricstify] No synced lyrics in response');
     return null;
   } catch (error) {
-    console.error('[Lyrics.ovh] Error fetching lyrics:', error);
+    console.error('[Lyricstify] Error fetching lyrics:', error);
     return null;
   }
 }
 
-
 /**
- * Fallback: Generate demo/sample lyrics for testing
- * This creates a simple demo experience when APIs are not configured
+ * Fallback: Generate demo/sample lyrics when no synced lyrics are available
  */
 function generateDemoLyrics(track: string, artist: string): LyricsResponse {
-  // Create a simple demo with the track name
   const demoLines = [
-    `♪ ${track} ♪`,
-    `by ${artist}`,
-    '',
-    'Lyrics not available for this song',
-    '',
-    'Try a different track'
+    { text: `♪ ${track} ♪`, startTime: 0, endTime: 5000 },
+    { text: `by ${artist}`, startTime: 5000, endTime: 10000 },
+    { text: '', startTime: 10000, endTime: 12000 },
+    { text: 'Time-synced lyrics not available', startTime: 12000, endTime: 17000 },
+    { text: '', startTime: 17000, endTime: 19000 },
+    { text: 'Try a different track', startTime: 19000, endTime: 24000 }
   ];
 
   return {
-    lyrics: parsePlainLyrics(demoLines.join('\n'), 30000), // 30 second demo
+    lyrics: demoLines,
     source: 'demo'
   };
 }
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
+  const trackId = searchParams.get('trackId');
   const track = searchParams.get('track');
   const artist = searchParams.get('artist');
+  const durationStr = searchParams.get('duration');
+  const duration = durationStr ? parseInt(durationStr, 10) : 180000; // Default 3 minutes
 
   if (!track || !artist) {
     return NextResponse.json(
@@ -114,6 +111,8 @@ export async function GET(request: NextRequest) {
       { status: 400 }
     );
   }
+
+  console.log(`[API] Fetching lyrics for: "${track}" by "${artist}" (trackId: ${trackId || 'none'}, duration: ${(duration/1000).toFixed(1)}s)`);
 
   // Check cache first
   const cacheKey = `${artist.toLowerCase()}-${track.toLowerCase()}`;
@@ -124,19 +123,25 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(cached.data);
   }
 
-  // Fetch lyrics from Lyrics.ovh
+  // Fetch lyrics from Lyricstify (time-synced)
   let result: LyricsResponse | null = null;
 
-  console.log(`[API] Fetching lyrics for: "${track}" by "${artist}"`);
-
-  // Use Lyrics.ovh API (completely free, no API key needed!)
-  result = await fetchFromLyricsOvh(track, artist);
-  
-  if (result) {
-    console.log(`[API] ✅ Successfully fetched lyrics from Lyrics.ovh (${result.lyrics.length} lines)`);
+  // Try Lyricstify for time-synced lyrics (requires Spotify track ID)
+  if (trackId) {
+    console.log(`[API] 🎯 Fetching time-synced lyrics from Lyricstify...`);
+    result = await fetchFromLyricstify(trackId);
+    
+    if (result) {
+      console.log(`[API] ✅ Successfully fetched time-synced lyrics (${result.lyrics.length} lines)`);
+    } else {
+      console.log('[API] ❌ Lyricstify failed, using demo lyrics');
+    }
   } else {
-    // Fallback to demo lyrics if Lyrics.ovh failed
-    console.log('[API] ❌ Lyrics.ovh failed, using demo lyrics for:', track);
+    console.log('[API] ⚠️  No track ID provided, cannot fetch time-synced lyrics');
+  }
+
+  // Fall back to demo lyrics if Lyricstify failed or no track ID
+  if (!result) {
     result = generateDemoLyrics(track, artist);
   }
 

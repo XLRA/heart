@@ -152,18 +152,23 @@ HeartAnimation (visual feedback)
 
 ### Lyrics Pipeline
 ```
-Current Track Info
+Current Track Info (with Spotify Track ID)
     ↓
 LiveLyrics Component
     ↓
 /api/lyrics endpoint
     ↓
-Lyrics.ovh API (FREE!)
+Lyricstify API (TIME-SYNCED!)
     ↓
-Timestamped Lyrics
+Precise Timestamped Lyrics
     ↓
 Synchronized Display
 ```
+
+**Lyrics Source:**
+- **Lyricstify**: Time-synced lyrics with exact timestamps from Spotify
+- Completely FREE and requires no API keys!
+- Falls back to demo lyrics if time-synced lyrics aren't available
 
 ## 🎮 How to Use
 
@@ -242,10 +247,11 @@ This project is deployed at [sleeep.dev](https://sleeep.dev) using Vercel.
 ## 🐛 Troubleshooting
 
 ### Lyrics Not Showing
-- Check browser console for errors
-- Verify the song is in Lyrics.ovh database (try a popular song)
-- Check network tab to see if API request succeeded
-- Some songs may not have lyrics available
+- Check browser console for lyrics fetch logs
+- **Time-synced lyrics** powered by Lyricstify (requires Spotify track ID)
+- Available for most popular Spotify tracks
+- Try a different song if lyrics aren't found
+- Demo lyrics will show if time-synced lyrics are unavailable
 
 ### Heart Animation Not Reacting
 - Ensure music is playing
@@ -263,11 +269,11 @@ This project is deployed at [sleeep.dev](https://sleeep.dev) using Vercel.
 Contributions are welcome! Please feel free to submit a Pull Request.
 
 ### Areas for Contribution
-- LRC format support for precise lyric timing
-- Additional lyrics API integrations
+- Additional visualization patterns
 - Mobile responsive improvements
-- Visualization enhancements
+- Playlist management enhancements
 - Performance optimizations
+- Additional lyrics API sources
 
 ## 📝 License
 
@@ -278,7 +284,7 @@ This project is open source and available under the MIT License.
 - [Next.js](https://nextjs.org/) - React framework
 - [Spotify Web API](https://developer.spotify.com/) - Music streaming
 - [Meyda](https://meyda.js.org/) - Audio feature extraction
-- [Lyrics.ovh](https://lyrics.ovh/) - Free lyrics API
+- [Lyricstify](https://github.com/akashrchandran/spotify-lyrics-api) - Time-synced Spotify lyrics
 
 ---
 

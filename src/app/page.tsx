@@ -28,6 +28,7 @@ function AppContent() {
         currentTrackName={playerState.current_track?.name}
         currentArtist={playerState.current_track?.artists.map(a => a.name).join(', ')}
         currentPosition={playerState.position}
+        currentDuration={playerState.duration || playerState.current_track?.duration_ms}
         isPlaying={isPlaying}
       />
       <SpotifyLogin />
