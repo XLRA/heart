@@ -18,11 +18,11 @@ A modern, elegant music player web application built with Next.js. Features a st
 - **Track Information**: Display album art, artist, and track details
 
 ### 🎤 Live Lyrics
-- **Synchronized Lyrics**: Real-time lyrics that sync with playback position
+- **Time-Synced Lyrics**: Real Spotify lyrics with **millisecond-precise** timestamps
 - **Music Video Style**: Lyrics appear one line at a time with smooth animations
 - **Beautiful Presentation**: White text with shadows, positioned beneath the heart
-- **FREE - No API Key**: Uses Lyrics.ovh API (completely free, no setup required!)
-- **Smart Timing**: Automatic lyric timing estimation
+- **FREE - No API Key**: Uses custom Spotify Lyrics API (completely free, no setup required!)
+- **Perfect Timing**: Official Spotify/Musixmatch synchronized lyrics
 - **Preview Lines**: Shows upcoming lyric line subtly
 - **Plug & Play**: Works immediately without any configuration
 
@@ -152,23 +152,28 @@ HeartAnimation (visual feedback)
 
 ### Lyrics Pipeline
 ```
-Current Track Info (with Spotify Track ID)
+Spotify Track ID
     ↓
 LiveLyrics Component
     ↓
 /api/lyrics endpoint
     ↓
-Lyricstify API (TIME-SYNCED!)
-    ↓
-Precise Timestamped Lyrics
+Custom Spotify Lyrics API (sleep-lyrics-api.vercel.app)
+    ↓ (returns time-synced lyrics)
+Official Spotify/Musixmatch Lyrics
+    ↓ (fallback if unavailable)
+Demo Lyrics
     ↓
 Synchronized Display
 ```
 
 **Lyrics Source:**
-- **Lyricstify**: Time-synced lyrics with exact timestamps from Spotify
-- Completely FREE and requires no API keys!
-- Falls back to demo lyrics if time-synced lyrics aren't available
+- **Custom Spotify Lyrics API**: Fetches official time-synced lyrics from Spotify
+  - **Millisecond-precise timestamps** from Spotify/Musixmatch
+  - **LINE_SYNCED** for perfect synchronization
+  - **UNSYNCED** with smart timing estimation for older tracks
+- **Demo Lyrics**: Fallback if lyrics aren't found
+- **Completely FREE** - No API keys or authentication required!
 
 ## 🎮 How to Use
 
@@ -189,7 +194,8 @@ Synchronized Display
 ### Lyrics Feature
 
 - **Automatic**: Lyrics appear automatically when playing any Spotify track
-- **No Setup Required**: Works immediately with Lyrics.ovh API (free!)
+- **No Setup Required**: Works immediately with custom Spotify Lyrics API (free!)
+- **Perfect Sync**: Millisecond-precise timing from Spotify/Musixmatch
 - **Always Available**: No API keys, no configuration needed
 - **Customization**: Adjust position, styling, and timing in `LiveLyrics.tsx`
 
@@ -247,11 +253,11 @@ This project is deployed at [sleeep.dev](https://sleeep.dev) using Vercel.
 ## 🐛 Troubleshooting
 
 ### Lyrics Not Showing
-- Check browser console for lyrics fetch logs
-- **Time-synced lyrics** powered by Lyricstify (requires Spotify track ID)
-- Available for most popular Spotify tracks
-- Try a different song if lyrics aren't found
-- Demo lyrics will show if time-synced lyrics are unavailable
+- Check browser console for detailed lyrics fetch logs (`[API]` and `[Custom API]`)
+- **Custom Spotify Lyrics API** fetches official Spotify/Musixmatch lyrics
+- **Millisecond-precise timestamps** ensure perfect synchronization
+- **Demo lyrics** will show if the track doesn't have lyrics on Spotify
+- Try a different track if lyrics aren't found (not all songs have lyrics on Spotify)
 
 ### Heart Animation Not Reacting
 - Ensure music is playing
@@ -284,7 +290,7 @@ This project is open source and available under the MIT License.
 - [Next.js](https://nextjs.org/) - React framework
 - [Spotify Web API](https://developer.spotify.com/) - Music streaming
 - [Meyda](https://meyda.js.org/) - Audio feature extraction
-- [Lyricstify](https://github.com/akashrchandran/spotify-lyrics-api) - Time-synced Spotify lyrics
+- [Custom Spotify Lyrics API](https://github.com/akashrchandran/spotify-lyrics-api) - Time-synced Spotify lyrics
 
 ---
 

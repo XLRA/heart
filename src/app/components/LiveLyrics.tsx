@@ -13,7 +13,6 @@ interface LiveLyricsProps {
   currentTrackName?: string;
   currentArtist?: string;
   currentPosition: number; // in milliseconds
-  currentDuration?: number; // in milliseconds
   isPlaying: boolean;
 }
 
@@ -22,7 +21,6 @@ const LiveLyrics = ({
   currentTrackName, 
   currentArtist, 
   currentPosition,
-  currentDuration,
   isPlaying 
 }: LiveLyricsProps) => {
   const [lyrics, setLyrics] = useState<LyricsLine[]>([]);
@@ -49,20 +47,11 @@ const LiveLyrics = ({
     setIsLoading(true);
     setError(null);
 
-    console.log(`[LiveLyrics] Fetching lyrics for: "${currentTrackName}" by "${currentArtist}" (trackId: ${currentTrackId}, duration: ${currentDuration}ms)`);
+    console.log(`[LiveLyrics] Fetching time-synced lyrics for track ID: ${currentTrackId}`);
+    console.log(`[LiveLyrics] Track: "${currentTrackName}" by "${currentArtist}"`);
 
-    // Fetch lyrics from our API endpoint
-    let apiUrl = `/api/lyrics?track=${encodeURIComponent(currentTrackName)}&artist=${encodeURIComponent(currentArtist)}`;
-    
-    // Include Spotify track ID for time-synced lyrics (priority 1)
-    if (currentTrackId) {
-      apiUrl += `&trackId=${encodeURIComponent(currentTrackId)}`;
-    }
-    
-    // Include duration if available for better timing estimation (fallback for plain text)
-    if (currentDuration && currentDuration > 0) {
-      apiUrl += `&duration=${currentDuration}`;
-    }
+    // Fetch lyrics from our API endpoint using Spotify track ID
+    const apiUrl = `/api/lyrics?trackId=${encodeURIComponent(currentTrackId)}&track=${encodeURIComponent(currentTrackName)}&artist=${encodeURIComponent(currentArtist)}`;
     
     console.log(`[LiveLyrics] API URL:`, apiUrl);
     
@@ -94,7 +83,7 @@ const LiveLyrics = ({
       .finally(() => {
         setIsLoading(false);
       });
-  }, [currentTrackId, currentTrackName, currentArtist, currentDuration]);
+  }, [currentTrackId, currentTrackName, currentArtist]);
 
   // Update current line based on playback position
   useEffect(() => {
