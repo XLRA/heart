@@ -93,7 +93,19 @@ async function fetchFromGenius(track: string, artist: string): Promise<LyricsRes
     console.log(`[Genius] Fetching page: ${songUrl}`);
     const pageResponse = await fetch(songUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Cache-Control': 'max-age=0',
+        'Referer': 'https://www.google.com/'
       }
     });
 
@@ -189,6 +201,46 @@ async function fetchFromGenius(track: string, artist: string): Promise<LyricsRes
 }
 
 /**
+ * Fetch lyrics from Lyrics.ovh API (FREE, no API key required!)
+ * This is a backup when Genius scraping fails
+ */
+async function fetchFromLyricsOvh(track: string, artist: string): Promise<LyricsResponse | null> {
+  try {
+    console.log(`[Lyrics.ovh] Attempting to fetch lyrics for: "${track}" by "${artist}"`);
+    
+    const url = `https://api.lyrics.ovh/v1/${encodeURIComponent(artist)}/${encodeURIComponent(track)}`;
+    console.log(`[Lyrics.ovh] API URL: ${url}`);
+    
+    const response = await fetch(url);
+    
+    console.log(`[Lyrics.ovh] Response status: ${response.status}`);
+    
+    if (!response.ok) {
+      console.error(`[Lyrics.ovh] API failed: ${response.status}`);
+      return null;
+    }
+
+    const data = await response.json();
+    
+    if (data.lyrics) {
+      const lines = parsePlainLyrics(data.lyrics);
+      console.log(`[Lyrics.ovh] ✅ Successfully fetched ${lines.length} lyrics lines`);
+      
+      return {
+        lyrics: lines,
+        source: 'lyrics.ovh'
+      };
+    }
+    
+    console.log('[Lyrics.ovh] No lyrics in response');
+    return null;
+  } catch (error) {
+    console.error('[Lyrics.ovh] Error fetching lyrics:', error);
+    return null;
+  }
+}
+
+/**
  * Fetch lyrics from Musixmatch API (requires API key)
  */
 async function fetchFromMusixmatch(track: string, artist: string): Promise<LyricsResponse | null> {
@@ -277,24 +329,34 @@ export async function GET(request: NextRequest) {
 
   console.log(`[API] Fetching lyrics for: "${track}" by "${artist}"`);
 
-  // Try Genius (web scraping with free API token)
+  // Try Genius first (web scraping with free API token)
   result = await fetchFromGenius(track, artist);
   
   if (result) {
-    console.log(`[API] Successfully fetched lyrics from Genius (${result.lyrics.length} lines)`);
+    console.log(`[API] ✅ Successfully fetched lyrics from Genius (${result.lyrics.length} lines)`);
   } else {
-    console.log('[API] Genius fetch failed, trying Musixmatch...');
-    // Try Musixmatch if Genius failed (requires paid API key)
-    result = await fetchFromMusixmatch(track, artist);
+    console.log('[API] Genius fetch failed, trying Lyrics.ovh (FREE)...');
+    
+    // Try Lyrics.ovh as backup (completely free, no scraping needed!)
+    result = await fetchFromLyricsOvh(track, artist);
     
     if (result) {
-      console.log(`[API] Successfully fetched lyrics from Musixmatch (${result.lyrics.length} lines)`);
+      console.log(`[API] ✅ Successfully fetched lyrics from Lyrics.ovh (${result.lyrics.length} lines)`);
+    } else {
+      console.log('[API] Lyrics.ovh failed, trying Musixmatch...');
+      
+      // Try Musixmatch if both failed (requires paid API key)
+      result = await fetchFromMusixmatch(track, artist);
+      
+      if (result) {
+        console.log(`[API] ✅ Successfully fetched lyrics from Musixmatch (${result.lyrics.length} lines)`);
+      }
     }
   }
 
   // Fallback to demo lyrics if all sources failed
   if (!result) {
-    console.log('[API] All sources failed, using demo lyrics for:', track);
+    console.log('[API] ❌ All sources failed, using demo lyrics for:', track);
     result = generateDemoLyrics(track, artist);
   }
 

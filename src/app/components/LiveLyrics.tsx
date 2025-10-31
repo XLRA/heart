@@ -47,25 +47,34 @@ const LiveLyrics = ({
     setIsLoading(true);
     setError(null);
 
+    console.log(`[LiveLyrics] Fetching lyrics for: "${currentTrackName}" by "${currentArtist}"`);
+
     // Fetch lyrics from our API endpoint
-    fetch(`/api/lyrics?track=${encodeURIComponent(currentTrackName)}&artist=${encodeURIComponent(currentArtist)}`)
+    const apiUrl = `/api/lyrics?track=${encodeURIComponent(currentTrackName)}&artist=${encodeURIComponent(currentArtist)}`;
+    console.log(`[LiveLyrics] API URL:`, apiUrl);
+    
+    fetch(apiUrl)
       .then(response => {
+        console.log(`[LiveLyrics] Response status:`, response.status);
         if (!response.ok) {
           throw new Error('Lyrics not found');
         }
         return response.json();
       })
       .then(data => {
+        console.log(`[LiveLyrics] Received data:`, data);
         if (data.lyrics && Array.isArray(data.lyrics)) {
+          console.log(`[LiveLyrics] ✅ Loaded ${data.lyrics.length} lyrics lines from source: ${data.source}`);
           setLyrics(data.lyrics);
           setCurrentLineIndex(-1);
         } else {
+          console.warn(`[LiveLyrics] ❌ No lyrics in response`);
           setError('No lyrics available');
           setLyrics([]);
         }
       })
       .catch(err => {
-        console.error('Error fetching lyrics:', err);
+        console.error('[LiveLyrics] ❌ Error fetching lyrics:', err);
         setError('Lyrics not available');
         setLyrics([]);
       })
