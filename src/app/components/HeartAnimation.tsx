@@ -176,7 +176,7 @@ const HeartAnimation = ({
       } else {
         setSpotifyAnalysis(null);
       }
-    } catch (error) {
+    } catch {
       setSpotifyAnalysis(null);
     } finally {
       setIsLoadingAnalysis(false);

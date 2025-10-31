@@ -510,7 +510,7 @@ const AdvancedMusicPlayer = () => {
             valence: 0.5
           });
         }
-      } catch (error) {
+      } catch {
         // Fallback to default values
         setSpotifyTrackData({
           tempo: 120,
@@ -526,7 +526,7 @@ const AdvancedMusicPlayer = () => {
     // Initialize Meyda analysis for real-time audio features
     // For Spotify tracks, this will request microphone permission to capture the audio being played
     initializeMeydaAnalysis();
-  }, [isUsingSpotifyPlayer, playerState.current_track?.id, initializeMeydaAnalysis]);
+  }, [isUsingSpotifyPlayer, playerState.current_track?.id, initializeMeydaAnalysis, setSpotifyTrackData, setMeydaData]);
 
 
   useEffect(() => {
