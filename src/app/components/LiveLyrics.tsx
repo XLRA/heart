@@ -99,6 +99,8 @@ const LiveLyrics = ({
     );
 
     if (lineIndex !== -1 && lineIndex !== currentLineIndex) {
+      console.log(`[LiveLyrics] Line changed: ${currentLineIndex} → ${lineIndex} (position: ${(currentPosition/1000).toFixed(1)}s)`);
+      console.log(`[LiveLyrics] New line: "${lyrics[lineIndex]?.text}"`);
       setCurrentLineIndex(lineIndex);
     }
   }, [currentPosition, lyrics, isPlaying, currentLineIndex]);

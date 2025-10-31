@@ -85,6 +85,8 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
   const playerRef = useRef<SpotifyPlayer | null>(null);
   const isInitializingRef = useRef<boolean>(false);
   const stateCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const positionIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const lastPositionUpdateRef = useRef<number>(Date.now());
 
   // Function to periodically check current state for UI updates
   const startStatePolling = () => {
@@ -99,6 +101,9 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
           if (state) {
             const stateObj = state as Record<string, unknown>;
             const currentTrack = (stateObj.track_window as Record<string, unknown>)?.current_track as Record<string, unknown> | undefined;
+            
+            // Update position timestamp when we get new position from API
+            lastPositionUpdateRef.current = Date.now();
             
             setPlayerState(prev => ({
               is_paused: Boolean(stateObj.paused),
@@ -138,6 +143,47 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     if (stateCheckIntervalRef.current) {
       clearInterval(stateCheckIntervalRef.current);
       stateCheckIntervalRef.current = null;
+    }
+  };
+
+  // Smooth position interpolation for better UI responsiveness
+  const startPositionInterpolation = () => {
+    if (positionIntervalRef.current) {
+      clearInterval(positionIntervalRef.current);
+    }
+    
+    positionIntervalRef.current = setInterval(() => {
+      setPlayerState(prev => {
+        // Only interpolate if music is playing and active
+        if (prev.is_paused || !prev.is_active || !prev.current_track) {
+          return prev;
+        }
+        
+        // Calculate time elapsed since last update
+        const now = Date.now();
+        const elapsed = now - lastPositionUpdateRef.current;
+        
+        // Increment position by elapsed time (in milliseconds)
+        const newPosition = prev.position + elapsed;
+        
+        // Don't exceed track duration
+        const maxPosition = prev.duration || prev.current_track.duration_ms || 0;
+        const clampedPosition = Math.min(newPosition, maxPosition);
+        
+        lastPositionUpdateRef.current = now;
+        
+        return {
+          ...prev,
+          position: clampedPosition
+        };
+      });
+    }, 100); // Update every 100ms for smooth progress
+  };
+
+  const stopPositionInterpolation = () => {
+    if (positionIntervalRef.current) {
+      clearInterval(positionIntervalRef.current);
+      positionIntervalRef.current = null;
     }
   };
 
@@ -313,6 +359,8 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         console.log('Web Player is fully ready and registered');
         // Start polling for state updates
         startStatePolling();
+        // Start smooth position interpolation
+        startPositionInterpolation();
       } else {
         console.error('Web Player failed to register with Spotify servers');
         setIsReady(false);
@@ -328,6 +376,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       console.log('Spotify Web Player device has gone offline:', data.device_id);
       setIsReady(false);
       stopStatePolling();
+      stopPositionInterpolation();
     });
 
     // Connect to the player
@@ -592,6 +641,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     return () => {
       stopStatePolling();
+      stopPositionInterpolation();
       if (playerRef.current) {
         console.log('Cleaning up Web Player...');
         try {
