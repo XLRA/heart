@@ -120,19 +120,13 @@ class MeydaAudioService {
         await this.audioContext.resume();
       }
       
-      // For Spotify Web Player, create a synthetic audio source that generates
-      // realistic audio features based on the track's characteristics
-      console.log('Creating synthetic audio source for Spotify track analysis');
-      
-      // Create a gain node as our "source" for synthetic audio
+      // Create synthetic audio source for Spotify track analysis
+      // This generates realistic audio features based on the track's characteristics
       const gainNode = this.audioContext.createGain();
       gainNode.connect(this.audioContext.destination);
-      
-      // Set a very low volume for the synthetic source
       gainNode.gain.value = 0.001;
       
-      // Create a buffer source with synthetic audio that varies based on track features
-      const bufferSize = this.audioContext.sampleRate * 0.1; // 100ms buffer
+      const bufferSize = this.audioContext.sampleRate * 0.1;
       const buffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate);
       const data = buffer.getChannelData(0);
       

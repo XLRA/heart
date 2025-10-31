@@ -67,7 +67,6 @@ const AdvancedMusicPlayer = () => {
   const [showPlaylistSongs, setShowPlaylistSongs] = useState(false);
   const [currentPlaylistSongs, setCurrentPlaylistSongs] = useState<Song[]>([]);
   const [isUsingSpotifyPlayer, setIsUsingSpotifyPlayer] = useState(false);
-  const [showMicrophonePermission, setShowMicrophonePermission] = useState(false);
   const [localPlayerState, setLocalPlayerState] = useState({
     is_paused: true,
     is_active: false,
@@ -305,24 +304,27 @@ const AdvancedMusicPlayer = () => {
       setShowPlaylistSongs(true); // Show playlist songs panel
     } else {
       // Fallback to preview URLs (limited functionality)
-      const spotifySongs: Song[] = (playlist.tracks?.items || []).map((item) => {
-        const track = item.track;
-        return {
-          title: track.name,
-          artist: track.artists.map((artist) => artist.name).join(', '),
-          url: track.preview_url || '',
-          cover: track.album.images && track.album.images.length > 0 ? track.album.images[0].url : '/covers/cover1.jpg',
-          duration: track.duration_ms / 1000,
-          id: track.id,
-          uri: track.external_urls?.spotify || `spotify:track:${track.id}`
-        };
-      }).filter((song: Song) => song.url); // Only include songs with preview URLs
+      // Process tracks asynchronously to prevent UI freeze
+      setTimeout(() => {
+        const spotifySongs: Song[] = (playlist.tracks?.items || []).map((item) => {
+          const track = item.track;
+          return {
+            title: track.name,
+            artist: track.artists.map((artist) => artist.name).join(', '),
+            url: track.preview_url || '',
+            cover: track.album.images && track.album.images.length > 0 ? track.album.images[0].url : '/covers/cover1.jpg',
+            duration: track.duration_ms / 1000,
+            id: track.id,
+            uri: track.external_urls?.spotify || `spotify:track:${track.id}`
+          };
+        }).filter((song: Song) => song.url); // Only include songs with preview URLs
 
-      setCurrentPlaylistSongs(spotifySongs);
-      setCurrentPlaylist(playlist);
-      setIsUsingSpotifyPlayer(false);
-      setShowPlaylistSelector(false);
-      setShowPlaylistSongs(true); // Show playlist songs panel
+        setCurrentPlaylistSongs(spotifySongs);
+        setCurrentPlaylist(playlist);
+        setIsUsingSpotifyPlayer(false);
+        setShowPlaylistSelector(false);
+        setShowPlaylistSongs(true); // Show playlist songs panel
+      }, 0);
     }
   }, [isReady, deviceId, playPlaylist, setCurrentPlaylist]);
 
@@ -423,22 +425,16 @@ const AdvancedMusicPlayer = () => {
   // Initialize Meyda audio analysis for Spotify tracks
   const initializeMeydaAnalysis = useCallback(async () => {
     try {
-      // Show permission notification
-      setShowMicrophonePermission(true);
-      
-      // Initialize Meyda audio context (will create synthetic audio source for Spotify)
+      // Initialize Meyda audio context (creates synthetic audio source for Spotify)
       await meydaAudioService.initializeAudioContext();
       
       // Start Meyda analysis with callback and track data
       await meydaAudioService.startAnalysis((features) => {
         setMeydaData(features);
       }, spotifyTrackData || undefined);
-      
-      setShowMicrophonePermission(false);
     } catch (error) {
       console.error('Error initializing Meyda analysis:', error);
       setMeydaData(null);
-      setShowMicrophonePermission(false);
     }
   }, [setMeydaData, spotifyTrackData]);
 
@@ -450,30 +446,36 @@ const AdvancedMusicPlayer = () => {
       return;
     }
 
+    let isMounted = true;
+
     const fetchTrackFeatures = async () => {
       // Check if audio-features endpoint is deprecated (cached)
       const isDeprecated = localStorage.getItem('spotify_audio_features_deprecated') === 'true';
       
       if (isDeprecated) {
         // Skip API call and use fallback values immediately
-        setSpotifyTrackData({
-          tempo: 120,
-          energy: 0.5,
-          danceability: 0.5,
-          valence: 0.5
-        });
-        return;
-      }
-
-      try {
-        const token = localStorage.getItem('spotify_access_token');
-        if (!token) {
+        if (isMounted) {
           setSpotifyTrackData({
             tempo: 120,
             energy: 0.5,
             danceability: 0.5,
             valence: 0.5
           });
+        }
+        return;
+      }
+
+      try {
+        const token = localStorage.getItem('spotify_access_token');
+        if (!token) {
+          if (isMounted) {
+            setSpotifyTrackData({
+              tempo: 120,
+              energy: 0.5,
+              danceability: 0.5,
+              valence: 0.5
+            });
+          }
           return;
         }
 
@@ -484,25 +486,43 @@ const AdvancedMusicPlayer = () => {
           }
         });
 
+        if (!isMounted) return;
+
         if (response.ok) {
           const features = await response.json();
-          setSpotifyTrackData({
-            tempo: features.tempo,
-            energy: features.energy,
-            danceability: features.danceability,
-            valence: features.valence
-          });
+          if (isMounted) {
+            setSpotifyTrackData({
+              tempo: features.tempo,
+              energy: features.energy,
+              danceability: features.danceability,
+              valence: features.valence
+            });
+          }
         } else if (response.status === 403) {
           // Cache deprecation status to avoid repeated calls
           localStorage.setItem('spotify_audio_features_deprecated', 'true');
           // Use fallback values when API is deprecated
-          setSpotifyTrackData({
-            tempo: 120,
-            energy: 0.5,
-            danceability: 0.5,
-            valence: 0.5
-          });
+          if (isMounted) {
+            setSpotifyTrackData({
+              tempo: 120,
+              energy: 0.5,
+              danceability: 0.5,
+              valence: 0.5
+            });
+          }
         } else {
+          if (isMounted) {
+            setSpotifyTrackData({
+              tempo: 120,
+              energy: 0.5,
+              danceability: 0.5,
+              valence: 0.5
+            });
+          }
+        }
+      } catch {
+        // Fallback to default values
+        if (isMounted) {
           setSpotifyTrackData({
             tempo: 120,
             energy: 0.5,
@@ -510,23 +530,19 @@ const AdvancedMusicPlayer = () => {
             valence: 0.5
           });
         }
-      } catch {
-        // Fallback to default values
-        setSpotifyTrackData({
-          tempo: 120,
-          energy: 0.5,
-          danceability: 0.5,
-          valence: 0.5
-        });
       }
     };
 
     fetchTrackFeatures();
     
     // Initialize Meyda analysis for real-time audio features
-    // For Spotify tracks, this will request microphone permission to capture the audio being played
+    // For Spotify tracks, uses synthetic audio source for analysis
     initializeMeydaAnalysis();
-  }, [isUsingSpotifyPlayer, playerState.current_track?.id, initializeMeydaAnalysis, setSpotifyTrackData, setMeydaData]);
+    
+    return () => {
+      isMounted = false;
+    };
+  }, [isUsingSpotifyPlayer, playerState.current_track?.id, initializeMeydaAnalysis]);
 
 
   useEffect(() => {
@@ -552,28 +568,6 @@ const AdvancedMusicPlayer = () => {
 
   return (
     <>
-      {/* Microphone Permission Notification */}
-      {showMicrophonePermission && (
-        <div style={{
-          position: 'fixed',
-          top: '20px',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          backgroundColor: '#1db954',
-          color: 'white',
-          padding: '12px 20px',
-          borderRadius: '8px',
-          zIndex: 10000,
-          fontSize: '14px',
-          fontWeight: '500',
-          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)',
-          textAlign: 'center',
-          maxWidth: '400px'
-        }}>
-          🎤 Allow microphone access to analyze Spotify audio in real-time
-        </div>
-      )}
-      
       <div className="fixed bottom-8 left-0 z-50" style={{ padding: '0 0 0 20px' }}>
       <div id="player-container" style={{
         width: '500px',
