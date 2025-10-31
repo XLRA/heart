@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import * as cheerio from 'cheerio';
 
 interface LyricsLine {
   text: string;
@@ -41,168 +40,10 @@ function parsePlainLyrics(plainText: string, estimatedDuration: number = 180000)
   }));
 }
 
-/**
- * Scrape lyrics from Genius
- * Genius API provides search but lyrics must be scraped from the webpage
- */
-async function fetchFromGenius(track: string, artist: string): Promise<LyricsResponse | null> {
-  const GENIUS_ACCESS_TOKEN = process.env.GENIUS_ACCESS_TOKEN;
-  
-  if (!GENIUS_ACCESS_TOKEN) {
-    console.warn('GENIUS_ACCESS_TOKEN not configured, skipping Genius API');
-    return null;
-  }
-
-  console.log(`[Genius] Attempting to fetch lyrics for: "${track}" by "${artist}"`);
-
-  try {
-    // Step 1: Search for the song using Genius API
-    const searchUrl = `https://api.genius.com/search?q=${encodeURIComponent(track + ' ' + artist)}`;
-    console.log(`[Genius] Search URL: ${searchUrl}`);
-    
-    const searchResponse = await fetch(searchUrl, {
-      headers: {
-        'Authorization': `Bearer ${GENIUS_ACCESS_TOKEN}`
-      }
-    });
-
-    console.log(`[Genius] Search response status: ${searchResponse.status}`);
-
-    if (!searchResponse.ok) {
-      console.error(`[Genius] Search failed with status ${searchResponse.status}`);
-      const errorText = await searchResponse.text();
-      console.error(`[Genius] Error response: ${errorText}`);
-      return null;
-    }
-
-    const searchData = await searchResponse.json();
-    console.log(`[Genius] Search returned ${searchData.response?.hits?.length || 0} results`);
-    
-    if (!searchData.response?.hits || searchData.response.hits.length === 0) {
-      console.log('No results found on Genius');
-      return null;
-    }
-
-    // Get the best match (first result)
-    const songUrl = searchData.response.hits[0].result.url;
-    const songTitle = searchData.response.hits[0].result.title;
-    
-    console.log(`[Genius] Found song: ${songTitle} - ${songUrl}`);
-    
-    // Step 2: Scrape lyrics from the song page
-    console.log(`[Genius] Fetching page: ${songUrl}`);
-    const pageResponse = await fetch(songUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Cache-Control': 'max-age=0',
-        'Referer': 'https://www.google.com/'
-      }
-    });
-
-    console.log(`[Genius] Page response status: ${pageResponse.status}`);
-
-    if (!pageResponse.ok) {
-      console.error(`[Genius] Failed to fetch page: ${pageResponse.status}`);
-      return null;
-    }
-
-    const html = await pageResponse.text();
-    console.log(`[Genius] Received HTML, length: ${html.length} characters`);
-    
-    // Step 3: Parse HTML and extract lyrics
-    const $ = cheerio.load(html);
-    
-    // Genius uses multiple possible selectors for lyrics
-    let lyricsText = '';
-    
-    // Try different selectors (Genius changes their structure sometimes)
-    const selectors = [
-      '[data-lyrics-container="true"]',
-      '[class*="Lyrics__Container"]',
-      '.lyrics',
-      '[class*="lyrics"]'
-    ];
-    
-    console.log(`[Genius] Trying ${selectors.length} different CSS selectors...`);
-    
-    for (const selector of selectors) {
-      const elements = $(selector);
-      console.log(`[Genius] Selector "${selector}" found ${elements.length} elements`);
-      
-      if (elements.length > 0) {
-        // Concatenate all matching elements (lyrics are sometimes split across multiple divs)
-        elements.each((_, element) => {
-          // Get text and preserve line breaks
-          const text = $(element).html();
-          if (text) {
-            // Replace <br> tags with newlines and clean up HTML
-            const cleaned = text
-              .replace(/<br\s*\/?>/gi, '\n')
-              .replace(/<\/div>/gi, '\n')
-              .replace(/<[^>]+>/g, '') // Remove remaining HTML tags
-              .replace(/\[.*?\]/g, '') // Remove [Verse], [Chorus] etc
-              .replace(/&amp;/g, '&')
-              .replace(/&lt;/g, '<')
-              .replace(/&gt;/g, '>')
-              .replace(/&quot;/g, '"')
-              .replace(/&#039;/g, "'");
-            
-            lyricsText += cleaned + '\n';
-          }
-        });
-        
-        if (lyricsText.trim()) {
-          console.log(`[Genius] Successfully extracted lyrics using selector: ${selector}`);
-          console.log(`[Genius] Lyrics length: ${lyricsText.length} characters`);
-          break; // Found lyrics, stop trying other selectors
-        }
-      }
-    }
-    
-    if (!lyricsText.trim()) {
-      console.error('[Genius] Could not extract lyrics from page - none of the selectors matched');
-      console.error('[Genius] Page might have a new structure. First 500 chars of HTML:', html.substring(0, 500));
-      return null;
-    }
-    
-    // Step 4: Parse and return lyrics with timing
-    const lines = parsePlainLyrics(lyricsText);
-    
-    if (lines.length === 0) {
-      console.error('No lyrics lines parsed');
-      return null;
-    }
-    
-    console.log(`Successfully scraped ${lines.length} lines from Genius`);
-    
-    return {
-      lyrics: lines,
-      source: 'genius'
-    };
-    
-  } catch (error) {
-    console.error('[Genius] Error fetching lyrics:', error);
-    if (error instanceof Error) {
-      console.error('[Genius] Error message:', error.message);
-      console.error('[Genius] Error stack:', error.stack);
-    }
-    return null;
-  }
-}
 
 /**
  * Fetch lyrics from Lyrics.ovh API (FREE, no API key required!)
- * This is a backup when Genius scraping fails
+ * Primary lyrics source - simple, reliable, and free!
  */
 async function fetchFromLyricsOvh(track: string, artist: string): Promise<LyricsResponse | null> {
   try {
@@ -240,46 +81,6 @@ async function fetchFromLyricsOvh(track: string, artist: string): Promise<Lyrics
   }
 }
 
-/**
- * Fetch lyrics from Musixmatch API (requires API key)
- */
-async function fetchFromMusixmatch(track: string, artist: string): Promise<LyricsResponse | null> {
-  const MUSIXMATCH_API_KEY = process.env.MUSIXMATCH_API_KEY;
-  
-  if (!MUSIXMATCH_API_KEY) {
-    console.warn('MUSIXMATCH_API_KEY not configured, skipping Musixmatch API');
-    return null;
-  }
-
-  try {
-    // Search for the track
-    const searchUrl = `https://api.musixmatch.com/ws/1.1/matcher.lyrics.get?q_track=${encodeURIComponent(track)}&q_artist=${encodeURIComponent(artist)}&apikey=${MUSIXMATCH_API_KEY}`;
-    
-    const response = await fetch(searchUrl);
-    
-    if (!response.ok) {
-      console.error('Musixmatch API failed:', response.status);
-      return null;
-    }
-
-    const data = await response.json();
-    
-    if (data.message?.header?.status_code === 200 && data.message?.body?.lyrics?.lyrics_body) {
-      const lyricsText = data.message.body.lyrics.lyrics_body;
-      const lines = parsePlainLyrics(lyricsText);
-      
-      return {
-        lyrics: lines,
-        source: 'musixmatch'
-      };
-    }
-    
-    return null;
-  } catch (error) {
-    console.error('Error fetching from Musixmatch:', error);
-    return null;
-  }
-}
 
 /**
  * Fallback: Generate demo/sample lyrics for testing
@@ -291,10 +92,9 @@ function generateDemoLyrics(track: string, artist: string): LyricsResponse {
     `♪ ${track} ♪`,
     `by ${artist}`,
     '',
-    'Lyrics streaming coming soon...',
+    'Lyrics not available for this song',
     '',
-    'Configure GENIUS_ACCESS_TOKEN or MUSIXMATCH_API_KEY',
-    'in your .env.local file to enable real lyrics'
+    'Try a different track'
   ];
 
   return {
@@ -324,39 +124,19 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(cached.data);
   }
 
-  // Try to fetch from various sources
+  // Fetch lyrics from Lyrics.ovh
   let result: LyricsResponse | null = null;
 
   console.log(`[API] Fetching lyrics for: "${track}" by "${artist}"`);
 
-  // Try Genius first (web scraping with free API token)
-  result = await fetchFromGenius(track, artist);
+  // Use Lyrics.ovh API (completely free, no API key needed!)
+  result = await fetchFromLyricsOvh(track, artist);
   
   if (result) {
-    console.log(`[API] ✅ Successfully fetched lyrics from Genius (${result.lyrics.length} lines)`);
+    console.log(`[API] ✅ Successfully fetched lyrics from Lyrics.ovh (${result.lyrics.length} lines)`);
   } else {
-    console.log('[API] Genius fetch failed, trying Lyrics.ovh (FREE)...');
-    
-    // Try Lyrics.ovh as backup (completely free, no scraping needed!)
-    result = await fetchFromLyricsOvh(track, artist);
-    
-    if (result) {
-      console.log(`[API] ✅ Successfully fetched lyrics from Lyrics.ovh (${result.lyrics.length} lines)`);
-    } else {
-      console.log('[API] Lyrics.ovh failed, trying Musixmatch...');
-      
-      // Try Musixmatch if both failed (requires paid API key)
-      result = await fetchFromMusixmatch(track, artist);
-      
-      if (result) {
-        console.log(`[API] ✅ Successfully fetched lyrics from Musixmatch (${result.lyrics.length} lines)`);
-      }
-    }
-  }
-
-  // Fallback to demo lyrics if all sources failed
-  if (!result) {
-    console.log('[API] ❌ All sources failed, using demo lyrics for:', track);
+    // Fallback to demo lyrics if Lyrics.ovh failed
+    console.log('[API] ❌ Lyrics.ovh failed, using demo lyrics for:', track);
     result = generateDemoLyrics(track, artist);
   }
 
