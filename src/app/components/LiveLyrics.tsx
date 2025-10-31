@@ -92,11 +92,23 @@ const LiveLyrics = ({
     }
 
     // Find the current line based on position
+    // Handle both cases: endTime provided OR compare with next line's startTime
     const lineIndex = lyrics.findIndex(
       (line, index) => {
-        const isInRange = currentPosition >= line.startTime && currentPosition < line.endTime;
-        const isLastLine = index === lyrics.length - 1 && currentPosition >= line.startTime;
-        return isInRange || isLastLine;
+        const nextLine = lyrics[index + 1];
+        
+        // If endTime is provided and > 0, use it
+        if (line.endTime && line.endTime > 0) {
+          return currentPosition >= line.startTime && currentPosition < line.endTime;
+        }
+        
+        // Otherwise, check if we're past this line's start but before next line's start
+        if (nextLine) {
+          return currentPosition >= line.startTime && currentPosition < nextLine.startTime;
+        }
+        
+        // Last line: show if we've passed its start time
+        return currentPosition >= line.startTime;
       }
     );
 
