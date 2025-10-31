@@ -15,7 +15,7 @@ interface LyricsResponse {
 interface LyricstifyLine {
   startTimeMs: string;
   words: string;
-  syllables?: any[];
+  syllables?: unknown[];
   endTimeMs: string;
 }
 
@@ -56,7 +56,7 @@ async function fetchFromLyricstify(trackId: string): Promise<LyricsResponse | nu
     if (data.lyrics && data.lyrics.lines && Array.isArray(data.lyrics.lines)) {
       const lines = data.lyrics.lines
         .filter(line => line.words && line.words.trim() !== '')
-        .map((line, index, array) => ({
+        .map((line) => ({
           text: line.words,
           startTime: parseInt(line.startTimeMs, 10),
           endTime: parseInt(line.endTimeMs, 10)
