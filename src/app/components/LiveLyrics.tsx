@@ -136,7 +136,7 @@ const LiveLyrics = ({
   return (
     <div style={{
       position: 'fixed',
-      bottom: '20%', // Position in bottom-middle area (above player, below heart)
+      bottom: '12%', // Position in bottom-middle area (above player, below heart)
       left: '50%',
       transform: 'translateX(-50%)',
       zIndex: 5,
