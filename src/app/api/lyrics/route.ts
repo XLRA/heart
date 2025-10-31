@@ -53,21 +53,30 @@ async function fetchFromGenius(track: string, artist: string): Promise<LyricsRes
     return null;
   }
 
+  console.log(`[Genius] Attempting to fetch lyrics for: "${track}" by "${artist}"`);
+
   try {
     // Step 1: Search for the song using Genius API
     const searchUrl = `https://api.genius.com/search?q=${encodeURIComponent(track + ' ' + artist)}`;
+    console.log(`[Genius] Search URL: ${searchUrl}`);
+    
     const searchResponse = await fetch(searchUrl, {
       headers: {
         'Authorization': `Bearer ${GENIUS_ACCESS_TOKEN}`
       }
     });
 
+    console.log(`[Genius] Search response status: ${searchResponse.status}`);
+
     if (!searchResponse.ok) {
-      console.error('Genius search failed:', searchResponse.status);
+      console.error(`[Genius] Search failed with status ${searchResponse.status}`);
+      const errorText = await searchResponse.text();
+      console.error(`[Genius] Error response: ${errorText}`);
       return null;
     }
 
     const searchData = await searchResponse.json();
+    console.log(`[Genius] Search returned ${searchData.response?.hits?.length || 0} results`);
     
     if (!searchData.response?.hits || searchData.response.hits.length === 0) {
       console.log('No results found on Genius');
@@ -78,21 +87,25 @@ async function fetchFromGenius(track: string, artist: string): Promise<LyricsRes
     const songUrl = searchData.response.hits[0].result.url;
     const songTitle = searchData.response.hits[0].result.title;
     
-    console.log(`Found song on Genius: ${songTitle} - ${songUrl}`);
+    console.log(`[Genius] Found song: ${songTitle} - ${songUrl}`);
     
     // Step 2: Scrape lyrics from the song page
+    console.log(`[Genius] Fetching page: ${songUrl}`);
     const pageResponse = await fetch(songUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
       }
     });
 
+    console.log(`[Genius] Page response status: ${pageResponse.status}`);
+
     if (!pageResponse.ok) {
-      console.error('Failed to fetch Genius page:', pageResponse.status);
+      console.error(`[Genius] Failed to fetch page: ${pageResponse.status}`);
       return null;
     }
 
     const html = await pageResponse.text();
+    console.log(`[Genius] Received HTML, length: ${html.length} characters`);
     
     // Step 3: Parse HTML and extract lyrics
     const $ = cheerio.load(html);
@@ -108,8 +121,12 @@ async function fetchFromGenius(track: string, artist: string): Promise<LyricsRes
       '[class*="lyrics"]'
     ];
     
+    console.log(`[Genius] Trying ${selectors.length} different CSS selectors...`);
+    
     for (const selector of selectors) {
       const elements = $(selector);
+      console.log(`[Genius] Selector "${selector}" found ${elements.length} elements`);
+      
       if (elements.length > 0) {
         // Concatenate all matching elements (lyrics are sometimes split across multiple divs)
         elements.each((_, element) => {
@@ -133,13 +150,16 @@ async function fetchFromGenius(track: string, artist: string): Promise<LyricsRes
         });
         
         if (lyricsText.trim()) {
+          console.log(`[Genius] Successfully extracted lyrics using selector: ${selector}`);
+          console.log(`[Genius] Lyrics length: ${lyricsText.length} characters`);
           break; // Found lyrics, stop trying other selectors
         }
       }
     }
     
     if (!lyricsText.trim()) {
-      console.error('Could not extract lyrics from Genius page');
+      console.error('[Genius] Could not extract lyrics from page - none of the selectors matched');
+      console.error('[Genius] Page might have a new structure. First 500 chars of HTML:', html.substring(0, 500));
       return null;
     }
     
@@ -159,7 +179,11 @@ async function fetchFromGenius(track: string, artist: string): Promise<LyricsRes
     };
     
   } catch (error) {
-    console.error('Error fetching from Genius:', error);
+    console.error('[Genius] Error fetching lyrics:', error);
+    if (error instanceof Error) {
+      console.error('[Genius] Error message:', error.message);
+      console.error('[Genius] Error stack:', error.stack);
+    }
     return null;
   }
 }
@@ -251,17 +275,26 @@ export async function GET(request: NextRequest) {
   // Try to fetch from various sources
   let result: LyricsResponse | null = null;
 
+  console.log(`[API] Fetching lyrics for: "${track}" by "${artist}"`);
+
   // Try Genius (web scraping with free API token)
   result = await fetchFromGenius(track, artist);
   
-  // Try Musixmatch if Genius failed (requires paid API key)
-  if (!result) {
+  if (result) {
+    console.log(`[API] Successfully fetched lyrics from Genius (${result.lyrics.length} lines)`);
+  } else {
+    console.log('[API] Genius fetch failed, trying Musixmatch...');
+    // Try Musixmatch if Genius failed (requires paid API key)
     result = await fetchFromMusixmatch(track, artist);
+    
+    if (result) {
+      console.log(`[API] Successfully fetched lyrics from Musixmatch (${result.lyrics.length} lines)`);
+    }
   }
 
   // Fallback to demo lyrics if all sources failed
   if (!result) {
-    console.log('Using demo lyrics for:', track);
+    console.log('[API] All sources failed, using demo lyrics for:', track);
     result = generateDemoLyrics(track, artist);
   }
 
@@ -270,6 +303,8 @@ export async function GET(request: NextRequest) {
     data: result,
     timestamp: Date.now()
   });
+
+  console.log(`[API] Returning lyrics: source="${result.source}", lines=${result.lyrics.length}`);
 
   return NextResponse.json(result);
 }

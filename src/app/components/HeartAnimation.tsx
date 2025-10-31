@@ -116,8 +116,6 @@ const HeartAnimation = ({
       // Beat detection from spectral flux and RMS
       const beat = meydaData.spectralFlux > 0.1 || meydaData.rms > 0.3;
 
-      console.log('Converting Meyda to audioData:', { bass, mid, treble, overall, beat, meydaData });
-
       setAudioData({
         bass,
         mid,
