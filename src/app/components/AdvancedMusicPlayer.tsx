@@ -568,20 +568,25 @@ const AdvancedMusicPlayer = () => {
             isVisible={showPlaylistSongs}
             onClose={() => setShowPlaylistSongs(false)}
             currentTrackId={playerState.current_track?.id || null}
+            isPlayerExtended={!currentPlayerState.is_paused && currentPlayerState.is_active}
           />
         )}
         <div id="player-track" style={{
           position: 'absolute',
-          top: (!currentPlayerState.is_paused && currentPlayerState.is_active) ? '-92px' : '0',
+          top: '0',
           right: '15px',
           left: '15px',
           padding: '13px 22px 10px 184px',
           backgroundColor: '#151518',
           borderRadius: '15px 15px 0 0',
-          transition: '0.3s ease top',
+          transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+          transform: (!currentPlayerState.is_paused && currentPlayerState.is_active) ? 'translate3d(0, -92px, 0)' : 'translate3d(0, 0, 0)',
           zIndex: 1,
           border: '1px solid rgba(255, 255, 255, 0.1)',
-          borderBottom: 'none'
+          borderBottom: 'none',
+          willChange: 'transform',
+          backfaceVisibility: 'hidden',
+          WebkitBackfaceVisibility: 'hidden'
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
             <div id="album-name" style={{
@@ -741,11 +746,12 @@ const AdvancedMusicPlayer = () => {
             height: '115px',
             marginLeft: '40px',
             transform: 'rotateZ(0)',
-            transition: '0.3s ease all',
+            transition: 'top 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
             boxShadow: (!currentPlayerState.is_paused && currentPlayerState.is_active) ? '0 0 0 4px #23232b, 0 30px 50px -15px #23232b' : '0 0 0 10px #18181f',
             borderRadius: '50%',
             overflow: 'hidden',
-            backgroundColor: '#151518'
+            backgroundColor: '#151518',
+            willChange: 'top, box-shadow'
           }}>
             <Image 
               src={songs[0]?.cover || '/covers/cover1.jpg'}
@@ -1006,11 +1012,13 @@ const AdvancedMusicPlayer = () => {
         }
 
         .button {
-          transition: all 0.2s ease;
+          transition: background-color 0.2s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+          will-change: background-color, color;
         }
         
         .button i {
-          transition: all 0.2s ease;
+          transition: color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+          will-change: color;
         }
         
         .button:hover {
@@ -1023,6 +1031,13 @@ const AdvancedMusicPlayer = () => {
 
         #volume-bar-container:hover #volume-bar {
           background-color: #ffffff !important;
+          transition: background-color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        #album-art img {
+          will-change: transform;
+          backface-visibility: hidden;
+          -webkit-backface-visibility: hidden;
         }
       `}</style>
     </div>

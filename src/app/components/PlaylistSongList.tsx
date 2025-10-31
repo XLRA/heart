@@ -28,15 +28,19 @@ interface PlaylistSongListProps {
   isVisible: boolean;
   onClose: () => void;
   currentTrackId?: string | null;
+  isPlayerExtended?: boolean;
 }
 
-const PlaylistSongList = ({ playlist, isVisible, onClose, currentTrackId }: PlaylistSongListProps) => {
+const PlaylistSongList = ({ playlist, isVisible, onClose, currentTrackId, isPlayerExtended = false }: PlaylistSongListProps) => {
   const { playTrack, isReady, deviceId } = useWebPlayer();
   const [hoveredTrackId, setHoveredTrackId] = useState<string | null>(null);
 
   if (!playlist.tracks?.items) return null;
 
   const tracks = playlist.tracks.items.filter(item => item.track).map(item => item.track);
+  
+  // Adjust position based on whether player-track panel is extended (92px) or collapsed (0px)
+  const playerTrackOffset = isPlayerExtended ? 92 : 0;
 
   const handleTrackClick = (track: SpotifyTrack) => {
     if (!isReady || !deviceId) {
@@ -74,7 +78,7 @@ const PlaylistSongList = ({ playlist, isVisible, onClose, currentTrackId }: Play
   return (
     <div style={{
       position: 'absolute',
-      bottom: 'calc(100% + 75px)',
+      bottom: `calc(100% + ${75 + playerTrackOffset}px)`,
       left: '15px',
       right: '15px',
       maxHeight: '400px',
@@ -87,10 +91,13 @@ const PlaylistSongList = ({ playlist, isVisible, onClose, currentTrackId }: Play
       zIndex: 1,
       overflow: 'hidden',
       boxShadow: '0 -4px 20px rgba(0, 0, 0, 0.3)',
-      transform: isVisible ? 'translateY(0)' : 'translateY(calc(100% + 75px))',
+      transform: isVisible ? 'translate3d(0, 0, 0)' : `translate3d(0, calc(100% + ${75 + playerTrackOffset}px), 0)`,
       opacity: isVisible ? 1 : 0,
-      transition: 'transform 0.3s ease-out, opacity 0.3s ease-out',
-      pointerEvents: isVisible ? 'auto' : 'none'
+      transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+      pointerEvents: isVisible ? 'auto' : 'none',
+      willChange: 'transform, opacity',
+      backfaceVisibility: 'hidden',
+      WebkitBackfaceVisibility: 'hidden'
     }}>
       {/* Header */}
       <div style={{
