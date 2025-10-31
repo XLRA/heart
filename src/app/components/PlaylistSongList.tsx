@@ -90,7 +90,7 @@ const PlaylistSongList = ({ playlist, isVisible, onClose, currentTrackId, isPlay
       right: '15px',
       maxHeight: '400px',
       backgroundColor: '#151518',
-      borderRadius: '15px 15px 0 0',
+      borderRadius: '15px 15px 12px 12px',
       border: '1px solid rgba(255, 255, 255, 0.1)',
       borderBottom: 'none',
       display: 'flex',
