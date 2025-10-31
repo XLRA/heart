@@ -77,6 +77,7 @@ const AdvancedMusicPlayer = () => {
   
   const isSeekingRef = useRef<boolean>(false);
   const seekTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const meydaInitializedTrackRef = useRef<string | null>(null);
   
   const audioRef = useRef<HTMLAudioElement>(null);
   const volumeBarRef = useRef<HTMLDivElement>(null);
@@ -422,27 +423,12 @@ const AdvancedMusicPlayer = () => {
     }
   }, [isUsingSpotifyPlayer, playerState.is_paused, playerState.is_active, setIsPlaying, setSpotifyMode, setSpotifyTrackData]);
 
-  // Initialize Meyda audio analysis for Spotify tracks
-  const initializeMeydaAnalysis = useCallback(async () => {
-    try {
-      // Initialize Meyda audio context (creates synthetic audio source for Spotify)
-      await meydaAudioService.initializeAudioContext();
-      
-      // Start Meyda analysis with callback and track data
-      await meydaAudioService.startAnalysis((features) => {
-        setMeydaData(features);
-      }, spotifyTrackData || undefined);
-    } catch (error) {
-      console.error('Error initializing Meyda analysis:', error);
-      setMeydaData(null);
-    }
-  }, [setMeydaData, spotifyTrackData]);
-
-  // Fetch Spotify track audio features and initialize Meyda analysis
+  // Fetch Spotify track audio features
   useEffect(() => {
     if (!isUsingSpotifyPlayer || !playerState.current_track?.id) {
       setSpotifyTrackData(null);
       setMeydaData(null);
+      meydaAudioService.stopAnalysis();
       return;
     }
 
@@ -535,14 +521,66 @@ const AdvancedMusicPlayer = () => {
 
     fetchTrackFeatures();
     
-    // Initialize Meyda analysis for real-time audio features
-    // For Spotify tracks, uses synthetic audio source for analysis
-    initializeMeydaAnalysis();
-    
     return () => {
       isMounted = false;
     };
-  }, [isUsingSpotifyPlayer, playerState.current_track?.id, initializeMeydaAnalysis]);
+  }, [isUsingSpotifyPlayer, playerState.current_track?.id, setSpotifyTrackData, setMeydaData]);
+
+  // Initialize Meyda analysis separately - only when track ID changes
+  useEffect(() => {
+    if (!isUsingSpotifyPlayer || !playerState.current_track?.id) {
+      meydaInitializedTrackRef.current = null;
+      meydaAudioService.stopAnalysis();
+      return;
+    }
+
+    const currentTrackId = playerState.current_track.id;
+
+    // Only initialize if we haven't already initialized for this track
+    if (meydaInitializedTrackRef.current === currentTrackId) {
+      return;
+    }
+
+    // Only initialize if we have track data (wait for it to be set)
+    if (!spotifyTrackData) {
+      return;
+    }
+
+    let isMounted = true;
+
+    const initializeMeyda = async () => {
+      if (!isMounted || meydaInitializedTrackRef.current === currentTrackId) return;
+      
+      meydaInitializedTrackRef.current = currentTrackId;
+
+      try {
+        // Initialize Meyda audio context (creates synthetic audio source for Spotify)
+        await meydaAudioService.initializeAudioContext();
+        
+        // Start Meyda analysis with callback and track data
+        await meydaAudioService.startAnalysis((features) => {
+          if (isMounted && meydaInitializedTrackRef.current === currentTrackId) {
+            setMeydaData(features);
+          }
+        }, spotifyTrackData);
+      } catch (error) {
+        console.error('Error initializing Meyda analysis:', error);
+        if (isMounted) {
+          setMeydaData(null);
+        }
+        meydaInitializedTrackRef.current = null;
+      }
+    };
+
+    initializeMeyda();
+    
+    return () => {
+      isMounted = false;
+      if (meydaInitializedTrackRef.current === currentTrackId) {
+        meydaAudioService.stopAnalysis();
+      }
+    };
+  }, [isUsingSpotifyPlayer, playerState.current_track?.id, spotifyTrackData, setMeydaData]);
 
 
   useEffect(() => {

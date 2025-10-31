@@ -67,6 +67,7 @@ class MeydaAudioService {
   private currentAnalyzer: MeydaAnalyzer | null = null;
   private audioContext: AudioContext | null = null;
   private sourceNode: MediaElementAudioSourceNode | null = null;
+  private isInitialized = false;
 
   private async rateLimit(): Promise<void> {
     const now = Date.now();
@@ -102,6 +103,11 @@ class MeydaAudioService {
   }
 
   async initializeAudioContext(): Promise<void> {
+    // Prevent reinitialization if already initialized
+    if (this.isInitialized && this.audioContext && this.sourceNode) {
+      return;
+    }
+
     const meyda = await loadMeyda();
     if (!meyda) {
       console.warn('Meyda not available, skipping audio context initialization');
@@ -144,11 +150,13 @@ class MeydaAudioService {
       bufferSource.start();
       
       this.sourceNode = gainNode as unknown as MediaElementAudioSourceNode;
+      this.isInitialized = true;
       console.log('Meyda audio context initialized with synthetic audio source for Spotify analysis');
     } catch (error) {
       console.error('Error initializing Meyda audio context:', error);
       this.audioContext = null;
       this.sourceNode = null;
+      this.isInitialized = false;
     }
   }
 
@@ -275,6 +283,8 @@ class MeydaAudioService {
       this.audioContext.close();
       this.audioContext = null;
     }
+    
+    this.isInitialized = false;
   }
 
   // Normalization methods for different features
