@@ -84,16 +84,16 @@ const AdvancedMusicPlayer = () => {
 
   const defaultSongs = useMemo<Song[]>(() => [
     {
-      title: "What You Need",
-      artist: "The Weeknd - Durdnn Remix",
-      url: "/music/song1.mp3",
-      cover: "/covers/cover1.jpg"
-    },
-    {
       title: "No. 1 Party Anthem",
       artist: "Arctic Monkeys",
       url: "/music/song2.mp3",
       cover: "/covers/cover2.png"
+    },
+    {
+      title: "What You Need",
+      artist: "The Weeknd - Durdnn Remix",
+      url: "/music/song1.mp3",
+      cover: "/covers/cover1.jpg"
     }
   ], []);
 
