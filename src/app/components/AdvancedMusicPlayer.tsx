@@ -308,7 +308,14 @@ const AdvancedMusicPlayer = () => {
   const handlePlaylistSelect = useCallback((playlist: SpotifyPlaylistData) => {
     if (isReady && deviceId) {
       // Use Spotify Web Player for full playback
-      // Set Spotify mode FIRST to prevent local audio from loading
+      // IMMEDIATELY stop and clear local audio BEFORE state updates (synchronous)
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = '';
+        audioRef.current.load(); // Reset the audio element
+      }
+      
+      // Now set Spotify mode to prevent local audio from loading
       setIsUsingSpotifyPlayer(true);
       setCurrentPlaylist(playlist);
       setShowPlaylistSelector(false);
@@ -375,20 +382,40 @@ const AdvancedMusicPlayer = () => {
 
   // Set audio source when current song changes (only for local playback)
   useEffect(() => {
-    // Only load local audio when NOT using Spotify player
+    // Only load local audio when NOT using Spotify player AND we have a valid local URL
     if (!isUsingSpotifyPlayer && audioRef.current && songs.length > 0 && songs[0].url) {
-      audioRef.current.src = songs[0].url;
-      audioRef.current.load(); // Reload the audio element with new source
-      // Set audio element for visualizer
-      setAudioElement(audioRef.current);
+      // Double check that the song URL is actually a local file path (starts with /)
+      // This prevents accidentally loading if a Spotify track sneaks through
+      if (songs[0].url.startsWith('/')) {
+        audioRef.current.src = songs[0].url;
+        audioRef.current.load(); // Reload the audio element with new source
+        // Set audio element for visualizer
+        setAudioElement(audioRef.current);
+      }
     }
   }, [songs, setAudioElement, isUsingSpotifyPlayer]);
 
   // Add audio event listeners for local playback
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio || isUsingSpotifyPlayer) return; // Only handle local audio when not using Spotify
+    if (!audio) return;
 
+    // If using Spotify, prevent local audio from playing
+    if (isUsingSpotifyPlayer) {
+      // Immediately pause if audio somehow starts playing
+      const preventPlay = () => {
+        console.log('Preventing local audio from playing during Spotify mode');
+        audio.pause();
+      };
+      
+      audio.addEventListener('play', preventPlay);
+      
+      return () => {
+        audio.removeEventListener('play', preventPlay);
+      };
+    }
+
+    // Handle local audio playback when NOT using Spotify
     const handlePlay = () => {
       setLocalPlayerState(prev => ({ ...prev, is_paused: false, is_active: true }));
       setIsPlaying(true);
