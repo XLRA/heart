@@ -98,18 +98,29 @@ const AdvancedMusicPlayer = () => {
   ], []);
 
   const songs = useMemo<Song[]>(() => {
-    if (isUsingSpotifyPlayer && playerState.current_track) {
-      // Convert Spotify track to our Song format
+    if (isUsingSpotifyPlayer) {
+      // When using Spotify Web Player, ONLY show Spotify tracks
+      // Don't fall back to local songs even if current_track is null
+      if (playerState.current_track) {
+        return [{
+          title: playerState.current_track.name,
+          artist: playerState.current_track.artists.map(artist => artist.name).join(', '),
+          url: '', // Not used for Spotify tracks
+          cover: playerState.current_track.album.images[0]?.url || '/covers/cover1.jpg',
+          duration: playerState.current_track.duration_ms / 1000,
+          id: playerState.current_track.id,
+          uri: playerState.current_track.uri
+        }];
+      }
+      // Return placeholder when Spotify mode but no track yet
       return [{
-        title: playerState.current_track.name,
-        artist: playerState.current_track.artists.map(artist => artist.name).join(', '),
-        url: '', // Not used for Spotify tracks
-        cover: playerState.current_track.album.images[0]?.url || '/covers/cover1.jpg',
-        duration: playerState.current_track.duration_ms / 1000,
-        id: playerState.current_track.id,
-        uri: playerState.current_track.uri
+        title: 'Loading...',
+        artist: 'Spotify',
+        url: '', // No URL for Spotify mode
+        cover: '/covers/cover1.jpg'
       }];
     }
+    // Only use local playlist songs or default songs when NOT in Spotify mode
     if (currentPlaylistSongs.length > 0) {
       return currentPlaylistSongs;
     }
@@ -297,12 +308,15 @@ const AdvancedMusicPlayer = () => {
   const handlePlaylistSelect = useCallback((playlist: SpotifyPlaylistData) => {
     if (isReady && deviceId) {
       // Use Spotify Web Player for full playback
-      const playlistUri = `spotify:playlist:${playlist.id}`;
-      playPlaylist(playlistUri);
-      setCurrentPlaylist(playlist);
+      // Set Spotify mode FIRST to prevent local audio from loading
       setIsUsingSpotifyPlayer(true);
+      setCurrentPlaylist(playlist);
       setShowPlaylistSelector(false);
       setShowPlaylistSongs(true); // Show playlist songs panel
+      
+      // Start playback after state is set
+      const playlistUri = `spotify:playlist:${playlist.id}`;
+      playPlaylist(playlistUri);
     } else {
       // Fallback to preview URLs (limited functionality)
       // Process tracks asynchronously to prevent UI freeze
@@ -359,15 +373,16 @@ const AdvancedMusicPlayer = () => {
     }
   };
 
-  // Set audio source when current song changes
+  // Set audio source when current song changes (only for local playback)
   useEffect(() => {
-    if (audioRef.current && songs.length > 0 && songs[0].url) {
+    // Only load local audio when NOT using Spotify player
+    if (!isUsingSpotifyPlayer && audioRef.current && songs.length > 0 && songs[0].url) {
       audioRef.current.src = songs[0].url;
       audioRef.current.load(); // Reload the audio element with new source
       // Set audio element for visualizer
       setAudioElement(audioRef.current);
     }
-  }, [songs, setAudioElement]);
+  }, [songs, setAudioElement, isUsingSpotifyPlayer]);
 
   // Add audio event listeners for local playback
   useEffect(() => {
@@ -417,6 +432,11 @@ const AdvancedMusicPlayer = () => {
     if (isUsingSpotifyPlayer) {
       setIsPlaying(!playerState.is_paused && playerState.is_active);
       setSpotifyMode(true);
+      // Pause and clear local audio element when switching to Spotify mode
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = '';
+      }
     } else {
       setSpotifyMode(false);
       setSpotifyTrackData(null);
