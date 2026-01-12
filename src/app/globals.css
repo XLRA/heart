@@ -87,3 +87,13 @@ input[type="range"]::-moz-range-track {
   border: none;
   background: transparent;
 }
+
+@keyframes rotateAlbumArt {
+  0% { transform: rotateZ(0); }
+  100% { transform: rotateZ(360deg); }
+}
+
+.animate-rotate-album {
+  animation: rotateAlbumArt 3s linear infinite;
+}
+

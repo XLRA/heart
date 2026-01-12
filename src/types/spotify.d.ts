@@ -81,4 +81,27 @@ interface SpotifyTrack {
   media_type: string;
 }
 
+export interface SpotifyPlaylistData {
+  id: string;
+  name: string;
+  description?: string | null;
+  images?: Array<{ url: string }>;
+  tracks?: {
+    total: number;
+    href?: string;
+    items?: Array<{
+      track: {
+        name: string;
+        artists: Array<{ name: string }>;
+        preview_url: string | null;
+        album: { images: Array<{ url: string }> };
+        duration_ms: number;
+        id: string;
+        external_urls?: { spotify: string };
+      };
+    }>;
+  };
+  owner?: { display_name?: string };
+}
+
 export {};
