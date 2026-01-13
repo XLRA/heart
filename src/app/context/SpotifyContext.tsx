@@ -250,10 +250,34 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
     if (!spotifyApi) return [];
 
     try {
-      const tracksData = await spotifyApi.getPlaylistTracks(playlistId);
-      return tracksData.items
-        .map(item => item.track)
-        .filter(track => track && 'preview_url' in track && track.preview_url) as SpotifyTrack[];
+      const allTracks: SpotifyTrack[] = [];
+      let offset = 0;
+      const limit = 100; // Spotify's max per request
+      let hasMore = true;
+
+      // Paginate through all tracks
+      while (hasMore) {
+        const tracksData = await spotifyApi.getPlaylistTracks(playlistId, { offset, limit });
+        
+        const tracks = tracksData.items
+          .map(item => item.track)
+          .filter(track => track && 'preview_url' in track && track.preview_url) as SpotifyTrack[];
+        
+        allTracks.push(...tracks);
+        
+        // Check if there are more tracks to fetch
+        hasMore = tracksData.next !== null;
+        offset += limit;
+        
+        // Safety limit to prevent infinite loops
+        if (offset > 500) {
+          console.warn('Reached safety limit of 500 tracks');
+          break;
+        }
+      }
+
+      console.log(`[SpotifyContext] Loaded ${allTracks.length} tracks from playlist`);
+      return allTracks;
     } catch (error) {
       console.error('Error loading playlist tracks:', error);
       return [];

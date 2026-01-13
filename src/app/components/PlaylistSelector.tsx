@@ -38,36 +38,83 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
   const { playlists, loadUserPlaylists, loadPlaylistTracks, spotifyApi } = useSpotify();
   const [loading, setLoading] = useState(false);
   const [selectedPlaylist, setSelectedPlaylist] = useState<SpotifyPlaylistData | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     if (isVisible && playlists.length === 0) {
       loadUserPlaylists();
     }
+    // Clear search when modal opens
+    if (isVisible) {
+      setSearchQuery('');
+    }
   }, [isVisible, playlists.length, loadUserPlaylists]);
+
+  // Filter playlists based on search query
+  const filteredPlaylists = playlists.filter((playlist) => {
+    if (!searchQuery.trim()) return true;
+    const query = searchQuery.toLowerCase();
+    const nameMatch = playlist.name?.toLowerCase().includes(query);
+    const ownerMatch = playlist.owner?.display_name?.toLowerCase().includes(query);
+    return nameMatch || ownerMatch;
+  });
 
   const handlePlaylistClick = async (playlist: SpotifyPlaylistData) => {
     setLoading(true);
     setSelectedPlaylist(playlist);
     
-      try {
-        // Load all tracks (not just those with preview URLs) for Web Player compatibility
-        if (spotifyApi) {
-        const tracksData = await spotifyApi.getPlaylistTracks(playlist.id);
-        const allTracks = tracksData.items
-          .map(item => item.track)
-          .filter((track): track is SpotifyApi.TrackObjectFull => 
-            track !== null && track !== undefined && 'type' in track && track.type === 'track'
-          )
-          .map(track => ({
-            name: track.name,
-            artists: track.artists || [],
-            album: track.album || { images: [] },
-            duration_ms: track.duration_ms || 0,
-            id: track.id,
-            preview_url: track.preview_url || null,
-            uri: track.uri || `spotify:track:${track.id}`,
-            external_urls: track.external_urls || { spotify: `https://open.spotify.com/track/${track.id}` }
-          }));
+    try {
+      // Load all tracks (not just those with preview URLs) for Web Player compatibility
+      if (spotifyApi) {
+        const allTracks: Array<{
+          name: string;
+          artists: SpotifyApi.ArtistObjectSimplified[];
+          album: SpotifyApi.AlbumObjectSimplified;
+          duration_ms: number;
+          id: string;
+          preview_url: string | null;
+          uri: string;
+          external_urls: { spotify: string };
+        }> = [];
+        
+        let offset = 0;
+        const limit = 100; // Spotify's max per request
+        let hasMore = true;
+
+        // Paginate through all tracks
+        while (hasMore) {
+          const tracksData = await spotifyApi.getPlaylistTracks(playlist.id, { offset, limit });
+          
+          const tracks = tracksData.items
+            .map(item => item.track)
+            .filter((track): track is SpotifyApi.TrackObjectFull => 
+              track !== null && track !== undefined && 'type' in track && track.type === 'track'
+            )
+            .map(track => ({
+              name: track.name,
+              artists: track.artists || [],
+              album: track.album || { images: [] },
+              duration_ms: track.duration_ms || 0,
+              id: track.id,
+              preview_url: track.preview_url || null,
+              uri: track.uri || `spotify:track:${track.id}`,
+              external_urls: track.external_urls || { spotify: `https://open.spotify.com/track/${track.id}` }
+            }));
+          
+          allTracks.push(...tracks);
+          
+          // Check if there are more tracks to fetch
+          hasMore = tracksData.next !== null;
+          offset += limit;
+          
+          // Safety limit to prevent infinite loops
+          if (offset > 500) {
+            console.warn('Reached safety limit of 500 tracks');
+            break;
+          }
+        }
+
+        console.log(`[PlaylistSelector] Loaded ${allTracks.length} tracks from playlist "${playlist.name}"`);
         
         const playlistWithTracks: SpotifyPlaylistData = {
           ...playlist,
@@ -163,6 +210,80 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
           </button>
         </div>
 
+        {/* Search Bar */}
+        <div style={{
+          padding: '0 24px 16px 24px',
+        }}>
+          <div style={{
+            position: 'relative',
+            display: 'flex',
+            alignItems: 'center'
+          }}>
+            <i 
+              className="fas fa-search" 
+              style={{ 
+                position: 'absolute',
+                left: '14px',
+                color: '#8f8f9d',
+                fontSize: '14px',
+                pointerEvents: 'none'
+              }}
+            ></i>
+            <input
+              type="text"
+              placeholder="Search playlists..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              style={{
+                width: '100%',
+                backgroundColor: '#1a1a1d',
+                border: '1px solid rgba(255, 255, 255, 0.1)',
+                borderRadius: '10px',
+                padding: '12px 14px 12px 40px',
+                color: '#f1f1f1',
+                fontSize: '14px',
+                outline: 'none',
+                transition: 'all 0.2s ease'
+              }}
+              onFocus={(e) => {
+                e.currentTarget.style.borderColor = 'rgba(29, 185, 84, 0.5)';
+                e.currentTarget.style.backgroundColor = '#202024';
+              }}
+              onBlur={(e) => {
+                e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+                e.currentTarget.style.backgroundColor = '#1a1a1d';
+              }}
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                style={{
+                  position: 'absolute',
+                  right: '10px',
+                  backgroundColor: 'transparent',
+                  border: 'none',
+                  color: '#8f8f9d',
+                  cursor: 'pointer',
+                  padding: '4px 8px',
+                  borderRadius: '4px',
+                  transition: 'all 0.2s ease',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.color = '#ffffff';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.color = '#8f8f9d';
+                }}
+              >
+                <i className="fas fa-times" style={{ fontSize: '12px' }}></i>
+              </button>
+            )}
+          </div>
+        </div>
+
         {/* Playlist List */}
         <div 
           className="playlist-list-container"
@@ -181,12 +302,21 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
               <i className="fas fa-music" style={{ fontSize: '48px', marginBottom: '16px', opacity: 0.5 }}></i>
               <p>No playlists found</p>
             </div>
+          ) : filteredPlaylists.length === 0 ? (
+            <div style={{
+              textAlign: 'center',
+              color: '#8f8f9d',
+              padding: '40px 20px'
+            }}>
+              <i className="fas fa-search" style={{ fontSize: '48px', marginBottom: '16px', opacity: 0.5 }}></i>
+              <p>No playlists match &quot;{searchQuery}&quot;</p>
+            </div>
           ) : (
             <div style={{
               display: 'grid',
               gap: '12px'
             }}>
-              {playlists.map((playlist) => (
+              {filteredPlaylists.map((playlist) => (
                 <div
                   key={playlist.id}
                   onClick={() => handlePlaylistClick(playlist)}
