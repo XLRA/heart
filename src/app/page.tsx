@@ -9,7 +9,7 @@ import { WebPlayerProvider, useWebPlayer } from './context/WebPlayerContext';
 import { AudioVisualizerProvider, useAudioVisualizer } from './context/AudioVisualizerContext';
 
 function AppContent() {
-  const { audioElement, isPlaying, isSpotifyMode, meydaData, spotifyTrackData } = useAudioVisualizer();
+  const { audioElement, isPlaying, isSpotifyMode, meydaData, spotifyTrackData, albumColors } = useAudioVisualizer();
   const { playerState } = useWebPlayer();
   
   return (
@@ -20,6 +20,7 @@ function AppContent() {
         isSpotifyMode={isSpotifyMode}
         spotifyTrackData={spotifyTrackData}
         meydaData={meydaData}
+        albumColors={albumColors}
         currentTrackId={playerState.current_track?.id || null}
         currentPosition={playerState.position}
       />

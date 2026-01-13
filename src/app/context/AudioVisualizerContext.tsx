@@ -2,6 +2,16 @@
 
 import { createContext, useContext, useState, ReactNode } from 'react';
 
+// Album colors extracted from cover art
+export interface AlbumColors {
+  dominant: string;      // Most prominent color (HSLA)
+  palette: string[];     // 3-5+ prominent colors (HSLA)
+  raw: {
+    dominant: [number, number, number];  // RGB
+    palette: [number, number, number][]; // RGB array
+  };
+}
+
 interface AudioVisualizerContextType {
   audioElement: HTMLAudioElement | null;
   isPlaying: boolean;
@@ -23,6 +33,7 @@ interface AudioVisualizerContextType {
     mfcc: number[];
     chroma: number[];
   } | null;
+  albumColors: AlbumColors | null;
   setAudioElement: (element: HTMLAudioElement | null) => void;
   setIsPlaying: (playing: boolean) => void;
   setSpotifyMode: (isSpotify: boolean) => void;
@@ -43,6 +54,7 @@ interface AudioVisualizerContextType {
     mfcc: number[];
     chroma: number[];
   } | null) => void;
+  setAlbumColors: (colors: AlbumColors | null) => void;
 }
 
 const AudioVisualizerContext = createContext<AudioVisualizerContextType | undefined>(undefined);
@@ -80,6 +92,7 @@ export const AudioVisualizerProvider = ({ children }: AudioVisualizerProviderPro
     mfcc: number[];
     chroma: number[];
   } | null>(null);
+  const [albumColors, setAlbumColors] = useState<AlbumColors | null>(null);
 
   return (
     <AudioVisualizerContext.Provider
@@ -89,11 +102,13 @@ export const AudioVisualizerProvider = ({ children }: AudioVisualizerProviderPro
         isSpotifyMode,
         spotifyTrackData,
         meydaData,
+        albumColors,
         setAudioElement,
         setIsPlaying,
         setSpotifyMode,
         setSpotifyTrackData,
         setMeydaData,
+        setAlbumColors,
       }}
     >
       {children}

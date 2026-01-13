@@ -5,6 +5,7 @@ import { useSpotify } from '../context/SpotifyContext';
 import { useWebPlayer } from '../context/WebPlayerContext';
 import { useAudioVisualizer } from '../context/AudioVisualizerContext';
 import { meydaAudioService } from '../../services/meyda';
+import { extractColorsFromImage, getSmallestImageUrl, getDefaultColors } from '../../services/colorExtractor';
 import PlaylistSelector from './PlaylistSelector';
 import PlaylistSongList from './PlaylistSongList';
 import { SpotifyPlaylistData } from '../../types/spotify';
@@ -39,7 +40,7 @@ const AdvancedMusicPlayer = () => {
     setVolume, 
     seek 
   } = useWebPlayer();
-  const { setAudioElement, setIsPlaying, setSpotifyMode, spotifyTrackData, setSpotifyTrackData, setMeydaData } = useAudioVisualizer();
+  const { setAudioElement, setIsPlaying, setSpotifyMode, spotifyTrackData, setSpotifyTrackData, setMeydaData, setAlbumColors } = useAudioVisualizer();
   
   const [previousVolume, setPreviousVolume] = useState(0.47);
   const [isMuted, setIsMuted] = useState(false);
@@ -474,6 +475,55 @@ const AdvancedMusicPlayer = () => {
       isMounted = false;
     };
   }, [isUsingSpotifyPlayer, playerState.current_track?.id, setSpotifyTrackData, setMeydaData]);
+
+  // Extract album colors when track changes (supports both Spotify and local tracks)
+  useEffect(() => {
+    let isMounted = true;
+    
+    // Determine the image URL based on whether we're using Spotify or local files
+    let imageUrl: string | null = null;
+    
+    if (isUsingSpotifyPlayer && playerState.current_track?.album?.images) {
+      // Spotify track - get the smallest image for faster extraction
+      imageUrl = getSmallestImageUrl(playerState.current_track.album.images);
+    } else if (!isUsingSpotifyPlayer && songs.length > 0 && songs[0].cover) {
+      // Local track - use the cover path directly
+      imageUrl = songs[0].cover;
+    }
+    
+    if (!imageUrl) {
+      // No album art available, use default colors
+      console.log('[AdvancedMusicPlayer] No album art found, using default colors');
+      setAlbumColors(getDefaultColors());
+      return;
+    }
+
+    const extractColors = async () => {
+      try {
+        console.log('[AdvancedMusicPlayer] Extracting colors from:', imageUrl);
+        const colors = await extractColorsFromImage(imageUrl!);
+        
+        if (isMounted) {
+          if (colors) {
+            console.log('[AdvancedMusicPlayer] ✅ Album colors extracted successfully');
+            setAlbumColors(colors);
+          } else {
+            console.log('[AdvancedMusicPlayer] ⚠️ Color extraction failed, using defaults');
+            setAlbumColors(getDefaultColors());
+          }
+        }
+      } catch (error) {
+        console.error('[AdvancedMusicPlayer] Error extracting colors:', error);
+        if (isMounted) setAlbumColors(getDefaultColors());
+      }
+    };
+
+    extractColors();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [playerState.current_track?.id, playerState.current_track?.album?.images, isUsingSpotifyPlayer, songs, setAlbumColors]);
 
   // Initialize Meyda analysis separately - only when track ID changes
   useEffect(() => {

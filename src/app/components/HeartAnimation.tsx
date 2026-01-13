@@ -2,6 +2,16 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 
+// Album colors interface (matches AudioVisualizerContext)
+interface AlbumColors {
+  dominant: string;
+  palette: string[];
+  raw: {
+    dominant: [number, number, number];
+    palette: [number, number, number][];
+  };
+}
+
 interface AudioVisualizerProps {
   audioElement?: HTMLAudioElement | null;
   isPlaying?: boolean;
@@ -23,6 +33,7 @@ interface AudioVisualizerProps {
     mfcc: number[];
     chroma: number[];
   } | null;
+  albumColors?: AlbumColors | null;
   currentTrackId?: string | null;
   currentPosition?: number;
 }
@@ -64,6 +75,7 @@ const HeartAnimation = ({
   isSpotifyMode = false, 
   spotifyTrackData = null,
   meydaData = null,
+  albumColors = null,
   currentTrackId = null,
   currentPosition = 0
 }: AudioVisualizerProps) => {
@@ -93,6 +105,13 @@ const HeartAnimation = ({
   const audioDataRef = useRef(audioData);
   const isPlayingRef = useRef(isPlaying);
   
+  // Color transition refs
+  const currentColorsRef = useRef<string[]>([]);
+  const targetColorsRef = useRef<string[]>([]);
+  const colorTransitionProgressRef = useRef(1); // 1 = complete, 0 = just started
+  const colorTransitionStartTimeRef = useRef(0);
+  const COLOR_TRANSITION_DURATION = 1500; // 1.5 seconds for smooth transition
+  
   // Update refs when values change
   useEffect(() => {
     audioDataRef.current = audioData;
@@ -101,6 +120,26 @@ const HeartAnimation = ({
   useEffect(() => {
     isPlayingRef.current = isPlaying;
   }, [isPlaying]);
+  
+  // Handle album color changes with fade transition
+  useEffect(() => {
+    if (!albumColors) return;
+    
+    console.log('[HeartAnimation] Album colors changed, starting transition');
+    
+    // Set target colors from album
+    targetColorsRef.current = albumColors.palette;
+    
+    // If this is the first time setting colors, don't animate
+    if (currentColorsRef.current.length === 0) {
+      currentColorsRef.current = albumColors.palette;
+      colorTransitionProgressRef.current = 1;
+    } else {
+      // Start transition
+      colorTransitionProgressRef.current = 0;
+      colorTransitionStartTimeRef.current = performance.now();
+    }
+  }, [albumColors]);
 
   // Convert Meyda real-time data to audioData format for heart animation
   useEffect(() => {
@@ -565,7 +604,34 @@ const HeartAnimation = ({
       force: number;
       f: string;
       trace: { x: number; y: number }[];
+      colorIndex: number; // Index into the color palette
     }
+
+    // Default colors (pink/purple) for fallback
+    const defaultColors = [
+      'hsla(320, 80%, 50%, 0.5)',
+      'hsla(280, 70%, 45%, 0.45)',
+      'hsla(340, 75%, 55%, 0.4)',
+      'hsla(300, 65%, 40%, 0.35)',
+      'hsla(260, 60%, 50%, 0.3)',
+      'hsla(330, 85%, 60%, 0.4)',
+      'hsla(290, 70%, 55%, 0.35)',
+      'hsla(310, 75%, 45%, 0.3)',
+    ];
+    
+    // Initialize current colors if empty
+    if (currentColorsRef.current.length === 0) {
+      currentColorsRef.current = defaultColors;
+    }
+    if (targetColorsRef.current.length === 0) {
+      targetColorsRef.current = defaultColors;
+    }
+
+    // Helper function to get a color from the palette
+    const getParticleColor = (index: number): string => {
+      const colors = currentColorsRef.current.length > 0 ? currentColorsRef.current : defaultColors;
+      return colors[index % colors.length];
+    };
 
     // Initialize particles once
     const e: Particle[] = [];
@@ -580,9 +646,10 @@ const HeartAnimation = ({
         q: ~~(Math.random() * heartPointsCount),
         D: 2 * (i % 2) - 1,
         force: 0.2 * Math.random() + 0.7,
-        f: `hsla(${Math.random() < 0.5 ? 320 + Math.random() * 20 : 280 + Math.random() * 20},${~~(60 * Math.random() + 70)}%,${~~(80 * Math.random() + 15)}%,.4)`,
-        trace: Array(traceCount).fill(null).map(() => ({ x, y }))
-      };
+        f: getParticleColor(i),
+        trace: Array(traceCount).fill(null).map(() => ({ x, y })),
+        colorIndex: i // Store which color index this particle uses
+      } as Particle;
     }
 
     const config = {
@@ -594,10 +661,79 @@ const HeartAnimation = ({
     let lastBeatTime = 0;
     let animationId: number;
     
+    // Helper function to parse HSLA color string
+    const parseHsla = (hsla: string): { h: number; s: number; l: number; a: number } => {
+      const match = hsla.match(/hsla?\((\d+),\s*(\d+)%,\s*(\d+)%,?\s*([\d.]+)?\)/);
+      if (match) {
+        return {
+          h: parseInt(match[1]),
+          s: parseInt(match[2]),
+          l: parseInt(match[3]),
+          a: parseFloat(match[4] || '0.4')
+        };
+      }
+      return { h: 320, s: 70, l: 50, a: 0.4 }; // Default pink
+    };
+    
+    // Helper function to interpolate between two colors
+    const interpolateColor = (color1: string, color2: string, progress: number): string => {
+      const c1 = parseHsla(color1);
+      const c2 = parseHsla(color2);
+      
+      // Handle hue interpolation (circular)
+      let hDiff = c2.h - c1.h;
+      if (hDiff > 180) hDiff -= 360;
+      if (hDiff < -180) hDiff += 360;
+      
+      const h = Math.round((c1.h + hDiff * progress + 360) % 360);
+      const s = Math.round(c1.s + (c2.s - c1.s) * progress);
+      const l = Math.round(c1.l + (c2.l - c1.l) * progress);
+      const a = c1.a + (c2.a - c1.a) * progress;
+      
+      return `hsla(${h}, ${s}%, ${l}%, ${a.toFixed(2)})`;
+    };
+    
+    // Helper to get interpolated color for a particle
+    const getInterpolatedColor = (colorIndex: number, audioIntensity: number = 0.4): string => {
+      const currentColors = currentColorsRef.current;
+      const targetColors = targetColorsRef.current;
+      const progress = colorTransitionProgressRef.current;
+      
+      if (currentColors.length === 0 || targetColors.length === 0) {
+        return `hsla(320, 80%, 50%, ${audioIntensity})`;
+      }
+      
+      const currentColor = currentColors[colorIndex % currentColors.length];
+      const targetColor = targetColors[colorIndex % targetColors.length];
+      
+      // If transition is complete, just return target color with adjusted intensity
+      if (progress >= 1) {
+        const parsed = parseHsla(targetColor);
+        return `hsla(${parsed.h}, ${parsed.s}%, ${parsed.l}%, ${audioIntensity})`;
+      }
+      
+      // Interpolate between current and target
+      const interpolated = interpolateColor(currentColor, targetColor, progress);
+      const parsed = parseHsla(interpolated);
+      return `hsla(${parsed.h}, ${parsed.s}%, ${parsed.l}%, ${audioIntensity})`;
+    };
+    
     const loop = () => {
       // Get current values from refs
       const currentAudioData = audioDataRef.current;
       const currentIsPlaying = isPlayingRef.current;
+      
+      // Update color transition progress
+      if (colorTransitionProgressRef.current < 1) {
+        const elapsed = performance.now() - colorTransitionStartTimeRef.current;
+        colorTransitionProgressRef.current = Math.min(1, elapsed / COLOR_TRANSITION_DURATION);
+        
+        // When transition completes, update current colors to target
+        if (colorTransitionProgressRef.current >= 1) {
+          currentColorsRef.current = [...targetColorsRef.current];
+          console.log('[HeartAnimation] Color transition complete');
+        }
+      }
       
       // Calculate dramatic audio-reactive pulse
       let basePulse = 1;
@@ -686,14 +822,14 @@ const HeartAnimation = ({
           N.y -= config.traceK * (N.y - T.y);
         }
 
-        // Adjust particle color intensity based on audio (more dramatic)
-        if (currentIsPlaying) {
-          const baseIntensity = 0.3 + currentAudioData.overall * 0.7;
-          const bassIntensity = currentAudioData.bass * 0.3;
-          const beatIntensity = currentAudioData.beat ? 0.4 : 0;
-          const colorIntensity = Math.min(1.0, baseIntensity + bassIntensity + beatIntensity);
-          u.f = u.f.replace(/,\s*[\d.]+\)/, `,${colorIntensity})`);
-        }
+        // Adjust particle color based on album colors and audio intensity
+        const baseIntensity = currentIsPlaying ? 0.3 + currentAudioData.overall * 0.7 : 0.4;
+        const bassIntensity = currentIsPlaying ? currentAudioData.bass * 0.3 : 0;
+        const beatIntensity = currentIsPlaying && currentAudioData.beat ? 0.4 : 0;
+        const colorIntensity = Math.min(1.0, baseIntensity + bassIntensity + beatIntensity);
+        
+        // Get the interpolated color for this particle (handles color transitions)
+        u.f = getInterpolatedColor(u.colorIndex, colorIntensity);
 
         ctx.fillStyle = u.f;
         for (let k = 0; k < u.trace.length; k++) {
