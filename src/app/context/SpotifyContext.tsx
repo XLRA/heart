@@ -106,8 +106,33 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
     if (!apiInstance) return;
 
     try {
-      const playlistsData = await apiInstance.getUserPlaylists();
-      setPlaylists(playlistsData.items);
+      const allPlaylists: SpotifyPlaylist[] = [];
+      let offset = 0;
+      const limit = 50; // Spotify's max per request for playlists
+      let hasMore = true;
+
+      // Paginate through all playlists
+      while (hasMore) {
+        // getUserPlaylists accepts (userId?, options?) - pass undefined for current user
+        const playlistsData = await apiInstance.getUserPlaylists(undefined, { offset, limit });
+        
+        if (playlistsData.items && playlistsData.items.length > 0) {
+          allPlaylists.push(...playlistsData.items);
+        }
+        
+        // Check if there are more playlists to fetch
+        hasMore = playlistsData.next !== null;
+        offset += limit;
+        
+        // Safety limit
+        if (offset > 500) {
+          console.warn('Reached safety limit of 500 playlists');
+          break;
+        }
+      }
+
+      console.log(`[SpotifyContext] Loaded ${allPlaylists.length} playlists (including Blends)`);
+      setPlaylists(allPlaylists);
     } catch (error) {
       console.error('Error loading playlists:', error);
     }
