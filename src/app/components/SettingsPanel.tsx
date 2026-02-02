@@ -1,32 +1,16 @@
 'use client';
 
 import { useState } from 'react';
-import { useSettings, ParticleLevel, LyricsMode, FrameRate, CanvasResolution } from '../context/SettingsContext';
+import { useSettings, ParticleLevel, LyricsMode } from '../context/SettingsContext';
 
 const SettingsPanel = () => {
   const [isOpen, setIsOpen] = useState(false);
-  const { 
-    particleLevel, setParticleLevel, 
-    lyricsMode, setLyricsMode,
-    frameRate, setFrameRate,
-    canvasResolution, setCanvasResolution
-  } = useSettings();
+  const { particleLevel, setParticleLevel, lyricsMode, setLyricsMode } = useSettings();
 
   const particleLevels: { value: ParticleLevel; label: string; description: string }[] = [
     { value: 'low', label: 'Low', description: 'Best performance' },
     { value: 'medium', label: 'Medium', description: 'Balanced' },
     { value: 'high', label: 'High', description: 'Full quality' },
-  ];
-
-  const frameRates: { value: FrameRate; label: string }[] = [
-    { value: '30', label: '30 FPS' },
-    { value: '60', label: '60 FPS' },
-  ];
-
-  const resolutions: { value: CanvasResolution; label: string }[] = [
-    { value: '0.5', label: '50%' },
-    { value: '0.75', label: '75%' },
-    { value: '1', label: '100%' },
   ];
 
   const lyricsModes: { value: LyricsMode; label: string; description: string }[] = [
@@ -83,61 +67,6 @@ const SettingsPanel = () => {
             {particleLevel === 'low' && 'Reduced particles for better performance'}
             {particleLevel === 'medium' && 'Balanced quality and performance'}
             {particleLevel === 'high' && 'Maximum visual quality'}
-          </p>
-        </div>
-
-        {/* Frame Rate */}
-        <div className="px-5 py-4 border-b border-white/10">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-[#f1f1f1] text-[13px] font-medium">Frame Rate</span>
-            <i className="fas fa-film text-[#8f8f9d] text-xs"></i>
-          </div>
-          <div className="flex gap-2">
-            {frameRates.map((rate) => (
-              <button
-                key={rate.value}
-                onClick={() => setFrameRate(rate.value)}
-                className={`flex-1 py-2 px-3 rounded-lg text-[12px] font-medium transition-all duration-200 ${
-                  frameRate === rate.value
-                    ? 'bg-[#252529] text-white border border-white/20'
-                    : 'bg-transparent text-[#8f8f9d] border border-transparent hover:bg-[#1a1a1d] hover:text-white'
-                }`}
-              >
-                {rate.label}
-              </button>
-            ))}
-          </div>
-          <p className="text-[#5a5a6e] text-[10px] mt-2 italic">
-            {frameRate === '30' && 'Lower CPU usage, slight choppiness'}
-            {frameRate === '60' && 'Smooth animation, higher CPU usage'}
-          </p>
-        </div>
-
-        {/* Canvas Resolution */}
-        <div className="px-5 py-4 border-b border-white/10">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-[#f1f1f1] text-[13px] font-medium">Resolution</span>
-            <i className="fas fa-expand text-[#8f8f9d] text-xs"></i>
-          </div>
-          <div className="flex gap-2">
-            {resolutions.map((res) => (
-              <button
-                key={res.value}
-                onClick={() => setCanvasResolution(res.value)}
-                className={`flex-1 py-2 px-3 rounded-lg text-[12px] font-medium transition-all duration-200 ${
-                  canvasResolution === res.value
-                    ? 'bg-[#252529] text-white border border-white/20'
-                    : 'bg-transparent text-[#8f8f9d] border border-transparent hover:bg-[#1a1a1d] hover:text-white'
-                }`}
-              >
-                {res.label}
-              </button>
-            ))}
-          </div>
-          <p className="text-[#5a5a6e] text-[10px] mt-2 italic">
-            {canvasResolution === '0.5' && 'Best performance, lower quality'}
-            {canvasResolution === '0.75' && 'Good balance of quality and speed'}
-            {canvasResolution === '1' && 'Full resolution, highest quality'}
           </p>
         </div>
 

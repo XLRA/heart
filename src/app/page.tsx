@@ -11,9 +11,9 @@ import { AudioVisualizerProvider, useAudioVisualizer } from './context/AudioVisu
 import { SettingsProvider, useSettings } from './context/SettingsContext';
 
 function AppContent() {
-  const { audioElement, isPlaying, isSpotifyMode, spotifyTrackData, albumColors } = useAudioVisualizer();
+  const { audioElement, isPlaying, isSpotifyMode, meydaData, spotifyTrackData, albumColors } = useAudioVisualizer();
   const { playerState } = useWebPlayer();
-  const { particleLevel, lyricsMode, frameRate, canvasResolution } = useSettings();
+  const { particleLevel, lyricsMode } = useSettings();
   
   return (
     <main className="min-h-screen bg-black relative">
@@ -22,12 +22,11 @@ function AppContent() {
         isPlaying={isPlaying}
         isSpotifyMode={isSpotifyMode}
         spotifyTrackData={spotifyTrackData}
+        meydaData={meydaData}
         albumColors={albumColors}
         currentTrackId={playerState.current_track?.id || null}
         currentPosition={playerState.position}
         particleLevel={particleLevel}
-        frameRate={frameRate}
-        canvasResolution={canvasResolution}
       />
       <LiveLyrics
         currentTrackId={playerState.current_track?.id || null}
