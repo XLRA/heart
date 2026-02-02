@@ -20,19 +20,19 @@ const SettingsPanel = () => {
 
   return (
     <>
-      {/* Settings Toggle Button */}
+      {/* Settings Toggle Button - Bottom right, above player */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="fixed top-5 right-5 z-50 w-10 h-10 rounded-xl bg-[#151518] border border-white/10 flex items-center justify-center cursor-pointer transition-all duration-200 hover:bg-[#252529] group"
+        className="fixed bottom-8 right-8 z-50 w-11 h-11 rounded-xl bg-[#1a1a1d] border border-white/10 flex items-center justify-center cursor-pointer transition-all duration-200 hover:bg-[#252529] group shadow-lg"
         title="Settings"
       >
-        <i className={`fas fa-cog text-[#8f8f9d] text-lg transition-all duration-300 group-hover:text-white ${isOpen ? 'rotate-90' : ''}`}></i>
+        <i className={`fas fa-cog text-[#6b6b7a] text-lg transition-all duration-300 group-hover:text-[#8f8f9d] ${isOpen ? 'rotate-90' : ''}`}></i>
       </button>
 
-      {/* Settings Panel */}
+      {/* Settings Panel - Opens above the button */}
       <div 
-        className={`fixed top-16 right-5 z-50 w-[280px] bg-[#101012] rounded-[15px] border border-white/10 shadow-[0_30px_80px_#101012] transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] ${
-          isOpen ? 'opacity-100 translate-y-0 pointer-events-auto' : 'opacity-0 -translate-y-2 pointer-events-none'
+        className={`fixed bottom-24 right-8 z-50 w-[280px] bg-[#101012] rounded-[15px] border border-white/10 shadow-[0_30px_80px_#101012] transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] ${
+          isOpen ? 'opacity-100 translate-y-0 pointer-events-auto' : 'opacity-0 translate-y-2 pointer-events-none'
         }`}
       >
         {/* Header */}
