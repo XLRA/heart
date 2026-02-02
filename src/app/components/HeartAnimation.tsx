@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { ParticleLevel, PARTICLE_MULTIPLIERS, TRACE_COUNTS } from '../context/SettingsContext';
 
 // Album colors interface (matches AudioVisualizerContext)
 interface AlbumColors {
@@ -36,6 +37,7 @@ interface AudioVisualizerProps {
   albumColors?: AlbumColors | null;
   currentTrackId?: string | null;
   currentPosition?: number;
+  particleLevel?: ParticleLevel;
 }
 
 interface SpotifyAudioAnalysis {
@@ -77,7 +79,8 @@ const HeartAnimation = ({
   meydaData = null,
   albumColors = null,
   currentTrackId = null,
-  currentPosition = 0
+  currentPosition = 0,
+  particleLevel = 'high'
 }: AudioVisualizerProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -568,9 +571,14 @@ const HeartAnimation = ({
 
     window.addEventListener('resize', handleResize);
 
-    const traceCount = 50;
+    // Get particle settings based on level
+    const particleMultiplier = PARTICLE_MULTIPLIERS[particleLevel];
+    const traceCount = TRACE_COUNTS[particleLevel];
+    
     const pointsOrigin: [number, number][] = [];
-    const dr = 0.1;
+    // Adjust dr (delta radius) based on particle level - higher dr = fewer points
+    const baseDr = 0.1;
+    const dr = baseDr / particleMultiplier;
 
     for (let i = 0; i < Math.PI * 2; i += dr) {
       pointsOrigin.push(scaleAndTranslate(heartPosition(i), 210, 13, 0, 0));
@@ -849,7 +857,7 @@ const HeartAnimation = ({
         cancelAnimationFrame(animationId);
       }
     };
-  }, []); // Remove dependencies to prevent recreation
+  }, [particleLevel]); // Re-create when particle level changes
 
   return (
     <>

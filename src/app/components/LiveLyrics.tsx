@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
+import { LyricsMode } from '../context/SettingsContext';
 
 interface LyricsLine {
   text: string;
@@ -14,6 +15,7 @@ interface LiveLyricsProps {
   currentArtist?: string;
   currentPosition: number; // in milliseconds
   isPlaying: boolean;
+  lyricsMode?: LyricsMode;
 }
 
 const LiveLyrics = ({ 
@@ -21,7 +23,8 @@ const LiveLyrics = ({
   currentTrackName, 
   currentArtist, 
   currentPosition,
-  isPlaying 
+  isPlaying,
+  lyricsMode = 'center'
 }: LiveLyricsProps) => {
   const [lyrics, setLyrics] = useState<LyricsLine[]>([]);
   const [currentLineIndex, setCurrentLineIndex] = useState<number>(-1);
@@ -133,6 +136,98 @@ const LiveLyrics = ({
                   lyrics.length > 0 && 
                   currentPosition > lyrics[lyrics.length - 1].startTime + 5000; // 5s after last line
 
+  // Determine which side for alternating mode
+  const side = currentLineIndex % 2 === 0 ? 'left' : 'right';
+
+  // Alternating mode (left/right)
+  if (lyricsMode === 'alternating') {
+    return (
+      <>
+        {/* Left side lyrics */}
+        <div 
+          style={{
+            position: 'fixed',
+            top: '50%',
+            transform: 'translateY(-50%)',
+            left: '8%',
+            maxWidth: '320px',
+            zIndex: 5,
+            pointerEvents: 'none',
+          }}
+        >
+          {currentLine && !isLoading && !error && side === 'left' && (
+            <div
+              key={`left-${currentLineIndex}`}
+              style={{
+                color: '#ffffff',
+                fontSize: '24px',
+                fontWeight: '600',
+                textAlign: 'left',
+                textShadow: '0 2px 8px rgba(0, 0, 0, 0.8), 0 0 20px rgba(255, 255, 255, 0.2)',
+                animation: 'lyricFadeAlt 3.5s ease-in-out forwards',
+                lineHeight: '1.4',
+              }}
+            >
+              {currentLine.text}
+            </div>
+          )}
+        </div>
+
+        {/* Right side lyrics */}
+        <div 
+          style={{
+            position: 'fixed',
+            top: '50%',
+            transform: 'translateY(-50%)',
+            right: '8%',
+            maxWidth: '320px',
+            zIndex: 5,
+            pointerEvents: 'none',
+          }}
+        >
+          {currentLine && !isLoading && !error && side === 'right' && (
+            <div
+              key={`right-${currentLineIndex}`}
+              style={{
+                color: '#ffffff',
+                fontSize: '24px',
+                fontWeight: '600',
+                textAlign: 'right',
+                textShadow: '0 2px 8px rgba(0, 0, 0, 0.8), 0 0 20px rgba(255, 255, 255, 0.2)',
+                animation: 'lyricFadeAlt 3.5s ease-in-out forwards',
+                lineHeight: '1.4',
+              }}
+            >
+              {currentLine.text}
+            </div>
+          )}
+        </div>
+
+        <style jsx>{`
+          @keyframes lyricFadeAlt {
+            0% {
+              opacity: 0;
+              transform: translateY(10px);
+            }
+            15% {
+              opacity: 1;
+              transform: translateY(0);
+            }
+            85% {
+              opacity: 1;
+              transform: translateY(0);
+            }
+            100% {
+              opacity: 0;
+              transform: translateY(-10px);
+            }
+          }
+        `}</style>
+      </>
+    );
+  }
+
+  // Center mode (default)
   return (
     <div style={{
       position: 'fixed',
