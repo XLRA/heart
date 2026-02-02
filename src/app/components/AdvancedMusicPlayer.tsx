@@ -39,7 +39,7 @@ const AdvancedMusicPlayer = () => {
     setVolume, 
     seek 
   } = useWebPlayer();
-  const { setAudioElement, setIsPlaying, setSpotifyMode, spotifyTrackData, setSpotifyTrackData, setMeydaData, setAlbumColors } = useAudioVisualizer();
+  const { setAudioElement, setIsPlaying, setSpotifyMode, setSpotifyTrackData, setMeydaData, setAlbumColors } = useAudioVisualizer();
   
   const [previousVolume, setPreviousVolume] = useState(0.47);
   const [isMuted, setIsMuted] = useState(false);

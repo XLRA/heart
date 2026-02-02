@@ -576,11 +576,12 @@ const ValentinePlayer = ({ onPlayStateChange, onPositionChange }: { onPlayStateC
     }
   };
 
-  // Set initial volume
+  // Set initial volume on mount only
   useEffect(() => {
     if (audioRef.current) {
       audioRef.current.volume = volume;
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
