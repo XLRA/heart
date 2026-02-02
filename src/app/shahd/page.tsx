@@ -110,12 +110,12 @@ const AlternatingLyrics = ({ currentPosition, isPlaying }: { currentPosition: nu
       {/* Left side lyrics */}
       <div 
         className="fixed top-1/2 -translate-y-1/2 z-10 pointer-events-none"
-        style={{ left: '3%', maxWidth: '280px' }}
+        style={{ left: '8%', maxWidth: '320px' }}
       >
         {displayedLine.side === 'left' && (
           <div
             key={`left-${displayedLine.key}`}
-            className="text-white text-xl font-semibold text-left animate-lyric-fade"
+            className="text-white text-2xl font-semibold text-left animate-lyric-fade"
             style={{
               textShadow: '0 2px 8px rgba(0, 0, 0, 0.8), 0 0 20px rgba(255, 255, 255, 0.2)',
               lineHeight: '1.4',
@@ -129,12 +129,12 @@ const AlternatingLyrics = ({ currentPosition, isPlaying }: { currentPosition: nu
       {/* Right side lyrics */}
       <div 
         className="fixed top-1/2 -translate-y-1/2 z-10 pointer-events-none"
-        style={{ right: '3%', maxWidth: '280px' }}
+        style={{ right: '8%', maxWidth: '320px' }}
       >
         {displayedLine.side === 'right' && (
           <div
             key={`right-${displayedLine.key}`}
-            className="text-white text-xl font-semibold text-right animate-lyric-fade"
+            className="text-white text-2xl font-semibold text-right animate-lyric-fade"
             style={{
               textShadow: '0 2px 8px rgba(0, 0, 0, 0.8), 0 0 20px rgba(255, 255, 255, 0.2)',
               lineHeight: '1.4',
@@ -531,7 +531,7 @@ const RunawayButton = ({ onClick, containerRef: externalContainerRef }: { onClic
       // Start at bottom center of container, next to Yes button
       setPosition({
         x: (containerRect.width - buttonWidth) / 2 + 60, // Offset right from center
-        y: containerRect.height - buttonHeight - 20, // Near bottom, matching Yes button
+        y: containerRect.height - buttonHeight, // At bottom, matching Yes button
       });
       setInitialized(true);
     }
@@ -857,7 +857,7 @@ export default function ValentineProposal() {
             YAYYYY
           </h1>
           <p className="text-xl md:text-2xl text-[#8f8f9d]">
-            Happy Valentine&apos;s Day
+            Happy Valentine&apos;s Day My Love &lt;3
           </p>
         </div>
         <ValentinePlayer onPlayStateChange={setIsMusicPlaying} onPositionChange={setCurrentPosition} />
@@ -907,7 +907,7 @@ export default function ValentineProposal() {
           className="absolute px-8 py-3 text-base font-medium rounded-xl bg-[#ec4899] hover:bg-[#f472b6] text-white transition-colors duration-200 pointer-events-auto"
           style={{ 
             left: '50%', 
-            bottom: '20px',
+            bottom: '0px',
             transform: 'translateX(calc(-50% - 60px))'
           }}
         >
