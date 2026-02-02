@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { ParticleLevel, PARTICLE_MULTIPLIERS, TRACE_COUNTS } from '../context/SettingsContext';
+import { ParticleLevel, PARTICLE_MULTIPLIERS, TRACE_COUNTS, FrameRate, CanvasResolution, FRAME_INTERVALS, RESOLUTION_MULTIPLIERS } from '../context/SettingsContext';
 
 // Album colors interface (matches AudioVisualizerContext)
 interface AlbumColors {
@@ -38,6 +38,8 @@ interface AudioVisualizerProps {
   currentTrackId?: string | null;
   currentPosition?: number;
   particleLevel?: ParticleLevel;
+  frameRate?: FrameRate;
+  canvasResolution?: CanvasResolution;
 }
 
 interface SpotifyAudioAnalysis {
@@ -80,7 +82,9 @@ const HeartAnimation = ({
   albumColors = null,
   currentTrackId = null,
   currentPosition = 0,
-  particleLevel = 'high'
+  particleLevel = 'high',
+  frameRate = '60',
+  canvasResolution = '1'
 }: AudioVisualizerProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -531,10 +535,15 @@ const HeartAnimation = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Get device pixel ratio for retina displays
-    const dpr = window.devicePixelRatio || 1;
+    // Get device pixel ratio for retina displays, scaled by resolution setting
+    const resolutionMultiplier = RESOLUTION_MULTIPLIERS[canvasResolution];
+    const dpr = (window.devicePixelRatio || 1) * resolutionMultiplier;
+    
+    // Get frame interval for frame rate limiting
+    const frameInterval = FRAME_INTERVALS[frameRate];
+    let lastFrameTime = 0;
 
-    // Set canvas size accounting for device pixel ratio
+    // Set canvas size accounting for device pixel ratio and resolution
     let width = canvas.width = window.innerWidth * dpr;
     let height = canvas.height = window.innerHeight * dpr;
     
@@ -560,11 +569,12 @@ const HeartAnimation = ({
     };
 
     const handleResize = () => {
-      width = canvas.width = window.innerWidth * dpr;
-      height = canvas.height = window.innerHeight * dpr;
+      const newDpr = (window.devicePixelRatio || 1) * resolutionMultiplier;
+      width = canvas.width = window.innerWidth * newDpr;
+      height = canvas.height = window.innerHeight * newDpr;
       canvas.style.width = `${window.innerWidth}px`;
       canvas.style.height = `${window.innerHeight}px`;
-      ctx.scale(dpr, dpr);
+      ctx.scale(newDpr, newDpr);
       ctx.fillStyle = "rgba(0,0,0,1)";
       ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
     };
@@ -726,7 +736,14 @@ const HeartAnimation = ({
       return `hsla(${parsed.h}, ${parsed.s}%, ${parsed.l}%, ${audioIntensity})`;
     };
     
-    const loop = () => {
+    const loop = (currentTime: number) => {
+      // Frame rate limiting
+      if (currentTime - lastFrameTime < frameInterval) {
+        animationId = requestAnimationFrame(loop);
+        return;
+      }
+      lastFrameTime = currentTime;
+      
       // Get current values from refs
       const currentAudioData = audioDataRef.current;
       const currentIsPlaying = isPlayingRef.current;
@@ -857,7 +874,7 @@ const HeartAnimation = ({
         cancelAnimationFrame(animationId);
       }
     };
-  }, [particleLevel]); // Re-create when particle level changes
+  }, [particleLevel, frameRate, canvasResolution]); // Re-create when settings change
 
   return (
     <>

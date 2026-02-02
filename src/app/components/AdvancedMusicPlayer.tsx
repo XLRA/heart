@@ -4,7 +4,6 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useSpotify } from '../context/SpotifyContext';
 import { useWebPlayer } from '../context/WebPlayerContext';
 import { useAudioVisualizer } from '../context/AudioVisualizerContext';
-import { meydaAudioService } from '../../services/meyda';
 import { extractColorsFromImage, getSmallestImageUrl, getDefaultColors } from '../../services/colorExtractor';
 import PlaylistSelector from './PlaylistSelector';
 import PlaylistSongList from './PlaylistSongList';
@@ -58,7 +57,6 @@ const AdvancedMusicPlayer = () => {
   
   const isSeekingRef = useRef<boolean>(false);
   const seekTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const meydaInitializedTrackRef = useRef<string | null>(null);
   
   const audioRef = useRef<HTMLAudioElement>(null);
 
@@ -378,7 +376,6 @@ const AdvancedMusicPlayer = () => {
     if (!isUsingSpotifyPlayer || !playerState.current_track?.id) {
       setSpotifyTrackData(null);
       setMeydaData(null);
-      meydaAudioService.stopAnalysis();
       return;
     }
 
@@ -525,61 +522,13 @@ const AdvancedMusicPlayer = () => {
     };
   }, [playerState.current_track?.id, playerState.current_track?.album?.images, isUsingSpotifyPlayer, songs, setAlbumColors]);
 
-  // Initialize Meyda analysis separately - only when track ID changes
+  // Meyda audio analysis disabled - it was analyzing synthetic audio, not real Spotify audio
+  // The HeartAnimation now uses spotifyTrackData directly for simulated reactive visuals
+  // This saves CPU/memory by not running unnecessary audio processing
   useEffect(() => {
-    if (!isUsingSpotifyPlayer || !playerState.current_track?.id) {
-      meydaInitializedTrackRef.current = null;
-      meydaAudioService.stopAnalysis();
-      return;
-    }
-
-    const currentTrackId = playerState.current_track.id;
-
-    // Only initialize if we haven't already initialized for this track
-    if (meydaInitializedTrackRef.current === currentTrackId) {
-      return;
-    }
-
-    // Only initialize if we have track data (wait for it to be set)
-    if (!spotifyTrackData) {
-      return;
-    }
-
-    let isMounted = true;
-
-    const initializeMeyda = async () => {
-      if (!isMounted || meydaInitializedTrackRef.current === currentTrackId) return;
-      
-      meydaInitializedTrackRef.current = currentTrackId;
-
-      try {
-        // Initialize Meyda audio context (creates synthetic audio source for Spotify)
-        await meydaAudioService.initializeAudioContext();
-        
-        // Start Meyda analysis with callback and track data
-        await meydaAudioService.startAnalysis((features) => {
-          if (isMounted && meydaInitializedTrackRef.current === currentTrackId) {
-            setMeydaData(features);
-          }
-        }, spotifyTrackData);
-      } catch (error) {
-        console.error('Error initializing Meyda analysis:', error);
-        if (isMounted) {
-          setMeydaData(null);
-        }
-        meydaInitializedTrackRef.current = null;
-      }
-    };
-
-    initializeMeyda();
-    
-    return () => {
-      isMounted = false;
-      if (meydaInitializedTrackRef.current === currentTrackId) {
-        meydaAudioService.stopAnalysis();
-      }
-    };
-  }, [isUsingSpotifyPlayer, playerState.current_track?.id, spotifyTrackData, setMeydaData]);
+    // Clear any existing Meyda data since we're not using it
+    setMeydaData(null);
+  }, [setMeydaData]);
 
   // Cleanup timeouts on unmount
   useEffect(() => {
