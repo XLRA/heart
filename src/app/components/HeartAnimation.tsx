@@ -895,28 +895,29 @@ const HeartAnimation = ({
     };
     
     // Helper to get interpolated color for a particle
-    const getInterpolatedColor = (colorIndex: number, audioIntensity: number = 0.4): string => {
+    const getInterpolatedColor = (colorIndex: number, audioIntensity: number = 0.4, lightnessBoost: number = 0): string => {
       const currentColors = currentColorsRef.current;
       const targetColors = targetColorsRef.current;
       const progress = colorTransitionProgressRef.current;
       
       if (currentColors.length === 0 || targetColors.length === 0) {
-        return `hsla(320, 80%, 50%, ${audioIntensity})`;
+        const boostedL = Math.min(100, 50 + lightnessBoost);
+        return `hsla(320, 80%, ${boostedL}%, ${audioIntensity})`;
       }
       
       const currentColor = currentColors[colorIndex % currentColors.length];
       const targetColor = targetColors[colorIndex % targetColors.length];
       
-      // If transition is complete, just return target color with adjusted intensity
       if (progress >= 1) {
         const parsed = parseHsla(targetColor);
-        return `hsla(${parsed.h}, ${parsed.s}%, ${parsed.l}%, ${audioIntensity})`;
+        const boostedL = Math.min(100, parsed.l + lightnessBoost);
+        return `hsla(${parsed.h}, ${parsed.s}%, ${boostedL}%, ${audioIntensity})`;
       }
       
-      // Interpolate between current and target
       const interpolated = interpolateColor(currentColor, targetColor, progress);
       const parsed = parseHsla(interpolated);
-      return `hsla(${parsed.h}, ${parsed.s}%, ${parsed.l}%, ${audioIntensity})`;
+      const boostedL = Math.min(100, parsed.l + lightnessBoost);
+      return `hsla(${parsed.h}, ${parsed.s}%, ${boostedL}%, ${audioIntensity})`;
     };
     
     const loop = () => {
@@ -936,45 +937,45 @@ const HeartAnimation = ({
         }
       }
       
-      // Additive pulse: envelope-followed energy gives gentle sway,
-      // spectral-flux beats create sharp proportional spikes via beatStrength
+      // Pulse: energy envelope for gentle sway, spectral-flux beats for dramatic spikes
       let pulseFactor = 1.0;
+      const currentBs = currentAudioData.beatStrength || 0.5;
       
       if (currentIsPlaying && currentAudioData.overall > 0) {
-        // Smooth energy follows the track's overall loudness envelope
-        pulseFactor += currentAudioData.overall * 0.2;
+        pulseFactor += currentAudioData.overall * 0.3;
+        pulseFactor += currentAudioData.bass * 0.2;
         
-        // Bass envelope adds a low-end sway
-        pulseFactor += currentAudioData.bass * 0.1;
-        
-        // Beat spike proportional to onset strength
         if (currentAudioData.beat) {
-          const bs = currentAudioData.beatStrength || 0.5;
-          pulseFactor += 0.2 + bs * 0.4;
+          pulseFactor += 0.3 + currentBs * 0.5;
           lastBeatTime = time;
         } else {
-          // Fast exponential decay after beat
+          // Slower decay so particles have time to respond visually
           const timeSinceBeat = time - lastBeatTime;
-          const beatDecay = Math.exp(-timeSinceBeat * 10);
-          pulseFactor += beatDecay * 0.3;
+          const beatDecay = Math.exp(-timeSinceBeat * 4);
+          pulseFactor += beatDecay * 0.4;
         }
       }
       
-      // Subtle natural heartbeat rhythm
       pulseFactor += Math.sin(time * 2) * 0.04;
       
-      const clampedPulse = Math.max(0.8, Math.min(1.7, pulseFactor));
+      const clampedPulse = Math.max(0.8, Math.min(2.0, pulseFactor));
       
       pulse(clampedPulse, clampedPulse);
       
-      // Time progression with moderate audio influence
       const timeMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.5) : 1;
       time += ((Math.sin(time)) < 0 ? 12 : (pulseFactor > 1.15) ? .3 : 1.5) * config.timeDelta * timeMultiplier;
       
-      // Trail opacity: faster base fade prevents particle ghosts at edges
-      const trailOpacity = currentIsPlaying ? 0.04 + currentAudioData.overall * 0.1 : 0.08;
+      // Trail opacity: short trails on beats (crisp snap), long trails between (smooth flow)
+      const beatTrailBoost = currentAudioData.beat ? 0.12 : 0;
+      const trailOpacity = currentIsPlaying ? 0.04 + currentAudioData.overall * 0.08 + beatTrailBoost : 0.08;
       ctx.fillStyle = `rgba(0,0,0,${trailOpacity})`;
       ctx.fillRect(0, 0, width, height);
+
+      // Pre-compute beat-related values once per frame (not per particle)
+      const isBeatFrame = currentIsPlaying && currentAudioData.beat;
+      const centerX = window.innerWidth / 2;
+      const centerY = window.innerHeight / 2;
+      const particleSize = isBeatFrame ? 2 : 1;
 
       for (let i = e.length; i--;) {
         const u = e[i];
@@ -998,15 +999,27 @@ const HeartAnimation = ({
           }
         }
 
-        const audioSpeedMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.3) : 1;
-        const bassMultiplier = currentIsPlaying ? (1 + currentAudioData.bass * 0.15) : 1;
-        const bsSpeed = currentAudioData.beatStrength || 0;
-        const beatMultiplier = currentAudioData.beat ? 1.15 + bsSpeed * 0.2 : 1.0;
+        const audioSpeedMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.35) : 1;
+        const bassMultiplier = currentIsPlaying ? (1 + currentAudioData.bass * 0.2) : 1;
+        const beatMultiplier = currentAudioData.beat ? 1.3 + currentBs * 0.3 : 1.0;
         
         const totalSpeedMultiplier = audioSpeedMultiplier * bassMultiplier * beatMultiplier;
         
         u.vx += -dx / length * u.speed * totalSpeedMultiplier;
         u.vy += -dy / length * u.speed * totalSpeedMultiplier;
+
+        // Direct outward velocity kick on beats -- bypasses sluggish target physics
+        if (isBeatFrame) {
+          const kickDx = u.trace[0].x - centerX;
+          const kickDy = u.trace[0].y - centerY;
+          const kickDist = Math.sqrt(kickDx * kickDx + kickDy * kickDy);
+          if (kickDist > 1) {
+            const kickStrength = currentBs * 2.5;
+            u.vx += (kickDx / kickDist) * kickStrength;
+            u.vy += (kickDy / kickDist) * kickStrength;
+          }
+        }
+
         u.trace[0].x += u.vx;
         u.trace[0].y += u.vy;
         u.vx *= u.force;
@@ -1019,20 +1032,20 @@ const HeartAnimation = ({
           N.y -= config.traceK * (N.y - T.y);
         }
 
-        // Color intensity: envelope-followed base + beat flash + treble sparkle
+        // Color: base from energy envelope, flash brightness on beats, treble sparkle
         const baseIntensity = currentIsPlaying ? 0.25 + currentAudioData.overall * 0.5 : 0.4;
         const bassIntensity = currentIsPlaying ? currentAudioData.bass * 0.2 : 0;
-        const bs = currentAudioData.beatStrength || 0;
-        const beatFlash = currentIsPlaying && currentAudioData.beat ? 0.2 + bs * 0.4 : 0;
+        const beatFlash = isBeatFrame ? 0.25 + currentBs * 0.35 : 0;
         const trebleSparkle = currentIsPlaying ? currentAudioData.treble * 0.1 : 0;
         const colorIntensity = Math.min(1.0, baseIntensity + bassIntensity + beatFlash + trebleSparkle);
         
-        // Get the interpolated color for this particle (handles color transitions)
-        u.f = getInterpolatedColor(u.colorIndex, colorIntensity);
+        // Lightness boost: particles physically flash brighter on beats
+        const lightnessBoost = isBeatFrame ? 15 + currentBs * 25 : 0;
+        u.f = getInterpolatedColor(u.colorIndex, colorIntensity, lightnessBoost);
 
         ctx.fillStyle = u.f;
         for (let k = 0; k < u.trace.length; k++) {
-          ctx.fillRect(u.trace[k].x, u.trace[k].y, 1, 1);
+          ctx.fillRect(u.trace[k].x, u.trace[k].y, particleSize, particleSize);
         }
       }
 
