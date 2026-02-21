@@ -95,12 +95,14 @@ const HeartAnimation = ({
     treble: number;
     overall: number;
     beat: boolean;
+    beatStrength: number;
   }>({
     bass: 0,
     mid: 0,
     treble: 0,
     overall: 0,
-    beat: false
+    beat: false,
+    beatStrength: 0
   });
 
   const [spotifyAnalysis, setSpotifyAnalysis] = useState<SpotifyAudioAnalysis | null>(null);
@@ -165,7 +167,8 @@ const HeartAnimation = ({
         mid,
         treble,
         overall,
-        beat
+        beat,
+        beatStrength: beat ? 0.5 : 0
       });
     };
 
@@ -314,75 +317,102 @@ const HeartAnimation = ({
   }, []);
 
   // Audio analysis loop (only for local audio files)
+  // Uses the same spectral flux + envelope follower approach as tab capture
   useEffect(() => {
     if (!analyserRef.current || !isPlaying || isSpotifyMode || tabAudioStream) return;
 
-    const bufferLength = analyserRef.current.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
+    const analyser = analyserRef.current;
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.3;
+
+    const bufferLength = analyser.frequencyBinCount;
+    const floatData = new Float32Array(bufferLength);
+    const prevFloatData = new Float32Array(bufferLength);
+    prevFloatData.fill(-100);
+
+    const sampleRate = audioContextRef.current?.sampleRate || 44100;
+    const binWidth = sampleRate / analyser.fftSize;
+    const subBassEnd = Math.ceil(80 / binWidth);
+    const bassEnd = Math.ceil(250 / binWidth);
+    const midEnd = Math.ceil(2000 / binWidth);
+    const trebleEnd = Math.min(bufferLength, Math.ceil(16000 / binWidth));
+
+    let envBass = 0, envMid = 0, envTreble = 0, envOverall = 0;
+    const ENV_ATTACK = 0.6;
+    const ENV_DECAY = 0.05;
+
     let lastBeatTime = 0;
-    let beatThreshold = 0.3;
-    const beatHistory: number[] = [];
+    const fluxHistory: number[] = [];
+
+    const applyEnvelope = (current: number, raw: number) => {
+      const rate = raw > current ? ENV_ATTACK : ENV_DECAY;
+      return current + rate * (raw - current);
+    };
 
     const analyzeAudio = () => {
       if (!analyserRef.current) return;
 
-      analyserRef.current.getByteFrequencyData(dataArray);
-      
-      // Calculate frequency bands
-      const bassEnd = Math.floor(bufferLength * 0.1);
-      const midEnd = Math.floor(bufferLength * 0.4);
-      
-      let bassSum = 0;
-      let midSum = 0;
-      let trebleSum = 0;
-      let overallSum = 0;
-      
-      for (let i = 0; i < bufferLength; i++) {
-        const value = dataArray[i] / 255;
-        overallSum += value;
-        
-        if (i < bassEnd) {
-          bassSum += value;
-        } else if (i < midEnd) {
-          midSum += value;
-        } else {
-          trebleSum += value;
+      analyserRef.current.getFloatFrequencyData(floatData);
+
+      let subBassSum = 0, bassSum = 0, midSum = 0, trebleSum = 0;
+      let subBassCount = 0, bassCount = 0, midCount = 0, trebleCount = 0;
+      let bassFlux = 0, totalFlux = 0;
+
+      for (let i = 1; i < trebleEnd; i++) {
+        const magnitude = Math.max(0, (floatData[i] + 100) / 90);
+        const prevMagnitude = Math.max(0, (prevFloatData[i] + 100) / 90);
+
+        const delta = magnitude - prevMagnitude;
+        if (delta > 0) {
+          totalFlux += delta;
+          if (i < bassEnd) bassFlux += delta;
         }
+
+        if (i < subBassEnd) { subBassSum += magnitude; subBassCount++; }
+        else if (i < bassEnd) { bassSum += magnitude; bassCount++; }
+        else if (i < midEnd) { midSum += magnitude; midCount++; }
+        else { trebleSum += magnitude; trebleCount++; }
       }
-      
-      const bass = bassSum / bassEnd;
-      const mid = midSum / (midEnd - bassEnd);
-      const treble = trebleSum / (bufferLength - midEnd);
-      const overall = overallSum / bufferLength;
-      
-      // Beat detection
+
+      prevFloatData.set(floatData);
+
+      const rawBass = (subBassCount > 0 ? subBassSum / subBassCount : 0) * 0.65 +
+                      (bassCount > 0 ? bassSum / bassCount : 0) * 0.35;
+      const rawMid = midCount > 0 ? midSum / midCount : 0;
+      const rawTreble = trebleCount > 0 ? trebleSum / trebleCount : 0;
+      const rawOverall = rawBass * 0.35 + rawMid * 0.35 + rawTreble * 0.3;
+
+      envBass = applyEnvelope(envBass, rawBass);
+      envMid = applyEnvelope(envMid, rawMid);
+      envTreble = applyEnvelope(envTreble, rawTreble);
+      envOverall = applyEnvelope(envOverall, rawOverall);
+
+      const weightedFlux = bassFlux * 3 + totalFlux;
+      fluxHistory.push(weightedFlux);
+      if (fluxHistory.length > 43) fluxHistory.shift();
+
+      const sorted = [...fluxHistory].sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)];
+      const avg = fluxHistory.reduce((a, b) => a + b, 0) / fluxHistory.length;
+      const fluxThreshold = Math.max(median + avg * 0.6, 0.005);
+
       const currentTime = Date.now();
       const timeSinceLastBeat = currentTime - lastBeatTime;
-      
-      // Dynamic threshold based on recent history
-      if (beatHistory.length > 10) {
-        beatHistory.shift();
-      }
-      beatHistory.push(overall);
-      
-      const avgLevel = beatHistory.reduce((a, b) => a + b, 0) / beatHistory.length;
-      beatThreshold = avgLevel * 1.5;
-      
-      // Detect beat
-      const isBeat = overall > beatThreshold && timeSinceLastBeat > 200;
-      
-      if (isBeat) {
-        lastBeatTime = currentTime;
-      }
-      
+
+      const isBeat = weightedFlux > fluxThreshold && timeSinceLastBeat > 150;
+      const strength = isBeat ? Math.min(1, (weightedFlux - fluxThreshold) / Math.max(0.01, fluxThreshold * 2)) : 0;
+
+      if (isBeat) lastBeatTime = currentTime;
+
       setAudioData({
-        bass,
-        mid,
-        treble,
-        overall,
-        beat: isBeat
+        bass: envBass,
+        mid: envMid,
+        treble: envTreble,
+        overall: envOverall,
+        beat: isBeat,
+        beatStrength: strength
       });
-      
+
       animationFrameRef.current = requestAnimationFrame(analyzeAudio);
     };
 
@@ -443,7 +473,8 @@ const HeartAnimation = ({
           mid,
           treble,
           overall,
-          beat: Boolean(beatPattern)
+          beat: Boolean(beatPattern),
+          beatStrength: beatPattern ? 0.5 : 0
         });
       };
 
@@ -500,7 +531,8 @@ const HeartAnimation = ({
           mid: Math.max(0, Math.min(1, mid)),
           treble: Math.max(0, Math.min(1, treble)),
           overall: loudnessNormalized,
-          beat: Boolean(isBeat)
+          beat: Boolean(isBeat),
+          beatStrength: isBeat ? 0.6 : 0
         });
       } else if (currentSection) {
         // Fallback to section data with more dramatic values
@@ -518,7 +550,8 @@ const HeartAnimation = ({
           mid: Math.max(0, Math.min(1, mid)),
           treble: Math.max(0, Math.min(1, treble)),
           overall: loudnessNormalized,
-          beat: false
+          beat: false,
+          beatStrength: 0
         });
       }
     };
@@ -528,7 +561,9 @@ const HeartAnimation = ({
     return () => clearInterval(interval);
   }, [isSpotifyMode, isPlaying, spotifyAnalysis, currentPosition, tabAudioStream]);
 
-  // Tab audio capture: real frequency analysis from browser tab audio via getDisplayMedia
+  // Tab audio capture: professional-grade frequency analysis from browser tab audio
+  // Uses getFloatFrequencyData for precision, spectral flux onset detection,
+  // and asymmetric envelope followers (fast attack / slow decay) per band.
   useEffect(() => {
     if (!tabAudioStream) return;
 
@@ -545,22 +580,37 @@ const HeartAnimation = ({
 
         const source = audioCtx.createMediaStreamSource(tabAudioStream);
         const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 512;
-        analyser.smoothingTimeConstant = 0.6;
+        analyser.fftSize = 2048;
+        analyser.smoothingTimeConstant = 0.3;
+        analyser.minDecibels = -100;
+        analyser.maxDecibels = -10;
         source.connect(analyser);
 
         const bufferLength = analyser.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
+        const floatData = new Float32Array(bufferLength);
+        const prevFloatData = new Float32Array(bufferLength);
+        prevFloatData.fill(-100);
 
-        let smoothBass = 0, smoothMid = 0, smoothTreble = 0, smoothOverall = 0;
-        let prevBassEnergy = 0;
+        // Hz-accurate band boundaries (sampleRate / fftSize ≈ 21.5 Hz per bin at 44.1kHz)
+        const sampleRate = audioCtx.sampleRate;
+        const binWidth = sampleRate / analyser.fftSize;
+        const subBassEnd = Math.ceil(80 / binWidth);
+        const bassEnd = Math.ceil(250 / binWidth);
+        const midEnd = Math.ceil(2000 / binWidth);
+        const highMidEnd = Math.ceil(4000 / binWidth);
+        const trebleEnd = Math.min(bufferLength, Math.ceil(16000 / binWidth));
+
+        // Asymmetric envelope followers per band (fast attack, slow decay)
+        let envBass = 0, envMid = 0, envTreble = 0, envOverall = 0;
+        const ENV_ATTACK = 0.6;
+        const ENV_DECAY = 0.05;
+
+        // Spectral flux history for adaptive beat threshold
         let lastBeatTime = 0;
-        const onsetHistory: number[] = [];
-        const ATTACK = 0.4;
-        const DECAY = 0.08;
+        const fluxHistory: number[] = [];
 
-        const smoothValue = (current: number, raw: number) => {
-          const rate = raw > current ? ATTACK : DECAY;
+        const applyEnvelope = (current: number, raw: number) => {
+          const rate = raw > current ? ENV_ATTACK : ENV_DECAY;
           return current + rate * (raw - current);
         };
 
@@ -568,65 +618,79 @@ const HeartAnimation = ({
           if (cleanedUp) return;
 
           if (isPlayingRef.current) {
-            analyser.getByteFrequencyData(dataArray);
+            analyser.getFloatFrequencyData(floatData);
 
-            const subBassEnd = Math.floor(bufferLength * 0.04);
-            const bassEnd = Math.floor(bufferLength * 0.12);
-            const midEnd = Math.floor(bufferLength * 0.5);
+            let subBassSum = 0, bassSum = 0, midSum = 0, highMidSum = 0, trebleSum = 0;
+            let subBassCount = 0, bassCount = 0, midCount = 0, highMidCount = 0, trebleCount = 0;
+            let bassFlux = 0, totalFlux = 0;
 
-            let subBassSum = 0, bassSum = 0, midSum = 0, trebleSum = 0, overallSum = 0;
+            for (let i = 1; i < trebleEnd; i++) {
+              // dB to perceptual 0-1: map [-100, -10] to [0, 1]
+              const magnitude = Math.max(0, (floatData[i] + 100) / 90);
+              const prevMagnitude = Math.max(0, (prevFloatData[i] + 100) / 90);
 
-            for (let i = 0; i < bufferLength; i++) {
-              const value = dataArray[i] / 255;
-              overallSum += value;
-              if (i < subBassEnd) {
-                subBassSum += value;
-              } else if (i < bassEnd) {
-                bassSum += value;
-              } else if (i < midEnd) {
-                midSum += value;
-              } else {
-                trebleSum += value;
+              // Spectral flux: half-wave rectified difference (only energy increases)
+              const delta = magnitude - prevMagnitude;
+              if (delta > 0) {
+                totalFlux += delta;
+                if (i < bassEnd) bassFlux += delta;
               }
+
+              // Accumulate per-band energy
+              if (i < subBassEnd) { subBassSum += magnitude; subBassCount++; }
+              else if (i < bassEnd) { bassSum += magnitude; bassCount++; }
+              else if (i < midEnd) { midSum += magnitude; midCount++; }
+              else if (i < highMidEnd) { highMidSum += magnitude; highMidCount++; }
+              else { trebleSum += magnitude; trebleCount++; }
             }
 
-            const rawSubBass = subBassEnd > 0 ? subBassSum / subBassEnd : 0;
-            const rawBass = (bassEnd - subBassEnd) > 0 ? bassSum / (bassEnd - subBassEnd) : 0;
-            const rawMid = (midEnd - bassEnd) > 0 ? midSum / (midEnd - bassEnd) : 0;
-            const rawTreble = (bufferLength - midEnd) > 0 ? trebleSum / (bufferLength - midEnd) : 0;
-            const rawOverall = bufferLength > 0 ? overallSum / bufferLength : 0;
+            prevFloatData.set(floatData);
 
-            const combinedBass = rawSubBass * 0.6 + rawBass * 0.4;
+            // Compute raw band averages
+            const rawSubBass = subBassCount > 0 ? subBassSum / subBassCount : 0;
+            const rawBass = bassCount > 0 ? bassSum / bassCount : 0;
+            const rawMid = midCount > 0 ? midSum / midCount : 0;
+            const rawHighMid = highMidCount > 0 ? highMidSum / highMidCount : 0;
+            const rawTreble = trebleCount > 0 ? trebleSum / trebleCount : 0;
 
-            smoothBass = smoothValue(smoothBass, combinedBass);
-            smoothMid = smoothValue(smoothMid, rawMid);
-            smoothTreble = smoothValue(smoothTreble, rawTreble);
-            smoothOverall = smoothValue(smoothOverall, rawOverall);
+            // Combine sub-bass + bass (kick drum emphasis)
+            const combinedBass = rawSubBass * 0.65 + rawBass * 0.35;
+            const combinedMid = rawMid * 0.6 + rawHighMid * 0.4;
+            const rawOverall = combinedBass * 0.35 + combinedMid * 0.35 + rawTreble * 0.3;
 
-            // Onset-based beat detection: detect sudden bass energy increases
-            const bassEnergy = rawSubBass + rawBass * 0.5;
-            const bassOnset = Math.max(0, bassEnergy - prevBassEnergy);
-            prevBassEnergy = bassEnergy;
+            // Apply envelope followers
+            envBass = applyEnvelope(envBass, combinedBass);
+            envMid = applyEnvelope(envMid, combinedMid);
+            envTreble = applyEnvelope(envTreble, rawTreble);
+            envOverall = applyEnvelope(envOverall, rawOverall);
 
-            onsetHistory.push(bassOnset);
-            if (onsetHistory.length > 43) onsetHistory.shift();
-            const avgOnset = onsetHistory.reduce((a, b) => a + b, 0) / onsetHistory.length;
-            const onsetThreshold = Math.max(0.03, avgOnset * 2.5);
+            // Beat detection via bass-weighted spectral flux
+            const weightedFlux = bassFlux * 3 + totalFlux;
+
+            fluxHistory.push(weightedFlux);
+            if (fluxHistory.length > 43) fluxHistory.shift();
+
+            // Adaptive threshold: median + scaled average of recent flux
+            const sorted = [...fluxHistory].sort((a, b) => a - b);
+            const median = sorted[Math.floor(sorted.length / 2)];
+            const avg = fluxHistory.reduce((a, b) => a + b, 0) / fluxHistory.length;
+            const fluxThreshold = Math.max(median + avg * 0.6, 0.005);
 
             const currentTime = Date.now();
             const timeSinceLastBeat = currentTime - lastBeatTime;
 
-            const isBeat = bassOnset > onsetThreshold && timeSinceLastBeat > 180;
-            if (isBeat) {
-              lastBeatTime = currentTime;
-            }
+            const isBeat = weightedFlux > fluxThreshold && timeSinceLastBeat > 150;
+            const strength = isBeat ? Math.min(1, (weightedFlux - fluxThreshold) / Math.max(0.01, fluxThreshold * 2)) : 0;
+
+            if (isBeat) lastBeatTime = currentTime;
 
             setAudioData({
-              bass: smoothBass,
-              mid: smoothMid,
-              treble: smoothTreble,
-              overall: smoothOverall,
-              beat: isBeat
+              bass: envBass,
+              mid: envMid,
+              treble: envTreble,
+              overall: envOverall,
+              beat: isBeat,
+              beatStrength: strength
             });
           }
 
@@ -872,25 +936,27 @@ const HeartAnimation = ({
         }
       }
       
-      // Additive pulse: base energy gives gentle sway, beats create sharp distinct spikes
+      // Additive pulse: envelope-followed energy gives gentle sway,
+      // spectral-flux beats create sharp proportional spikes via beatStrength
       let pulseFactor = 1.0;
       
       if (currentIsPlaying && currentAudioData.overall > 0) {
-        // Smooth energy follows the track's overall loudness
+        // Smooth energy follows the track's overall loudness envelope
         pulseFactor += currentAudioData.overall * 0.2;
         
-        // Bass adds a subtle low-end sway
+        // Bass envelope adds a low-end sway
         pulseFactor += currentAudioData.bass * 0.1;
         
-        // Beat creates a sharp, unmistakable spike
+        // Beat spike proportional to onset strength
         if (currentAudioData.beat) {
-          pulseFactor += 0.35 + currentAudioData.bass * 0.15;
+          const bs = currentAudioData.beatStrength || 0.5;
+          pulseFactor += 0.2 + bs * 0.4;
           lastBeatTime = time;
         } else {
           // Fast exponential decay after beat
           const timeSinceBeat = time - lastBeatTime;
-          const beatDecay = Math.exp(-timeSinceBeat * 8);
-          pulseFactor += beatDecay * 0.25;
+          const beatDecay = Math.exp(-timeSinceBeat * 10);
+          pulseFactor += beatDecay * 0.3;
         }
       }
       
@@ -934,7 +1000,8 @@ const HeartAnimation = ({
 
         const audioSpeedMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.3) : 1;
         const bassMultiplier = currentIsPlaying ? (1 + currentAudioData.bass * 0.15) : 1;
-        const beatMultiplier = currentAudioData.beat ? 1.25 : 1.0;
+        const bsSpeed = currentAudioData.beatStrength || 0;
+        const beatMultiplier = currentAudioData.beat ? 1.15 + bsSpeed * 0.2 : 1.0;
         
         const totalSpeedMultiplier = audioSpeedMultiplier * bassMultiplier * beatMultiplier;
         
@@ -952,11 +1019,13 @@ const HeartAnimation = ({
           N.y -= config.traceK * (N.y - T.y);
         }
 
-        // Adjust particle color based on album colors and audio intensity
-        const baseIntensity = currentIsPlaying ? 0.3 + currentAudioData.overall * 0.7 : 0.4;
-        const bassIntensity = currentIsPlaying ? currentAudioData.bass * 0.3 : 0;
-        const beatIntensity = currentIsPlaying && currentAudioData.beat ? 0.4 : 0;
-        const colorIntensity = Math.min(1.0, baseIntensity + bassIntensity + beatIntensity);
+        // Color intensity: envelope-followed base + beat flash + treble sparkle
+        const baseIntensity = currentIsPlaying ? 0.25 + currentAudioData.overall * 0.5 : 0.4;
+        const bassIntensity = currentIsPlaying ? currentAudioData.bass * 0.2 : 0;
+        const bs = currentAudioData.beatStrength || 0;
+        const beatFlash = currentIsPlaying && currentAudioData.beat ? 0.2 + bs * 0.4 : 0;
+        const trebleSparkle = currentIsPlaying ? currentAudioData.treble * 0.1 : 0;
+        const colorIntensity = Math.min(1.0, baseIntensity + bassIntensity + beatFlash + trebleSparkle);
         
         // Get the interpolated color for this particle (handles color transitions)
         u.f = getInterpolatedColor(u.colorIndex, colorIntensity);
