@@ -11,7 +11,7 @@ import { AudioVisualizerProvider, useAudioVisualizer } from './context/AudioVisu
 import { SettingsProvider, useSettings } from './context/SettingsContext';
 
 function AppContent() {
-  const { audioElement, isPlaying, isSpotifyMode, meydaData, spotifyTrackData, albumColors } = useAudioVisualizer();
+  const { audioElement, isPlaying, isSpotifyMode, meydaData, spotifyTrackData, albumColors, tabAudioStream } = useAudioVisualizer();
   const { playerState } = useWebPlayer();
   const { particleLevel, lyricsMode } = useSettings();
   
@@ -27,6 +27,7 @@ function AppContent() {
         currentTrackId={playerState.current_track?.id || null}
         currentPosition={playerState.position}
         particleLevel={particleLevel}
+        tabAudioStream={tabAudioStream}
       />
       <LiveLyrics
         currentTrackId={playerState.current_track?.id || null}

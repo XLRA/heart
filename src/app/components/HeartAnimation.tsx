@@ -38,6 +38,7 @@ interface AudioVisualizerProps {
   currentTrackId?: string | null;
   currentPosition?: number;
   particleLevel?: ParticleLevel;
+  tabAudioStream?: MediaStream | null;
 }
 
 interface SpotifyAudioAnalysis {
@@ -80,7 +81,8 @@ const HeartAnimation = ({
   albumColors = null,
   currentTrackId = null,
   currentPosition = 0,
-  particleLevel = 'high'
+  particleLevel = 'high',
+  tabAudioStream = null
 }: AudioVisualizerProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -146,7 +148,7 @@ const HeartAnimation = ({
 
   // Convert Meyda real-time data to audioData format for heart animation
   useEffect(() => {
-    if (!meydaData || !isPlaying) return;
+    if (!meydaData || !isPlaying || tabAudioStream) return;
 
     const convertMeydaToAudioData = () => {
       // Convert Meyda features to audioData format (normal amplification)
@@ -174,7 +176,7 @@ const HeartAnimation = ({
     const interval = setInterval(convertMeydaToAudioData, 50); // Update every 50ms
     
     return () => clearInterval(interval);
-  }, [meydaData, isPlaying]);
+  }, [meydaData, isPlaying, tabAudioStream]);
 
   // Fetch Spotify audio analysis data with fallback
   const fetchSpotifyAudioAnalysis = useCallback(async (trackId: string) => {
@@ -313,7 +315,7 @@ const HeartAnimation = ({
 
   // Audio analysis loop (only for local audio files)
   useEffect(() => {
-    if (!analyserRef.current || !isPlaying || isSpotifyMode) return;
+    if (!analyserRef.current || !isPlaying || isSpotifyMode || tabAudioStream) return;
 
     const bufferLength = analyserRef.current.frequencyBinCount;
     const dataArray = new Uint8Array(bufferLength);
@@ -391,11 +393,14 @@ const HeartAnimation = ({
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, [isPlaying, isSpotifyMode]);
+  }, [isPlaying, isSpotifyMode, tabAudioStream]);
 
   // Spotify mode: Enhanced simulation when audio analysis is not available
   useEffect(() => {
     if (!isSpotifyMode || !isPlaying || !currentPosition) return;
+    
+    // Tab capture provides real audio data -- skip simulation
+    if (tabAudioStream) return;
     
     // If we have Meyda real-time data, don't override it with simulation
     if (meydaData) return;
@@ -445,11 +450,11 @@ const HeartAnimation = ({
       const interval = setInterval(simulateEnhancedAudioData, 50);
       return () => clearInterval(interval);
     }
-  }, [isSpotifyMode, isPlaying, currentPosition, spotifyAnalysis, meydaData, spotifyTrackData]);
+  }, [isSpotifyMode, isPlaying, currentPosition, spotifyAnalysis, meydaData, spotifyTrackData, tabAudioStream]);
 
   // Spotify mode: Real audio-reactive behavior based on audio analysis
   useEffect(() => {
-    if (!isSpotifyMode || !isPlaying || !spotifyAnalysis || !currentPosition) return;
+    if (!isSpotifyMode || !isPlaying || !spotifyAnalysis || !currentPosition || tabAudioStream) return;
 
     const updateAudioDataFromAnalysis = () => {
       const currentTimeSeconds = currentPosition / 1000; // Convert ms to seconds
@@ -521,7 +526,103 @@ const HeartAnimation = ({
     const interval = setInterval(updateAudioDataFromAnalysis, 50); // Update every 50ms
     
     return () => clearInterval(interval);
-  }, [isSpotifyMode, isPlaying, spotifyAnalysis, currentPosition]);
+  }, [isSpotifyMode, isPlaying, spotifyAnalysis, currentPosition, tabAudioStream]);
+
+  // Tab audio capture: real frequency analysis from browser tab audio via getDisplayMedia
+  useEffect(() => {
+    if (!tabAudioStream) return;
+
+    let frameId: number;
+    let audioCtx: AudioContext | null = null;
+    let cleanedUp = false;
+
+    const setup = async () => {
+      try {
+        audioCtx = new AudioContext();
+        if (audioCtx.state === 'suspended') {
+          await audioCtx.resume();
+        }
+
+        const source = audioCtx.createMediaStreamSource(tabAudioStream);
+        const analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.8;
+        source.connect(analyser);
+
+        const bufferLength = analyser.frequencyBinCount;
+        const dataArray = new Uint8Array(bufferLength);
+        let lastBeatTime = 0;
+        const beatHistory: number[] = [];
+
+        const analyze = () => {
+          if (cleanedUp) return;
+
+          if (isPlayingRef.current) {
+            analyser.getByteFrequencyData(dataArray);
+
+            const bassEnd = Math.floor(bufferLength * 0.1);
+            const midEnd = Math.floor(bufferLength * 0.4);
+
+            let bassSum = 0;
+            let midSum = 0;
+            let trebleSum = 0;
+            let overallSum = 0;
+
+            for (let i = 0; i < bufferLength; i++) {
+              const value = dataArray[i] / 255;
+              overallSum += value;
+              if (i < bassEnd) {
+                bassSum += value;
+              } else if (i < midEnd) {
+                midSum += value;
+              } else {
+                trebleSum += value;
+              }
+            }
+
+            const bass = bassEnd > 0 ? bassSum / bassEnd : 0;
+            const mid = (midEnd - bassEnd) > 0 ? midSum / (midEnd - bassEnd) : 0;
+            const treble = (bufferLength - midEnd) > 0 ? trebleSum / (bufferLength - midEnd) : 0;
+            const overall = bufferLength > 0 ? overallSum / bufferLength : 0;
+
+            const currentTime = Date.now();
+            const timeSinceLastBeat = currentTime - lastBeatTime;
+
+            if (beatHistory.length > 10) {
+              beatHistory.shift();
+            }
+            beatHistory.push(overall);
+
+            const avgLevel = beatHistory.reduce((a, b) => a + b, 0) / beatHistory.length;
+            const beatThreshold = avgLevel * 1.5;
+
+            const isBeat = overall > beatThreshold && timeSinceLastBeat > 200;
+            if (isBeat) {
+              lastBeatTime = currentTime;
+            }
+
+            setAudioData({ bass, mid, treble, overall, beat: isBeat });
+          }
+
+          frameId = requestAnimationFrame(analyze);
+        };
+
+        analyze();
+      } catch (error) {
+        console.error('Error setting up tab audio capture:', error);
+      }
+    };
+
+    setup();
+
+    return () => {
+      cleanedUp = true;
+      if (frameId) cancelAnimationFrame(frameId);
+      if (audioCtx && audioCtx.state !== 'closed') {
+        audioCtx.close();
+      }
+    };
+  }, [tabAudioStream]);
 
   // Initialize canvas and particles once, then animate continuously
   useEffect(() => {
@@ -872,10 +973,12 @@ const HeartAnimation = ({
             height: '10px',
             borderRadius: '50%',
             backgroundColor: isLoadingAnalysis
-              ? '#ff6b6b' // Red when loading
-              : isSpotifyMode 
-                ? (meydaData ? `hsl(${120 + audioData.overall * 40}, 70%, 60%)` : `hsl(${30 + audioData.overall * 40}, 70%, 60%)`) // Green when Meyda active, orange for enhanced simulation
-                : `hsl(${280 + audioData.overall * 40}, 70%, 60%)`, // Purple for real-time mode
+              ? '#ff6b6b'
+              : tabAudioStream
+                ? `hsl(${180 + audioData.overall * 40}, 70%, 60%)`
+                : isSpotifyMode 
+                  ? (meydaData ? `hsl(${120 + audioData.overall * 40}, 70%, 60%)` : `hsl(${30 + audioData.overall * 40}, 70%, 60%)`)
+                  : `hsl(${280 + audioData.overall * 40}, 70%, 60%)`,
             opacity: 0.7,
             zIndex: 1000,
             transition: 'all 0.1s ease',
@@ -885,9 +988,11 @@ const HeartAnimation = ({
             title={
             isLoadingAnalysis
               ? "Loading Audio Analysis..." 
-              : isSpotifyMode 
-                ? (meydaData ? "Spotify Visualizer (Meyda Real-time Analysis)" : "Spotify Visualizer (Enhanced Simulation)")
-                : "Real-time Audio Visualizer"
+              : tabAudioStream
+                ? "Live Tab Audio Capture (Real-time)"
+                : isSpotifyMode 
+                  ? (meydaData ? "Spotify Visualizer (Meyda Real-time Analysis)" : "Spotify Visualizer (Enhanced Simulation)")
+                  : "Real-time Audio Visualizer"
           }
         />
       )}

@@ -34,6 +34,7 @@ interface AudioVisualizerContextType {
     chroma: number[];
   } | null;
   albumColors: AlbumColors | null;
+  tabAudioStream: MediaStream | null;
   setAudioElement: (element: HTMLAudioElement | null) => void;
   setIsPlaying: (playing: boolean) => void;
   setSpotifyMode: (isSpotify: boolean) => void;
@@ -55,6 +56,7 @@ interface AudioVisualizerContextType {
     chroma: number[];
   } | null) => void;
   setAlbumColors: (colors: AlbumColors | null) => void;
+  setTabAudioStream: (stream: MediaStream | null) => void;
 }
 
 const AudioVisualizerContext = createContext<AudioVisualizerContextType | undefined>(undefined);
@@ -93,6 +95,7 @@ export const AudioVisualizerProvider = ({ children }: AudioVisualizerProviderPro
     chroma: number[];
   } | null>(null);
   const [albumColors, setAlbumColors] = useState<AlbumColors | null>(null);
+  const [tabAudioStream, setTabAudioStream] = useState<MediaStream | null>(null);
 
   return (
     <AudioVisualizerContext.Provider
@@ -103,12 +106,14 @@ export const AudioVisualizerProvider = ({ children }: AudioVisualizerProviderPro
         spotifyTrackData,
         meydaData,
         albumColors,
+        tabAudioStream,
         setAudioElement,
         setIsPlaying,
         setSpotifyMode,
         setSpotifyTrackData,
         setMeydaData,
         setAlbumColors,
+        setTabAudioStream,
       }}
     >
       {children}
