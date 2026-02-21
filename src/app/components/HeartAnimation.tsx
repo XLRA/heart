@@ -545,14 +545,24 @@ const HeartAnimation = ({
 
         const source = audioCtx.createMediaStreamSource(tabAudioStream);
         const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.8;
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.6;
         source.connect(analyser);
 
         const bufferLength = analyser.frequencyBinCount;
         const dataArray = new Uint8Array(bufferLength);
+
+        let smoothBass = 0, smoothMid = 0, smoothTreble = 0, smoothOverall = 0;
+        let prevBassEnergy = 0;
         let lastBeatTime = 0;
-        const beatHistory: number[] = [];
+        const onsetHistory: number[] = [];
+        const ATTACK = 0.4;
+        const DECAY = 0.08;
+
+        const smoothValue = (current: number, raw: number) => {
+          const rate = raw > current ? ATTACK : DECAY;
+          return current + rate * (raw - current);
+        };
 
         const analyze = () => {
           if (cleanedUp) return;
@@ -560,18 +570,18 @@ const HeartAnimation = ({
           if (isPlayingRef.current) {
             analyser.getByteFrequencyData(dataArray);
 
-            const bassEnd = Math.floor(bufferLength * 0.1);
-            const midEnd = Math.floor(bufferLength * 0.4);
+            const subBassEnd = Math.floor(bufferLength * 0.04);
+            const bassEnd = Math.floor(bufferLength * 0.12);
+            const midEnd = Math.floor(bufferLength * 0.5);
 
-            let bassSum = 0;
-            let midSum = 0;
-            let trebleSum = 0;
-            let overallSum = 0;
+            let subBassSum = 0, bassSum = 0, midSum = 0, trebleSum = 0, overallSum = 0;
 
             for (let i = 0; i < bufferLength; i++) {
               const value = dataArray[i] / 255;
               overallSum += value;
-              if (i < bassEnd) {
+              if (i < subBassEnd) {
+                subBassSum += value;
+              } else if (i < bassEnd) {
                 bassSum += value;
               } else if (i < midEnd) {
                 midSum += value;
@@ -580,28 +590,44 @@ const HeartAnimation = ({
               }
             }
 
-            const bass = bassEnd > 0 ? bassSum / bassEnd : 0;
-            const mid = (midEnd - bassEnd) > 0 ? midSum / (midEnd - bassEnd) : 0;
-            const treble = (bufferLength - midEnd) > 0 ? trebleSum / (bufferLength - midEnd) : 0;
-            const overall = bufferLength > 0 ? overallSum / bufferLength : 0;
+            const rawSubBass = subBassEnd > 0 ? subBassSum / subBassEnd : 0;
+            const rawBass = (bassEnd - subBassEnd) > 0 ? bassSum / (bassEnd - subBassEnd) : 0;
+            const rawMid = (midEnd - bassEnd) > 0 ? midSum / (midEnd - bassEnd) : 0;
+            const rawTreble = (bufferLength - midEnd) > 0 ? trebleSum / (bufferLength - midEnd) : 0;
+            const rawOverall = bufferLength > 0 ? overallSum / bufferLength : 0;
+
+            const combinedBass = rawSubBass * 0.6 + rawBass * 0.4;
+
+            smoothBass = smoothValue(smoothBass, combinedBass);
+            smoothMid = smoothValue(smoothMid, rawMid);
+            smoothTreble = smoothValue(smoothTreble, rawTreble);
+            smoothOverall = smoothValue(smoothOverall, rawOverall);
+
+            // Onset-based beat detection: detect sudden bass energy increases
+            const bassEnergy = rawSubBass + rawBass * 0.5;
+            const bassOnset = Math.max(0, bassEnergy - prevBassEnergy);
+            prevBassEnergy = bassEnergy;
+
+            onsetHistory.push(bassOnset);
+            if (onsetHistory.length > 43) onsetHistory.shift();
+            const avgOnset = onsetHistory.reduce((a, b) => a + b, 0) / onsetHistory.length;
+            const onsetThreshold = Math.max(0.03, avgOnset * 2.5);
 
             const currentTime = Date.now();
             const timeSinceLastBeat = currentTime - lastBeatTime;
 
-            if (beatHistory.length > 10) {
-              beatHistory.shift();
-            }
-            beatHistory.push(overall);
-
-            const avgLevel = beatHistory.reduce((a, b) => a + b, 0) / beatHistory.length;
-            const beatThreshold = avgLevel * 1.5;
-
-            const isBeat = overall > beatThreshold && timeSinceLastBeat > 200;
+            const isBeat = bassOnset > onsetThreshold && timeSinceLastBeat > 180;
             if (isBeat) {
               lastBeatTime = currentTime;
             }
 
-            setAudioData({ bass, mid, treble, overall, beat: isBeat });
+            setAudioData({
+              bass: smoothBass,
+              mid: smoothMid,
+              treble: smoothTreble,
+              overall: smoothOverall,
+              beat: isBeat
+            });
           }
 
           frameId = requestAnimationFrame(analyze);
@@ -745,8 +771,8 @@ const HeartAnimation = ({
     // Initialize particles once
     const e: Particle[] = [];
     for (let i = 0; i < heartPointsCount; i++) {
-      const x = Math.random() * width;
-      const y = Math.random() * height;
+      const x = Math.random() * window.innerWidth;
+      const y = Math.random() * window.innerHeight;
       e[i] = {
         vx: 0,
         vy: 0,
@@ -844,47 +870,41 @@ const HeartAnimation = ({
         }
       }
       
-      // Calculate dramatic audio-reactive pulse
-      let basePulse = 1;
-      let beatPulse = 1;
-      let bassPulse = 1;
+      // Additive pulse: base energy gives gentle sway, beats create sharp distinct spikes
+      let pulseFactor = 1.0;
       
       if (currentIsPlaying && currentAudioData.overall > 0) {
-        // Base pulse from overall audio level (reasonable for track-based analysis)
-        basePulse = 1 + (currentAudioData.overall * 0.8);
+        // Smooth energy follows the track's overall loudness
+        pulseFactor += currentAudioData.overall * 0.2;
         
-        // Bass-driven pulse (heart thumping) - reasonable
-        bassPulse = 1 + (currentAudioData.bass * 0.8);
+        // Bass adds a subtle low-end sway
+        pulseFactor += currentAudioData.bass * 0.1;
         
-        // Beat detection for strong heart beats - responsive
+        // Beat creates a sharp, unmistakable spike
         if (currentAudioData.beat) {
-          beatPulse = 1.5 + (currentAudioData.bass * 0.5); // Reasonable beat
+          pulseFactor += 0.35 + currentAudioData.bass * 0.15;
           lastBeatTime = time;
         } else {
-          // Beat decay - heart returns to normal size after beat
+          // Fast exponential decay after beat
           const timeSinceBeat = time - lastBeatTime;
-          const beatDecay = Math.max(0, 1 - timeSinceBeat * 0.03);
-          beatPulse = 1 + beatDecay * 0.3;
+          const beatDecay = Math.exp(-timeSinceBeat * 8);
+          pulseFactor += beatDecay * 0.25;
         }
       }
       
-      // Create a more reasonable natural heartbeat rhythm
-      const naturalHeartbeat = Math.sin(time * 2) * 0.15 + 1; // More subtle
+      // Subtle natural heartbeat rhythm
+      pulseFactor += Math.sin(time * 2) * 0.04;
       
-      // Combine all pulse factors for balanced effect
-      const finalPulse = basePulse * bassPulse * beatPulse * naturalHeartbeat;
-      
-      // Ensure minimum and maximum pulse bounds (reasonable effects)
-      const clampedPulse = Math.max(0.5, Math.min(2.0, finalPulse));
+      const clampedPulse = Math.max(0.8, Math.min(1.7, pulseFactor));
       
       pulse(clampedPulse, clampedPulse);
       
-      // Adjust time progression based on audio intensity for more dynamic movement
-      const timeMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 1.0) : 1;
-      time += ((Math.sin(time)) < 0 ? 12 : (naturalHeartbeat > 1.2) ? .3 : 1.5) * config.timeDelta * timeMultiplier;
+      // Time progression with moderate audio influence
+      const timeMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.5) : 1;
+      time += ((Math.sin(time)) < 0 ? 12 : (pulseFactor > 1.15) ? .3 : 1.5) * config.timeDelta * timeMultiplier;
       
-      // Adjust trail opacity based on audio (more dramatic)
-      const trailOpacity = currentIsPlaying ? 0.02 + currentAudioData.overall * 0.15 : 0.08;
+      // Trail opacity: faster base fade prevents particle ghosts at edges
+      const trailOpacity = currentIsPlaying ? 0.04 + currentAudioData.overall * 0.1 : 0.08;
       ctx.fillStyle = `rgba(0,0,0,${trailOpacity})`;
       ctx.fillRect(0, 0, width, height);
 
@@ -910,10 +930,9 @@ const HeartAnimation = ({
           }
         }
 
-        // Adjust particle speed based on audio intensity (more reasonable)
-        const audioSpeedMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.6) : 1;
-        const bassMultiplier = currentIsPlaying ? (1 + currentAudioData.bass * 0.4) : 1;
-        const beatMultiplier = currentAudioData.beat ? 1.5 : 1.0;
+        const audioSpeedMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.3) : 1;
+        const bassMultiplier = currentIsPlaying ? (1 + currentAudioData.bass * 0.15) : 1;
+        const beatMultiplier = currentAudioData.beat ? 1.25 : 1.0;
         
         const totalSpeedMultiplier = audioSpeedMultiplier * bassMultiplier * beatMultiplier;
         
