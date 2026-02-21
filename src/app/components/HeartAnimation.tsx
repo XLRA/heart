@@ -768,11 +768,13 @@ const HeartAnimation = ({
       return colors[index % colors.length];
     };
 
-    // Initialize particles once
+    // Initialize particles at the heart center so they spread outward naturally
     const e: Particle[] = [];
+    const centerX = window.innerWidth / 2;
+    const centerY = window.innerHeight / 2;
     for (let i = 0; i < heartPointsCount; i++) {
-      const x = Math.random() * window.innerWidth;
-      const y = Math.random() * window.innerHeight;
+      const x = centerX;
+      const y = centerY;
       e[i] = {
         vx: 0,
         vy: 0,
