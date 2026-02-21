@@ -861,6 +861,8 @@ const HeartAnimation = ({
     let time = 0;
     let lastBeatTime = 0;
     let animationId: number;
+    // Smooth beat impulse that decays over ~10 frames instead of binary on/off
+    let beatGlow = 0;
     
     // Helper function to parse HSLA color string
     const parseHsla = (hsla: string): { h: number; s: number; l: number; a: number } => {
@@ -937,9 +939,17 @@ const HeartAnimation = ({
         }
       }
       
-      // Pulse: energy envelope for gentle sway, spectral-flux beats for dramatic spikes
-      let pulseFactor = 1.0;
+      // Update smooth beat glow: rises on beat, decays gracefully over ~10 frames
       const currentBs = currentAudioData.beatStrength || 0.5;
+      if (currentAudioData.beat && currentIsPlaying) {
+        beatGlow = Math.max(beatGlow, currentBs);
+      } else {
+        beatGlow *= 0.82;
+        if (beatGlow < 0.01) beatGlow = 0;
+      }
+      
+      // Pulse: energy envelope + beat glow for organic expansion
+      let pulseFactor = 1.0;
       
       if (currentIsPlaying && currentAudioData.overall > 0) {
         pulseFactor += currentAudioData.overall * 0.3;
@@ -949,7 +959,6 @@ const HeartAnimation = ({
           pulseFactor += 0.3 + currentBs * 0.5;
           lastBeatTime = time;
         } else {
-          // Slower decay so particles have time to respond visually
           const timeSinceBeat = time - lastBeatTime;
           const beatDecay = Math.exp(-timeSinceBeat * 4);
           pulseFactor += beatDecay * 0.4;
@@ -965,17 +974,16 @@ const HeartAnimation = ({
       const timeMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.5) : 1;
       time += ((Math.sin(time)) < 0 ? 12 : (pulseFactor > 1.15) ? .3 : 1.5) * config.timeDelta * timeMultiplier;
       
-      // Trail opacity: short trails on beats (crisp snap), long trails between (smooth flow)
-      const beatTrailBoost = currentAudioData.beat ? 0.12 : 0;
-      const trailOpacity = currentIsPlaying ? 0.04 + currentAudioData.overall * 0.08 + beatTrailBoost : 0.08;
+      // Trail opacity: smooth transition using beatGlow instead of binary snap
+      const trailOpacity = currentIsPlaying
+        ? 0.04 + currentAudioData.overall * 0.08 + beatGlow * 0.06
+        : 0.08;
       ctx.fillStyle = `rgba(0,0,0,${trailOpacity})`;
       ctx.fillRect(0, 0, width, height);
 
-      // Pre-compute beat-related values once per frame (not per particle)
       const isBeatFrame = currentIsPlaying && currentAudioData.beat;
       const centerX = window.innerWidth / 2;
       const centerY = window.innerHeight / 2;
-      const particleSize = isBeatFrame ? 2 : 1;
 
       for (let i = e.length; i--;) {
         const u = e[i];
@@ -1008,15 +1016,14 @@ const HeartAnimation = ({
         u.vx += -dx / length * u.speed * totalSpeedMultiplier;
         u.vy += -dy / length * u.speed * totalSpeedMultiplier;
 
-        // Direct outward velocity kick on beats -- bypasses sluggish target physics
+        // Outward kick on beat frames only -- natural physics handles the smooth return
         if (isBeatFrame) {
           const kickDx = u.trace[0].x - centerX;
           const kickDy = u.trace[0].y - centerY;
           const kickDist = Math.sqrt(kickDx * kickDx + kickDy * kickDy);
           if (kickDist > 1) {
-            const kickStrength = currentBs * 2.5;
-            u.vx += (kickDx / kickDist) * kickStrength;
-            u.vy += (kickDy / kickDist) * kickStrength;
+            u.vx += (kickDx / kickDist) * currentBs * 2;
+            u.vy += (kickDy / kickDist) * currentBs * 2;
           }
         }
 
@@ -1032,20 +1039,20 @@ const HeartAnimation = ({
           N.y -= config.traceK * (N.y - T.y);
         }
 
-        // Color: base from energy envelope, flash brightness on beats, treble sparkle
+        // Color: all effects driven by smooth beatGlow decay, not binary on/off
         const baseIntensity = currentIsPlaying ? 0.25 + currentAudioData.overall * 0.5 : 0.4;
         const bassIntensity = currentIsPlaying ? currentAudioData.bass * 0.2 : 0;
-        const beatFlash = isBeatFrame ? 0.25 + currentBs * 0.35 : 0;
+        const glowIntensity = beatGlow * 0.35;
         const trebleSparkle = currentIsPlaying ? currentAudioData.treble * 0.1 : 0;
-        const colorIntensity = Math.min(1.0, baseIntensity + bassIntensity + beatFlash + trebleSparkle);
+        const colorIntensity = Math.min(1.0, baseIntensity + bassIntensity + glowIntensity + trebleSparkle);
         
-        // Lightness boost: particles physically flash brighter on beats
-        const lightnessBoost = isBeatFrame ? 15 + currentBs * 25 : 0;
+        // Gentle lightness boost that fades with beatGlow -- stays in the color palette
+        const lightnessBoost = beatGlow * 15;
         u.f = getInterpolatedColor(u.colorIndex, colorIntensity, lightnessBoost);
 
         ctx.fillStyle = u.f;
         for (let k = 0; k < u.trace.length; k++) {
-          ctx.fillRect(u.trace[k].x, u.trace[k].y, particleSize, particleSize);
+          ctx.fillRect(u.trace[k].x, u.trace[k].y, 1, 1);
         }
       }
 
