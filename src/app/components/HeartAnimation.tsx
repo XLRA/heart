@@ -762,6 +762,13 @@ const HeartAnimation = ({
 
     window.addEventListener('resize', handleResize);
 
+    // Debug overlay toggle (press D to show/hide)
+    let showDebug = false;
+    const handleKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'd' || ev.key === 'D') showDebug = !showDebug;
+    };
+    window.addEventListener('keydown', handleKeyDown);
+
     // Get particle settings based on level
     const particleMultiplier = PARTICLE_MULTIPLIERS[particleLevel];
     const traceCount = TRACE_COUNTS[particleLevel];
@@ -859,9 +866,7 @@ const HeartAnimation = ({
     };
 
     let time = 0;
-    let lastBeatTime = 0;
     let animationId: number;
-    // Smooth beat impulse that decays over ~10 frames instead of binary on/off
     let beatGlow = 0;
     
     // Helper function to parse HSLA color string
@@ -939,51 +944,41 @@ const HeartAnimation = ({
         }
       }
       
-      // Update smooth beat glow: rises on beat, decays gracefully over ~10 frames
+      // Beat glow: smooth impulse (fast attack, exponential decay ~15 frames)
       const currentBs = currentAudioData.beatStrength || 0.5;
       if (currentAudioData.beat && currentIsPlaying) {
-        beatGlow = Math.max(beatGlow, currentBs);
+        beatGlow = Math.max(beatGlow, 0.5 + currentBs * 0.5);
       } else {
-        beatGlow *= 0.82;
+        beatGlow *= 0.88;
         if (beatGlow < 0.01) beatGlow = 0;
       }
       
-      // Pulse: energy envelope + beat glow for organic expansion
+      // Physics pulse: energy-only, NO beat contribution.
+      // Keeps particle targets close to base size so beats have contrast.
       let pulseFactor = 1.0;
-      
       if (currentIsPlaying && currentAudioData.overall > 0) {
-        pulseFactor += currentAudioData.overall * 0.3;
-        pulseFactor += currentAudioData.bass * 0.2;
-        
-        if (currentAudioData.beat) {
-          pulseFactor += 0.3 + currentBs * 0.5;
-          lastBeatTime = time;
-        } else {
-          const timeSinceBeat = time - lastBeatTime;
-          const beatDecay = Math.exp(-timeSinceBeat * 4);
-          pulseFactor += beatDecay * 0.4;
-        }
+        pulseFactor += currentAudioData.overall * 0.12;
+        pulseFactor += currentAudioData.bass * 0.05;
       }
-      
       pulseFactor += Math.sin(time * 2) * 0.04;
-      
-      const clampedPulse = Math.max(0.8, Math.min(2.0, pulseFactor));
-      
+      const clampedPulse = Math.max(0.85, Math.min(1.25, pulseFactor));
       pulse(clampedPulse, clampedPulse);
       
       const timeMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.5) : 1;
       time += ((Math.sin(time)) < 0 ? 12 : (pulseFactor > 1.15) ? .3 : 1.5) * config.timeDelta * timeMultiplier;
       
-      // Trail opacity: smooth transition using beatGlow instead of binary snap
+      // Render-time beat scale: bypasses particle physics entirely.
+      // Directly multiplies every particle's distance from center each frame.
+      const beatScale = 1.0 + beatGlow * 0.4;
+      
       const trailOpacity = currentIsPlaying
-        ? 0.04 + currentAudioData.overall * 0.08 + beatGlow * 0.06
+        ? 0.04 + currentAudioData.overall * 0.06 + beatGlow * 0.04
         : 0.08;
       ctx.fillStyle = `rgba(0,0,0,${trailOpacity})`;
       ctx.fillRect(0, 0, width, height);
 
-      const isBeatFrame = currentIsPlaying && currentAudioData.beat;
-      const centerX = window.innerWidth / 2;
-      const centerY = window.innerHeight / 2;
+      const cX = window.innerWidth / 2;
+      const cY = window.innerHeight / 2;
 
       for (let i = e.length; i--;) {
         const u = e[i];
@@ -1007,25 +1002,12 @@ const HeartAnimation = ({
           }
         }
 
-        const audioSpeedMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.35) : 1;
-        const bassMultiplier = currentIsPlaying ? (1 + currentAudioData.bass * 0.2) : 1;
-        const beatMultiplier = currentAudioData.beat ? 1.3 + currentBs * 0.3 : 1.0;
-        
-        const totalSpeedMultiplier = audioSpeedMultiplier * bassMultiplier * beatMultiplier;
+        const audioSpeedMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.3) : 1;
+        const bassMultiplier = currentIsPlaying ? (1 + currentAudioData.bass * 0.15) : 1;
+        const totalSpeedMultiplier = audioSpeedMultiplier * bassMultiplier;
         
         u.vx += -dx / length * u.speed * totalSpeedMultiplier;
         u.vy += -dy / length * u.speed * totalSpeedMultiplier;
-
-        // Outward kick on beat frames only -- natural physics handles the smooth return
-        if (isBeatFrame) {
-          const kickDx = u.trace[0].x - centerX;
-          const kickDy = u.trace[0].y - centerY;
-          const kickDist = Math.sqrt(kickDx * kickDx + kickDy * kickDy);
-          if (kickDist > 1) {
-            u.vx += (kickDx / kickDist) * currentBs * 2;
-            u.vy += (kickDy / kickDist) * currentBs * 2;
-          }
-        }
 
         u.trace[0].x += u.vx;
         u.trace[0].y += u.vy;
@@ -1039,21 +1021,55 @@ const HeartAnimation = ({
           N.y -= config.traceK * (N.y - T.y);
         }
 
-        // Color: all effects driven by smooth beatGlow decay, not binary on/off
+        // Color: smooth glow from beatGlow decay
         const baseIntensity = currentIsPlaying ? 0.25 + currentAudioData.overall * 0.5 : 0.4;
-        const bassIntensity = currentIsPlaying ? currentAudioData.bass * 0.2 : 0;
-        const glowIntensity = beatGlow * 0.35;
+        const bassIntensity = currentIsPlaying ? currentAudioData.bass * 0.15 : 0;
+        const glowIntensity = beatGlow * 0.3;
         const trebleSparkle = currentIsPlaying ? currentAudioData.treble * 0.1 : 0;
         const colorIntensity = Math.min(1.0, baseIntensity + bassIntensity + glowIntensity + trebleSparkle);
-        
-        // Gentle lightness boost that fades with beatGlow -- stays in the color palette
-        const lightnessBoost = beatGlow * 15;
+        const lightnessBoost = beatGlow * 12;
         u.f = getInterpolatedColor(u.colorIndex, colorIntensity, lightnessBoost);
 
+        // Render with beat scale applied -- instant expansion, no physics delay
         ctx.fillStyle = u.f;
         for (let k = 0; k < u.trace.length; k++) {
-          ctx.fillRect(u.trace[k].x, u.trace[k].y, 1, 1);
+          const rx = cX + (u.trace[k].x - cX) * beatScale;
+          const ry = cY + (u.trace[k].y - cY) * beatScale;
+          ctx.fillRect(rx, ry, 1, 1);
         }
+      }
+      
+      // Debug overlay (press D to toggle)
+      if (showDebug) {
+        ctx.save();
+        const pad = 12;
+        const barW = 90;
+        const lineH = 14;
+        let dy = pad;
+        ctx.fillStyle = 'rgba(0,0,0,0.8)';
+        ctx.fillRect(pad - 4, pad - 4, barW + 80, lineH * 8 + 12);
+        ctx.font = '10px monospace';
+        const drawBar = (label: string, val: number, color: string) => {
+          ctx.fillStyle = '#777';
+          ctx.fillText(`${label} ${val.toFixed(2)}`, pad, dy + 10);
+          ctx.fillStyle = color;
+          ctx.fillRect(pad + 52, dy + 2, Math.min(val, 1) * barW, 8);
+          dy += lineH;
+        };
+        drawBar('bass', currentAudioData.bass, '#f55');
+        drawBar('mid ', currentAudioData.mid, '#5f5');
+        drawBar('trbl', currentAudioData.treble, '#55f');
+        drawBar('ovrl', currentAudioData.overall, '#ff5');
+        drawBar('glow', beatGlow, '#0ff');
+        drawBar('plse', clampedPulse - 0.8, '#f0f');
+        drawBar('bScl', beatScale - 1.0, '#fff');
+        ctx.fillStyle = currentAudioData.beat ? '#0f0' : '#333';
+        ctx.beginPath();
+        ctx.arc(pad + barW + 60, pad + lineH, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#777';
+        ctx.fillText(`bs ${currentBs.toFixed(2)}`, pad, dy + 10);
+        ctx.restore();
       }
 
       animationId = requestAnimationFrame(loop);
@@ -1064,6 +1080,7 @@ const HeartAnimation = ({
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      window.removeEventListener('keydown', handleKeyDown);
       if (animationId) {
         cancelAnimationFrame(animationId);
       }
