@@ -356,7 +356,7 @@ const HeartAnimation = ({
 
       let subBassSum = 0, bassSum = 0, midSum = 0, trebleSum = 0;
       let subBassCount = 0, bassCount = 0, midCount = 0, trebleCount = 0;
-      let bassFlux = 0, totalFlux = 0;
+      let bassFlux = 0, midFlux = 0, totalFlux = 0;
 
       for (let i = 1; i < trebleEnd; i++) {
         const magnitude = Math.max(0, (floatData[i] + 100) / 90);
@@ -366,6 +366,7 @@ const HeartAnimation = ({
         if (delta > 0) {
           totalFlux += delta;
           if (i < bassEnd) bassFlux += delta;
+          else if (i < midEnd) midFlux += delta;
         }
 
         if (i < subBassEnd) { subBassSum += magnitude; subBassCount++; }
@@ -387,20 +388,20 @@ const HeartAnimation = ({
       envTreble = applyEnvelope(envTreble, rawTreble);
       envOverall = applyEnvelope(envOverall, rawOverall);
 
-      const weightedFlux = bassFlux * 3 + totalFlux;
+      const weightedFlux = midFlux * 2.5 + bassFlux + totalFlux;
       fluxHistory.push(weightedFlux);
       if (fluxHistory.length > 43) fluxHistory.shift();
 
       const sorted = [...fluxHistory].sort((a, b) => a - b);
       const median = sorted[Math.floor(sorted.length / 2)];
       const avg = fluxHistory.reduce((a, b) => a + b, 0) / fluxHistory.length;
-      const fluxThreshold = Math.max(median + avg * 0.6, 0.005);
+      const fluxThreshold = Math.max(median + avg * 0.4, 0.005);
 
       const currentTime = Date.now();
       const timeSinceLastBeat = currentTime - lastBeatTime;
 
       const isBeat = weightedFlux > fluxThreshold && timeSinceLastBeat > 150;
-      const strength = isBeat ? Math.min(1, (weightedFlux - fluxThreshold) / Math.max(0.01, fluxThreshold * 2)) : 0;
+      const strength = isBeat ? Math.min(1, (weightedFlux - fluxThreshold) / Math.max(0.01, fluxThreshold)) : 0;
 
       if (isBeat) lastBeatTime = currentTime;
 
@@ -622,18 +623,17 @@ const HeartAnimation = ({
 
             let subBassSum = 0, bassSum = 0, midSum = 0, highMidSum = 0, trebleSum = 0;
             let subBassCount = 0, bassCount = 0, midCount = 0, highMidCount = 0, trebleCount = 0;
-            let bassFlux = 0, totalFlux = 0;
+            let bassFlux = 0, midFlux = 0, totalFlux = 0;
 
             for (let i = 1; i < trebleEnd; i++) {
-              // dB to perceptual 0-1: map [-100, -10] to [0, 1]
               const magnitude = Math.max(0, (floatData[i] + 100) / 90);
               const prevMagnitude = Math.max(0, (prevFloatData[i] + 100) / 90);
 
-              // Spectral flux: half-wave rectified difference (only energy increases)
               const delta = magnitude - prevMagnitude;
               if (delta > 0) {
                 totalFlux += delta;
                 if (i < bassEnd) bassFlux += delta;
+                else if (i < midEnd) midFlux += delta;
               }
 
               // Accumulate per-band energy
@@ -664,23 +664,21 @@ const HeartAnimation = ({
             envTreble = applyEnvelope(envTreble, rawTreble);
             envOverall = applyEnvelope(envOverall, rawOverall);
 
-            // Beat detection via bass-weighted spectral flux
-            const weightedFlux = bassFlux * 3 + totalFlux;
+            const weightedFlux = midFlux * 2.5 + bassFlux + totalFlux;
 
             fluxHistory.push(weightedFlux);
             if (fluxHistory.length > 43) fluxHistory.shift();
 
-            // Adaptive threshold: median + scaled average of recent flux
             const sorted = [...fluxHistory].sort((a, b) => a - b);
             const median = sorted[Math.floor(sorted.length / 2)];
             const avg = fluxHistory.reduce((a, b) => a + b, 0) / fluxHistory.length;
-            const fluxThreshold = Math.max(median + avg * 0.6, 0.005);
+            const fluxThreshold = Math.max(median + avg * 0.4, 0.005);
 
             const currentTime = Date.now();
             const timeSinceLastBeat = currentTime - lastBeatTime;
 
             const isBeat = weightedFlux > fluxThreshold && timeSinceLastBeat > 150;
-            const strength = isBeat ? Math.min(1, (weightedFlux - fluxThreshold) / Math.max(0.01, fluxThreshold * 2)) : 0;
+            const strength = isBeat ? Math.min(1, (weightedFlux - fluxThreshold) / Math.max(0.01, fluxThreshold)) : 0;
 
             if (isBeat) lastBeatTime = currentTime;
 
@@ -781,6 +779,7 @@ const HeartAnimation = ({
     for (let i = 0; i < Math.PI * 2; i += dr) {
       pointsOrigin.push(scaleAndTranslate(heartPosition(i), 210, 13, 0, 0));
     }
+    const outerRingCount = pointsOrigin.length;
     for (let i = 0; i < Math.PI * 2; i += dr) {
       pointsOrigin.push(scaleAndTranslate(heartPosition(i), 150, 9, 0, 0));
     }
@@ -866,6 +865,7 @@ const HeartAnimation = ({
     };
 
     let time = 0;
+    let lastBeatTime = 0;
     let animationId: number;
     let beatGlow = 0;
     
@@ -944,35 +944,38 @@ const HeartAnimation = ({
         }
       }
       
-      // Beat glow: smooth impulse (fast attack, exponential decay ~15 frames)
       const currentBs = currentAudioData.beatStrength || 0.5;
       if (currentAudioData.beat && currentIsPlaying) {
-        beatGlow = Math.max(beatGlow, 0.5 + currentBs * 0.5);
+        beatGlow = Math.max(beatGlow, 0.4 + currentBs * 0.6);
       } else {
-        beatGlow *= 0.88;
+        beatGlow *= 0.82;
         if (beatGlow < 0.01) beatGlow = 0;
       }
       
-      // Physics pulse: energy-only, NO beat contribution.
-      // Keeps particle targets close to base size so beats have contrast.
+      // Pulse: energy envelope + beat spike for heart size changes
       let pulseFactor = 1.0;
       if (currentIsPlaying && currentAudioData.overall > 0) {
-        pulseFactor += currentAudioData.overall * 0.12;
-        pulseFactor += currentAudioData.bass * 0.05;
+        pulseFactor += currentAudioData.overall * 0.2;
+        pulseFactor += currentAudioData.bass * 0.1;
+        
+        if (currentAudioData.beat) {
+          pulseFactor += 0.25 + currentBs * 0.35;
+          lastBeatTime = time;
+        } else {
+          const timeSinceBeat = time - lastBeatTime;
+          const beatDecay = Math.exp(-timeSinceBeat * 6);
+          pulseFactor += beatDecay * 0.3;
+        }
       }
       pulseFactor += Math.sin(time * 2) * 0.04;
-      const clampedPulse = Math.max(0.85, Math.min(1.25, pulseFactor));
+      const clampedPulse = Math.max(0.8, Math.min(1.8, pulseFactor));
       pulse(clampedPulse, clampedPulse);
       
       const timeMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.5) : 1;
       time += ((Math.sin(time)) < 0 ? 12 : (pulseFactor > 1.15) ? .3 : 1.5) * config.timeDelta * timeMultiplier;
       
-      // Render-time beat scale: bypasses particle physics entirely.
-      // Directly multiplies every particle's distance from center each frame.
-      const beatScale = 1.0 + beatGlow * 0.4;
-      
       const trailOpacity = currentIsPlaying
-        ? 0.04 + currentAudioData.overall * 0.06 + beatGlow * 0.04
+        ? 0.04 + currentAudioData.overall * 0.08 + beatGlow * 0.06
         : 0.08;
       ctx.fillStyle = `rgba(0,0,0,${trailOpacity})`;
       ctx.fillRect(0, 0, width, height);
@@ -1002,12 +1005,25 @@ const HeartAnimation = ({
           }
         }
 
-        const audioSpeedMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.3) : 1;
-        const bassMultiplier = currentIsPlaying ? (1 + currentAudioData.bass * 0.15) : 1;
-        const totalSpeedMultiplier = audioSpeedMultiplier * bassMultiplier;
+        const audioSpeedMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.35) : 1;
+        const bassMultiplier = currentIsPlaying ? (1 + currentAudioData.bass * 0.2) : 1;
+        const beatSpeedMult = currentAudioData.beat ? 1.2 + currentBs * 0.2 : 1.0;
+        const totalSpeedMultiplier = audioSpeedMultiplier * bassMultiplier * beatSpeedMult;
         
         u.vx += -dx / length * u.speed * totalSpeedMultiplier;
         u.vy += -dy / length * u.speed * totalSpeedMultiplier;
+
+        // Outer ring spike: particles on the outer ring get pushed outward on beats,
+        // creating sharp radiating lines that visually react to the music.
+        if (beatGlow > 0.15 && u.q < outerRingCount && i % 3 === 0) {
+          const spDx = u.trace[0].x - cX;
+          const spDy = u.trace[0].y - cY;
+          const spDist = Math.sqrt(spDx * spDx + spDy * spDy);
+          if (spDist > 10) {
+            u.vx += (spDx / spDist) * beatGlow * 3.5;
+            u.vy += (spDy / spDist) * beatGlow * 3.5;
+          }
+        }
 
         u.trace[0].x += u.vx;
         u.trace[0].y += u.vy;
@@ -1021,21 +1037,17 @@ const HeartAnimation = ({
           N.y -= config.traceK * (N.y - T.y);
         }
 
-        // Color: smooth glow from beatGlow decay
         const baseIntensity = currentIsPlaying ? 0.25 + currentAudioData.overall * 0.5 : 0.4;
-        const bassIntensity = currentIsPlaying ? currentAudioData.bass * 0.15 : 0;
-        const glowIntensity = beatGlow * 0.3;
+        const bassIntensity = currentIsPlaying ? currentAudioData.bass * 0.2 : 0;
+        const glowIntensity = beatGlow * 0.35;
         const trebleSparkle = currentIsPlaying ? currentAudioData.treble * 0.1 : 0;
         const colorIntensity = Math.min(1.0, baseIntensity + bassIntensity + glowIntensity + trebleSparkle);
-        const lightnessBoost = beatGlow * 12;
+        const lightnessBoost = beatGlow * 15;
         u.f = getInterpolatedColor(u.colorIndex, colorIntensity, lightnessBoost);
 
-        // Render with beat scale applied -- instant expansion, no physics delay
         ctx.fillStyle = u.f;
         for (let k = 0; k < u.trace.length; k++) {
-          const rx = cX + (u.trace[k].x - cX) * beatScale;
-          const ry = cY + (u.trace[k].y - cY) * beatScale;
-          ctx.fillRect(rx, ry, 1, 1);
+          ctx.fillRect(u.trace[k].x, u.trace[k].y, 1, 1);
         }
       }
       
@@ -1045,16 +1057,16 @@ const HeartAnimation = ({
         const pad = 12;
         const barW = 90;
         const lineH = 14;
-        let dy = pad;
+        let dbgY = pad;
         ctx.fillStyle = 'rgba(0,0,0,0.8)';
         ctx.fillRect(pad - 4, pad - 4, barW + 80, lineH * 8 + 12);
         ctx.font = '10px monospace';
         const drawBar = (label: string, val: number, color: string) => {
           ctx.fillStyle = '#777';
-          ctx.fillText(`${label} ${val.toFixed(2)}`, pad, dy + 10);
+          ctx.fillText(`${label} ${val.toFixed(2)}`, pad, dbgY + 10);
           ctx.fillStyle = color;
-          ctx.fillRect(pad + 52, dy + 2, Math.min(val, 1) * barW, 8);
-          dy += lineH;
+          ctx.fillRect(pad + 52, dbgY + 2, Math.min(val, 1) * barW, 8);
+          dbgY += lineH;
         };
         drawBar('bass', currentAudioData.bass, '#f55');
         drawBar('mid ', currentAudioData.mid, '#5f5');
@@ -1062,13 +1074,11 @@ const HeartAnimation = ({
         drawBar('ovrl', currentAudioData.overall, '#ff5');
         drawBar('glow', beatGlow, '#0ff');
         drawBar('plse', clampedPulse - 0.8, '#f0f');
-        drawBar('bScl', beatScale - 1.0, '#fff');
+        drawBar('bStr', currentBs, '#fa0');
         ctx.fillStyle = currentAudioData.beat ? '#0f0' : '#333';
         ctx.beginPath();
         ctx.arc(pad + barW + 60, pad + lineH, 5, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = '#777';
-        ctx.fillText(`bs ${currentBs.toFixed(2)}`, pad, dy + 10);
         ctx.restore();
       }
 
