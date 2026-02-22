@@ -356,18 +356,14 @@ const HeartAnimation = ({
 
       let subBassSum = 0, bassSum = 0, midSum = 0, trebleSum = 0;
       let subBassCount = 0, bassCount = 0, midCount = 0, trebleCount = 0;
-      let bassFlux = 0, midFlux = 0, totalFlux = 0;
+      let totalFlux = 0;
 
       for (let i = 1; i < trebleEnd; i++) {
         const magnitude = Math.max(0, (floatData[i] + 100) / 90);
         const prevMagnitude = Math.max(0, (prevFloatData[i] + 100) / 90);
 
         const delta = magnitude - prevMagnitude;
-        if (delta > 0) {
-          totalFlux += delta;
-          if (i < bassEnd) bassFlux += delta;
-          else if (i < midEnd) midFlux += delta;
-        }
+        if (delta > 0) totalFlux += delta;
 
         if (i < subBassEnd) { subBassSum += magnitude; subBassCount++; }
         else if (i < bassEnd) { bassSum += magnitude; bassCount++; }
@@ -388,20 +384,19 @@ const HeartAnimation = ({
       envTreble = applyEnvelope(envTreble, rawTreble);
       envOverall = applyEnvelope(envOverall, rawOverall);
 
-      const weightedFlux = midFlux * 2.5 + bassFlux + totalFlux;
-      fluxHistory.push(weightedFlux);
+      fluxHistory.push(totalFlux);
       if (fluxHistory.length > 43) fluxHistory.shift();
 
-      const sorted = [...fluxHistory].sort((a, b) => a - b);
-      const median = sorted[Math.floor(sorted.length / 2)];
-      const avg = fluxHistory.reduce((a, b) => a + b, 0) / fluxHistory.length;
-      const fluxThreshold = Math.max(median + avg * 0.4, 0.005);
+      const mean = fluxHistory.reduce((a, b) => a + b, 0) / fluxHistory.length;
+      const variance = fluxHistory.reduce((sum, f) => sum + (f - mean) ** 2, 0) / fluxHistory.length;
+      const stdDev = Math.sqrt(variance);
+      const fluxThreshold = Math.max(mean + stdDev * 1.5, 0.01);
 
       const currentTime = Date.now();
       const timeSinceLastBeat = currentTime - lastBeatTime;
 
-      const isBeat = weightedFlux > fluxThreshold && timeSinceLastBeat > 150;
-      const strength = isBeat ? Math.min(1, (weightedFlux - fluxThreshold) / Math.max(0.01, fluxThreshold)) : 0;
+      const isBeat = totalFlux > fluxThreshold && timeSinceLastBeat > 200;
+      const strength = isBeat ? Math.min(1, (totalFlux - fluxThreshold) / Math.max(0.01, stdDev * 2)) : 0;
 
       if (isBeat) lastBeatTime = currentTime;
 
@@ -623,20 +618,15 @@ const HeartAnimation = ({
 
             let subBassSum = 0, bassSum = 0, midSum = 0, highMidSum = 0, trebleSum = 0;
             let subBassCount = 0, bassCount = 0, midCount = 0, highMidCount = 0, trebleCount = 0;
-            let bassFlux = 0, midFlux = 0, totalFlux = 0;
+            let totalFlux = 0;
 
             for (let i = 1; i < trebleEnd; i++) {
               const magnitude = Math.max(0, (floatData[i] + 100) / 90);
               const prevMagnitude = Math.max(0, (prevFloatData[i] + 100) / 90);
 
               const delta = magnitude - prevMagnitude;
-              if (delta > 0) {
-                totalFlux += delta;
-                if (i < bassEnd) bassFlux += delta;
-                else if (i < midEnd) midFlux += delta;
-              }
+              if (delta > 0) totalFlux += delta;
 
-              // Accumulate per-band energy
               if (i < subBassEnd) { subBassSum += magnitude; subBassCount++; }
               else if (i < bassEnd) { bassSum += magnitude; bassCount++; }
               else if (i < midEnd) { midSum += magnitude; midCount++; }
@@ -646,39 +636,34 @@ const HeartAnimation = ({
 
             prevFloatData.set(floatData);
 
-            // Compute raw band averages
             const rawSubBass = subBassCount > 0 ? subBassSum / subBassCount : 0;
             const rawBass = bassCount > 0 ? bassSum / bassCount : 0;
             const rawMid = midCount > 0 ? midSum / midCount : 0;
             const rawHighMid = highMidCount > 0 ? highMidSum / highMidCount : 0;
             const rawTreble = trebleCount > 0 ? trebleSum / trebleCount : 0;
 
-            // Combine sub-bass + bass (kick drum emphasis)
             const combinedBass = rawSubBass * 0.65 + rawBass * 0.35;
             const combinedMid = rawMid * 0.6 + rawHighMid * 0.4;
             const rawOverall = combinedBass * 0.35 + combinedMid * 0.35 + rawTreble * 0.3;
 
-            // Apply envelope followers
             envBass = applyEnvelope(envBass, combinedBass);
             envMid = applyEnvelope(envMid, combinedMid);
             envTreble = applyEnvelope(envTreble, rawTreble);
             envOverall = applyEnvelope(envOverall, rawOverall);
 
-            const weightedFlux = midFlux * 2.5 + bassFlux + totalFlux;
-
-            fluxHistory.push(weightedFlux);
+            fluxHistory.push(totalFlux);
             if (fluxHistory.length > 43) fluxHistory.shift();
 
-            const sorted = [...fluxHistory].sort((a, b) => a - b);
-            const median = sorted[Math.floor(sorted.length / 2)];
-            const avg = fluxHistory.reduce((a, b) => a + b, 0) / fluxHistory.length;
-            const fluxThreshold = Math.max(median + avg * 0.4, 0.005);
+            const mean = fluxHistory.reduce((a, b) => a + b, 0) / fluxHistory.length;
+            const variance = fluxHistory.reduce((sum, f) => sum + (f - mean) ** 2, 0) / fluxHistory.length;
+            const stdDev = Math.sqrt(variance);
+            const fluxThreshold = Math.max(mean + stdDev * 1.5, 0.01);
 
             const currentTime = Date.now();
             const timeSinceLastBeat = currentTime - lastBeatTime;
 
-            const isBeat = weightedFlux > fluxThreshold && timeSinceLastBeat > 150;
-            const strength = isBeat ? Math.min(1, (weightedFlux - fluxThreshold) / Math.max(0.01, fluxThreshold)) : 0;
+            const isBeat = totalFlux > fluxThreshold && timeSinceLastBeat > 200;
+            const strength = isBeat ? Math.min(1, (totalFlux - fluxThreshold) / Math.max(0.01, stdDev * 2)) : 0;
 
             if (isBeat) lastBeatTime = currentTime;
 
