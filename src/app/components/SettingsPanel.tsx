@@ -37,9 +37,17 @@ const SettingsPanel = () => {
     setIsCapturing(true);
 
     try {
+      // Disable speech-tuned filters that mangle music: NS attenuates sustained tonal
+      // content, EC introduces nonlinear distortion, AGC fights our own normalization.
       const displayMediaOptions: DisplayMediaStreamOptions = {
         video: true,
-        audio: true,
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          sampleRate: 48000,
+          channelCount: 2,
+        } as MediaTrackConstraints,
       };
       // Chrome-specific hints to include current tab and exclude system audio
       Object.assign(displayMediaOptions, {

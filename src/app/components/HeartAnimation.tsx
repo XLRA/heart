@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { ParticleLevel, PARTICLE_MULTIPLIERS, TRACE_COUNTS } from '../context/SettingsContext';
 import type { AlbumColors } from '../../services/colorExtractor';
+import { createAudioAnalyzer, type AudioAnalyzer } from '../../services/audioAnalyzer';
 
 interface AudioVisualizerProps {
   audioElement?: HTMLAudioElement | null;
@@ -77,8 +78,8 @@ const HeartAnimation = ({
 }: AudioVisualizerProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
   const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const localAnalyzerRef = useRef<AudioAnalyzer | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const [audioData, setAudioData] = useState<{
     bass: number;
@@ -231,50 +232,47 @@ const HeartAnimation = ({
     }
   }, [isSpotifyMode, currentTrackId, fetchSpotifyAudioAnalysis]);
 
-  // Initialize Web Audio API (only for local audio files)
+  // Initialize Web Audio API (only for local audio files).
+  // Audio graph:
+  //   source ──> destination          (audible: user hears unmodified track)
+  //   source ──> [analyzer side-chain] (analysis: pre-emphasis -> analyser node)
+  // The analyzer factory builds the side-chain internally; we only wire the audible path here.
   useEffect(() => {
     if (!audioElement || !canvasRef.current || isSpotifyMode) return;
 
     const initAudioContext = async () => {
       try {
-        // Create audio context
         audioContextRef.current = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-        
-        // Resume context if suspended (required for user interaction)
         if (audioContextRef.current.state === 'suspended') {
           await audioContextRef.current.resume();
         }
-        
-        // Create analyser node
-        analyserRef.current = audioContextRef.current.createAnalyser();
-        analyserRef.current.fftSize = 256;
-        analyserRef.current.smoothingTimeConstant = 0.8;
-        
-        // Create source from audio element
+
         sourceRef.current = audioContextRef.current.createMediaElementSource(audioElement);
-        
-        // Connect the audio graph
-        sourceRef.current.connect(analyserRef.current);
-        analyserRef.current.connect(audioContextRef.current.destination);
-        
+        sourceRef.current.connect(audioContextRef.current.destination);
+
+        localAnalyzerRef.current = createAudioAnalyzer({
+          audioContext: audioContextRef.current,
+          sourceNode: sourceRef.current,
+        });
+
         console.log('Audio visualizer initialized');
       } catch (error) {
         console.error('Error initializing audio context:', error);
-        // Reset refs on error
         audioContextRef.current = null;
-        analyserRef.current = null;
         sourceRef.current = null;
+        localAnalyzerRef.current = null;
       }
     };
 
     initAudioContext();
 
     return () => {
-      if (sourceRef.current) {
-        sourceRef.current.disconnect();
+      if (localAnalyzerRef.current) {
+        localAnalyzerRef.current.dispose();
+        localAnalyzerRef.current = null;
       }
-      if (analyserRef.current) {
-        analyserRef.current.disconnect();
+      if (sourceRef.current) {
+        try { sourceRef.current.disconnect(); } catch { /* already disconnected */ }
       }
       if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
         audioContextRef.current.close();
@@ -307,108 +305,24 @@ const HeartAnimation = ({
     };
   }, []);
 
-  // Audio analysis loop (only for local audio files)
-  // Uses the same spectral flux + envelope follower approach as tab capture
+  // Audio analysis loop for local audio files. Reads from the unified analyzer
+  // built in the init effect (see createAudioAnalyzer).
   useEffect(() => {
-    if (!analyserRef.current || !isPlaying || isSpotifyMode || tabAudioStream) return;
+    if (!localAnalyzerRef.current || !isPlaying || isSpotifyMode || tabAudioStream) return;
 
-    const analyser = analyserRef.current;
-    analyser.fftSize = 2048;
-    analyser.smoothingTimeConstant = 0.3;
+    const analyzer = localAnalyzerRef.current;
 
-    const bufferLength = analyser.frequencyBinCount;
-    const floatData = new Float32Array(bufferLength);
-    const prevFloatData = new Float32Array(bufferLength);
-    prevFloatData.fill(-100);
-
-    const sampleRate = audioContextRef.current?.sampleRate || 44100;
-    const binWidth = sampleRate / analyser.fftSize;
-    const subBassEnd = Math.ceil(80 / binWidth);
-    const bassEnd = Math.ceil(250 / binWidth);
-    const midEnd = Math.ceil(2000 / binWidth);
-    const trebleEnd = Math.min(bufferLength, Math.ceil(16000 / binWidth));
-
-    let envBass = 0, envMid = 0, envTreble = 0, envOverall = 0;
-    const ENV_ATTACK = 0.6;
-    const ENV_DECAY = 0.05;
-
-    let lastBeatTime = 0;
-    const fluxHistory: number[] = [];
-
-    const applyEnvelope = (current: number, raw: number) => {
-      const rate = raw > current ? ENV_ATTACK : ENV_DECAY;
-      return current + rate * (raw - current);
-    };
-
-    const analyzeAudio = () => {
-      if (!analyserRef.current) return;
-
-      analyserRef.current.getFloatFrequencyData(floatData);
-
-      let subBassSum = 0, bassSum = 0, midSum = 0, trebleSum = 0;
-      let subBassCount = 0, bassCount = 0, midCount = 0, trebleCount = 0;
-      let totalFlux = 0;
-
-      for (let i = 1; i < trebleEnd; i++) {
-        const magnitude = Math.max(0, (floatData[i] + 100) / 90);
-        const prevMagnitude = Math.max(0, (prevFloatData[i] + 100) / 90);
-
-        const delta = magnitude - prevMagnitude;
-        if (delta > 0) totalFlux += delta;
-
-        if (i < subBassEnd) { subBassSum += magnitude; subBassCount++; }
-        else if (i < bassEnd) { bassSum += magnitude; bassCount++; }
-        else if (i < midEnd) { midSum += magnitude; midCount++; }
-        else { trebleSum += magnitude; trebleCount++; }
+    const tick = () => {
+      if (localAnalyzerRef.current === analyzer && isPlayingRef.current) {
+        setAudioData(analyzer.read());
       }
-
-      prevFloatData.set(floatData);
-
-      const rawBass = (subBassCount > 0 ? subBassSum / subBassCount : 0) * 0.65 +
-                      (bassCount > 0 ? bassSum / bassCount : 0) * 0.35;
-      const rawMid = midCount > 0 ? midSum / midCount : 0;
-      const rawTreble = trebleCount > 0 ? trebleSum / trebleCount : 0;
-      const rawOverall = rawBass * 0.35 + rawMid * 0.35 + rawTreble * 0.3;
-
-      envBass = applyEnvelope(envBass, rawBass);
-      envMid = applyEnvelope(envMid, rawMid);
-      envTreble = applyEnvelope(envTreble, rawTreble);
-      envOverall = applyEnvelope(envOverall, rawOverall);
-
-      fluxHistory.push(totalFlux);
-      if (fluxHistory.length > 43) fluxHistory.shift();
-
-      const mean = fluxHistory.reduce((a, b) => a + b, 0) / fluxHistory.length;
-      const variance = fluxHistory.reduce((sum, f) => sum + (f - mean) ** 2, 0) / fluxHistory.length;
-      const stdDev = Math.sqrt(variance);
-      const fluxThreshold = Math.max(mean + stdDev * 1.5, 0.01);
-
-      const currentTime = Date.now();
-      const timeSinceLastBeat = currentTime - lastBeatTime;
-
-      const isBeat = totalFlux > fluxThreshold && timeSinceLastBeat > 200;
-      const strength = isBeat ? Math.min(1, (totalFlux - fluxThreshold) / Math.max(0.01, stdDev * 2)) : 0;
-
-      if (isBeat) lastBeatTime = currentTime;
-
-      setAudioData({
-        bass: envBass,
-        mid: envMid,
-        treble: envTreble,
-        overall: envOverall,
-        beat: isBeat,
-        beatStrength: strength
-      });
-
-      animationFrameRef.current = requestAnimationFrame(analyzeAudio);
+      animationFrameRef.current = requestAnimationFrame(tick);
     };
 
-    analyzeAudio();
+    tick();
 
     return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
   }, [isPlaying, isSpotifyMode, tabAudioStream]);
 
@@ -548,14 +462,15 @@ const HeartAnimation = ({
     return () => clearInterval(interval);
   }, [isSpotifyMode, isPlaying, spotifyAnalysis, currentPosition, tabAudioStream]);
 
-  // Tab audio capture: professional-grade frequency analysis from browser tab audio
-  // Uses getFloatFrequencyData for precision, spectral flux onset detection,
-  // and asymmetric envelope followers (fast attack / slow decay) per band.
+  // Tab audio capture: real-time analysis of audio shared via getDisplayMedia.
+  // Uses the unified analyzer (pre-emphasis + per-band beat detection + noise gate).
+  // No connection to destination -- the captured tab is already audible to the user.
   useEffect(() => {
     if (!tabAudioStream) return;
 
     let frameId: number;
     let audioCtx: AudioContext | null = null;
+    let analyzer: AudioAnalyzer | null = null;
     let cleanedUp = false;
 
     const setup = async () => {
@@ -564,114 +479,23 @@ const HeartAnimation = ({
         if (audioCtx.state === 'suspended') {
           await audioCtx.resume();
         }
+        if (cleanedUp) {
+          if (audioCtx.state !== 'closed') await audioCtx.close();
+          return;
+        }
 
         const source = audioCtx.createMediaStreamSource(tabAudioStream);
-        const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 2048;
-        analyser.smoothingTimeConstant = 0.3;
-        analyser.minDecibels = -100;
-        analyser.maxDecibels = -10;
-        source.connect(analyser);
+        analyzer = createAudioAnalyzer({ audioContext: audioCtx, sourceNode: source });
 
-        const bufferLength = analyser.frequencyBinCount;
-        const floatData = new Float32Array(bufferLength);
-        const prevFloatData = new Float32Array(bufferLength);
-        prevFloatData.fill(-100);
-
-        // Hz-accurate band boundaries (sampleRate / fftSize ≈ 21.5 Hz per bin at 44.1kHz)
-        const sampleRate = audioCtx.sampleRate;
-        const binWidth = sampleRate / analyser.fftSize;
-        const subBassEnd = Math.ceil(80 / binWidth);
-        const bassEnd = Math.ceil(250 / binWidth);
-        const midEnd = Math.ceil(2000 / binWidth);
-        const highMidEnd = Math.ceil(4000 / binWidth);
-        const trebleEnd = Math.min(bufferLength, Math.ceil(16000 / binWidth));
-
-        // Asymmetric envelope followers per band (fast attack, slow decay)
-        let envBass = 0, envMid = 0, envTreble = 0, envOverall = 0;
-        const ENV_ATTACK = 0.6;
-        const ENV_DECAY = 0.05;
-
-        // Spectral flux history for adaptive beat threshold
-        let lastBeatTime = 0;
-        const fluxHistory: number[] = [];
-
-        const applyEnvelope = (current: number, raw: number) => {
-          const rate = raw > current ? ENV_ATTACK : ENV_DECAY;
-          return current + rate * (raw - current);
-        };
-
-        const analyze = () => {
-          if (cleanedUp) return;
-
+        const tick = () => {
+          if (cleanedUp || !analyzer) return;
           if (isPlayingRef.current) {
-            analyser.getFloatFrequencyData(floatData);
-
-            let subBassSum = 0, bassSum = 0, midSum = 0, highMidSum = 0, trebleSum = 0;
-            let subBassCount = 0, bassCount = 0, midCount = 0, highMidCount = 0, trebleCount = 0;
-            let totalFlux = 0;
-
-            for (let i = 1; i < trebleEnd; i++) {
-              const magnitude = Math.max(0, (floatData[i] + 100) / 90);
-              const prevMagnitude = Math.max(0, (prevFloatData[i] + 100) / 90);
-
-              const delta = magnitude - prevMagnitude;
-              if (delta > 0) totalFlux += delta;
-
-              if (i < subBassEnd) { subBassSum += magnitude; subBassCount++; }
-              else if (i < bassEnd) { bassSum += magnitude; bassCount++; }
-              else if (i < midEnd) { midSum += magnitude; midCount++; }
-              else if (i < highMidEnd) { highMidSum += magnitude; highMidCount++; }
-              else { trebleSum += magnitude; trebleCount++; }
-            }
-
-            prevFloatData.set(floatData);
-
-            const rawSubBass = subBassCount > 0 ? subBassSum / subBassCount : 0;
-            const rawBass = bassCount > 0 ? bassSum / bassCount : 0;
-            const rawMid = midCount > 0 ? midSum / midCount : 0;
-            const rawHighMid = highMidCount > 0 ? highMidSum / highMidCount : 0;
-            const rawTreble = trebleCount > 0 ? trebleSum / trebleCount : 0;
-
-            const combinedBass = rawSubBass * 0.65 + rawBass * 0.35;
-            const combinedMid = rawMid * 0.6 + rawHighMid * 0.4;
-            const rawOverall = combinedBass * 0.35 + combinedMid * 0.35 + rawTreble * 0.3;
-
-            envBass = applyEnvelope(envBass, combinedBass);
-            envMid = applyEnvelope(envMid, combinedMid);
-            envTreble = applyEnvelope(envTreble, rawTreble);
-            envOverall = applyEnvelope(envOverall, rawOverall);
-
-            fluxHistory.push(totalFlux);
-            if (fluxHistory.length > 43) fluxHistory.shift();
-
-            const mean = fluxHistory.reduce((a, b) => a + b, 0) / fluxHistory.length;
-            const variance = fluxHistory.reduce((sum, f) => sum + (f - mean) ** 2, 0) / fluxHistory.length;
-            const stdDev = Math.sqrt(variance);
-            const fluxThreshold = Math.max(mean + stdDev * 1.5, 0.01);
-
-            const currentTime = Date.now();
-            const timeSinceLastBeat = currentTime - lastBeatTime;
-
-            const isBeat = totalFlux > fluxThreshold && timeSinceLastBeat > 200;
-            const strength = isBeat ? Math.min(1, (totalFlux - fluxThreshold) / Math.max(0.01, stdDev * 2)) : 0;
-
-            if (isBeat) lastBeatTime = currentTime;
-
-            setAudioData({
-              bass: envBass,
-              mid: envMid,
-              treble: envTreble,
-              overall: envOverall,
-              beat: isBeat,
-              beatStrength: strength
-            });
+            setAudioData(analyzer.read());
           }
-
-          frameId = requestAnimationFrame(analyze);
+          frameId = requestAnimationFrame(tick);
         };
 
-        analyze();
+        tick();
       } catch (error) {
         console.error('Error setting up tab audio capture:', error);
       }
@@ -682,6 +506,10 @@ const HeartAnimation = ({
     return () => {
       cleanedUp = true;
       if (frameId) cancelAnimationFrame(frameId);
+      if (analyzer) {
+        analyzer.dispose();
+        analyzer = null;
+      }
       if (audioCtx && audioCtx.state !== 'closed') {
         audioCtx.close();
       }
