@@ -3,15 +3,22 @@
  * and tab capture (MediaStreamSource).
  *
  * Pipeline per frame:
- *   1. getFloatFrequencyData() into a Float32Array (post pre-emphasis)
- *   2. Per-bin: compute magnitude, accumulate per-band energy + per-band positive flux
- *   3. Noise gate (silence -> output decays to zero, beats suppressed)
- *   4. Per-band asymmetric envelope follower (different attack/decay per band for
- *      a more "musical" feel: bass snaps, mid sustains, treble sparkles)
- *   5. Per-band adaptive beat detection:
- *        - Kick    : sub-bass band (20-150 Hz), tight refractory (~220ms)
- *        - Snare   : upper-mid band (2-6 kHz), shorter refractory (~130ms)
- *        - Beat    : either fired hit; strength is max of the two (snare attenuated 0.8x)
+ *   1. getFloatFrequencyData() into a Float32Array (post pre-emphasis).
+ *   2. Per-bin: compute magnitude, accumulate per-band energy + per-band positive flux.
+ *   3. Update long-term loudness (slow EMA, only on non-silent frames).
+ *   4. Apply AGC: scale per-band magnitudes by clamped target/longTermLoudness ratio.
+ *      Beat detection is gain-invariant (deltas + relative threshold), so AGC only
+ *      affects the displayed envelope values.
+ *   5. Noise gate (silence -> output decays to zero, beats suppressed).
+ *   6. Per-band asymmetric envelope follower (different attack/decay per band for
+ *      a more "musical" feel: bass snaps, mid sustains, treble sparkles).
+ *   7. Per-band beat detection with median + MAD adaptive threshold (robust to
+ *      outliers - a single big hit doesn't ratchet the threshold up for the next):
+ *        - Kick : sub-bass band (20-150 Hz), tight refractory (~220ms)
+ *        - Snare: upper-mid band (2-6 kHz), shorter refractory (~130ms)
+ *   8. Tempo tracking (median IBI + MAD confidence over recent kicks):
+ *        - Reject detected kicks that fall too close to the last kick (false positives).
+ *        - When confidence is high, fire a predicted beat if detection missed one.
  *
  * The factory creates a side-chain (sourceNode -> preEmphasis -> analyser) that does
  * NOT touch the audible signal path. The caller is responsible for connecting the
@@ -41,13 +48,9 @@ export interface AudioAnalyzer {
 
 const FFT_SIZE = 4096; // ~11.7 Hz/bin at 48 kHz, ~10.7 Hz/bin at 44.1 kHz
 
-// Pre-emphasis: high-shelf boost so treble is visible on bass-heavy mixes.
-// Sits ONLY in the analysis branch -- listener hears unmodified audio.
 const PRE_EMPHASIS_FREQ = 2000;
 const PRE_EMPHASIS_GAIN_DB = 6;
 
-// Frequency band edges in Hz. Sub-bass / upper-mid are sized for kick & snare onset
-// detection; bass / mid / treble are reported visualization bands.
 const BAND_EDGES_HZ = {
   subBass: 150,
   bass: 250,
@@ -56,25 +59,127 @@ const BAND_EDGES_HZ = {
   treble: 16000,
 };
 
-// Asymmetric envelope coefficients (per-frame alpha; tuned at ~60 fps).
-// attack >> decay yields fast pop, slow fade.
 const ENV = {
-  bass:    { attack: 0.70, decay: 0.10 }, // kicks: pop hard, settle in ~150ms
-  mid:     { attack: 0.50, decay: 0.04 }, // vocals/pads: smoother
-  treble:  { attack: 0.65, decay: 0.12 }, // hats/cymbals: snappy
+  bass:    { attack: 0.70, decay: 0.10 },
+  mid:     { attack: 0.50, decay: 0.04 },
+  treble:  { attack: 0.65, decay: 0.12 },
   overall: { attack: 0.50, decay: 0.05 },
 };
 
-// Beat detection
-const FLUX_HISTORY_FRAMES = 43; // ~1 second of history at FFT-bound update rate
-const KICK_REFRACTORY_MS = 220; // 4 hits/sec max -> ~272 BPM ceiling, fine
-const KICK_THRESHOLD_K = 1.5;   // mean + 1.5*sigma
+// Beat detection: median + MAD * 1.4826 (consistent estimator of sigma for normal dist)
+const FLUX_HISTORY_FRAMES = 43;
+const KICK_REFRACTORY_MS = 220;
+const KICK_THRESHOLD_K = 1.5;
 const SNARE_REFRACTORY_MS = 130;
-const SNARE_THRESHOLD_K = 1.7;  // a touch higher: snares are noisier statistically
+const SNARE_THRESHOLD_K = 1.7;
+const MAD_TO_SIGMA = 1.4826;
 
-// Noise gate: if frame's combined magnitude is below this, treat as silence.
-// Magnitudes are normalized via (dBFS + 100) / 90, so 0.08 ~ -92.8 dB.
 const NOISE_FLOOR = 0.08;
+
+// Loudness AGC
+const LOUDNESS_TARGET = 0.45;
+const LOUDNESS_TIME_CONSTANT_FRAMES = 600; // ~10 seconds at 60 fps
+const AGC_MIN_GAIN = 0.5;
+const AGC_MAX_GAIN = 4.0;
+
+// Tempo tracking
+const TEMPO_MAX_KICKS = 16;
+const TEMPO_MIN_KICKS_FOR_LOCK = 6;
+const TEMPO_GRID_REJECT_RATIO = 0.5;     // reject kick < 50% of period since last kick
+const TEMPO_PREDICT_CONFIDENCE = 0.7;    // confidence threshold to fire predicted beats
+const TEMPO_GRID_CONFIDENCE = 0.6;       // confidence threshold for grid suppression
+const TEMPO_MIN_BPM_PERIOD_MS = 333;     // 180 BPM
+const TEMPO_MAX_BPM_PERIOD_MS = 1000;    // 60 BPM
+
+// Robust order statistics over a small history. Sorts a copy each call;
+// FLUX_HISTORY_FRAMES is small (~43) so this is cheap.
+function median(values: readonly number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = values.slice().sort((a, b) => a - b);
+  return sorted[sorted.length >> 1];
+}
+
+function medianAbsoluteDeviation(values: readonly number[], med: number): number {
+  if (values.length === 0) return 0;
+  const deviations = new Array<number>(values.length);
+  for (let i = 0; i < values.length; i++) deviations[i] = Math.abs(values[i] - med);
+  deviations.sort((a, b) => a - b);
+  return deviations[deviations.length >> 1];
+}
+
+interface TempoTracker {
+  register(time: number): void;
+  /** True if this candidate hit fits the locked tempo grid. Always true with no lock. */
+  fitsGrid(time: number, lastKickTime: number): boolean;
+  /** True if we should fire a predicted beat now (detection missed and confidence high). */
+  shouldFirePredicted(now: number, lastFiredBeatTime: number): boolean;
+  readonly tempo: number;
+  readonly confidence: number;
+}
+
+function createTempoTracker(): TempoTracker {
+  const kickTimes: number[] = [];
+  let tempoBpm = 0;
+  let confidence = 0;
+
+  const recompute = () => {
+    if (kickTimes.length < 4) {
+      tempoBpm = 0;
+      confidence = 0;
+      return;
+    }
+
+    // Inter-beat intervals, normalized to plausible 60-180 BPM range.
+    // Half/double-time hits get folded onto the canonical period.
+    const normalized: number[] = [];
+    for (let i = 1; i < kickTimes.length; i++) {
+      let ibi = kickTimes[i] - kickTimes[i - 1];
+      while (ibi < TEMPO_MIN_BPM_PERIOD_MS) ibi *= 2;
+      while (ibi > TEMPO_MAX_BPM_PERIOD_MS) ibi /= 2;
+      normalized.push(ibi);
+    }
+
+    const med = median(normalized);
+    const mad = medianAbsoluteDeviation(normalized, med);
+    if (med <= 0) {
+      tempoBpm = 0;
+      confidence = 0;
+      return;
+    }
+
+    const relativeMad = mad / med;
+    confidence = Math.max(0, Math.min(1, 1 - relativeMad * 3));
+    tempoBpm = 60000 / med;
+  };
+
+  return {
+    register(time: number) {
+      kickTimes.push(time);
+      if (kickTimes.length > TEMPO_MAX_KICKS) kickTimes.shift();
+      recompute();
+    },
+    fitsGrid(time: number, lastKickTime: number): boolean {
+      if (confidence < TEMPO_GRID_CONFIDENCE || tempoBpm === 0 || lastKickTime === 0) return true;
+      const period = 60000 / tempoBpm;
+      return (time - lastKickTime) >= period * TEMPO_GRID_REJECT_RATIO;
+    },
+    shouldFirePredicted(now: number, lastFiredBeatTime: number): boolean {
+      if (
+        confidence < TEMPO_PREDICT_CONFIDENCE ||
+        tempoBpm === 0 ||
+        kickTimes.length < TEMPO_MIN_KICKS_FOR_LOCK ||
+        lastFiredBeatTime === 0
+      ) return false;
+      const period = 60000 / tempoBpm;
+      const elapsed = now - lastFiredBeatTime;
+      // Fire if we're between 100% and 150% of one period overdue. Single firing per slot
+      // is enforced by the caller updating lastFiredBeatTime on fire.
+      return elapsed > period && elapsed < period * 1.5;
+    },
+    get tempo() { return tempoBpm; },
+    get confidence() { return confidence; },
+  };
+}
 
 export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer {
   const { audioContext, sourceNode } = config;
@@ -111,31 +216,33 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
   const snareFluxHistory: number[] = [];
   let lastKickTime = 0;
   let lastSnareTime = 0;
+  let lastFiredBeatTime = 0; // detected OR predicted, used for prediction debounce
+
+  // AGC state
+  let longTermLoudness = 0;
+  const loudnessAlpha = 1 / LOUDNESS_TIME_CONSTANT_FRAMES;
+
+  const tempo = createTempoTracker();
 
   const applyEnvelope = (current: number, raw: number, attack: number, decay: number) => {
     const rate = raw > current ? attack : decay;
     return current + rate * (raw - current);
   };
 
-  const computeAdaptiveThreshold = (history: number[], k: number) => {
-    const n = history.length;
-    if (n === 0) return { threshold: Infinity, stdDev: 0 };
-    let sum = 0;
-    for (let i = 0; i < n; i++) sum += history[i];
-    const mean = sum / n;
-    let varSum = 0;
-    for (let i = 0; i < n; i++) {
-      const d = history[i] - mean;
-      varSum += d * d;
-    }
-    const stdDev = Math.sqrt(varSum / n);
-    return { threshold: Math.max(mean + stdDev * k, 0.005), stdDev };
+  const robustThreshold = (history: number[], k: number) => {
+    if (history.length === 0) return { threshold: Infinity, scale: 0 };
+    const med = median(history);
+    const mad = medianAbsoluteDeviation(history, med);
+    const sigma = mad * MAD_TO_SIGMA;
+    return { threshold: Math.max(med + k * sigma, 0.005), scale: sigma };
   };
 
   const pushFlux = (history: number[], value: number) => {
     history.push(value);
     if (history.length > FLUX_HISTORY_FRAMES) history.shift();
   };
+
+  const clamp01 = (v: number) => v < 0 ? 0 : v > 1 ? 1 : v;
 
   let disposed = false;
 
@@ -185,6 +292,7 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
     const rawOverall   = combinedBass * 0.35 + combinedMid * 0.35 + rawTreble * 0.30;
 
     if (rawOverall < NOISE_FLOOR) {
+      // Decay to silence; don't update AGC tracker (would drift on long silence).
       envBass    = applyEnvelope(envBass,    0, ENV.bass.attack,    ENV.bass.decay);
       envMid     = applyEnvelope(envMid,     0, ENV.mid.attack,     ENV.mid.decay);
       envTreble  = applyEnvelope(envTreble,  0, ENV.treble.attack,  ENV.treble.decay);
@@ -197,34 +305,72 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       };
     }
 
-    envBass    = applyEnvelope(envBass,    combinedBass, ENV.bass.attack,    ENV.bass.decay);
-    envMid     = applyEnvelope(envMid,     combinedMid,  ENV.mid.attack,     ENV.mid.decay);
-    envTreble  = applyEnvelope(envTreble,  rawTreble,    ENV.treble.attack,  ENV.treble.decay);
-    envOverall = applyEnvelope(envOverall, rawOverall,   ENV.overall.attack, ENV.overall.decay);
+    // Long-term loudness EMA, only updated on non-silent frames so silence doesn't
+    // drag the tracker down (which would over-amplify the next loud passage).
+    longTermLoudness += loudnessAlpha * (rawOverall - longTermLoudness);
 
+    // AGC gain: target / longTermLoudness, clamped. Pre-envelope so the envelope
+    // follower sees normalized dynamics across loud/quiet songs.
+    const agcGain = longTermLoudness > 0.001
+      ? Math.min(AGC_MAX_GAIN, Math.max(AGC_MIN_GAIN, LOUDNESS_TARGET / longTermLoudness))
+      : 1;
+
+    const gainedBass    = clamp01(combinedBass * agcGain);
+    const gainedMid     = clamp01(combinedMid  * agcGain);
+    const gainedTreble  = clamp01(rawTreble    * agcGain);
+    const gainedOverall = clamp01(rawOverall   * agcGain);
+
+    envBass    = applyEnvelope(envBass,    gainedBass,    ENV.bass.attack,    ENV.bass.decay);
+    envMid     = applyEnvelope(envMid,     gainedMid,     ENV.mid.attack,     ENV.mid.decay);
+    envTreble  = applyEnvelope(envTreble,  gainedTreble,  ENV.treble.attack,  ENV.treble.decay);
+    envOverall = applyEnvelope(envOverall, gainedOverall, ENV.overall.attack, ENV.overall.decay);
+
+    // Beat detection runs on raw flux (gain-invariant: scaling kickFlux scales the
+    // threshold proportionally, so AGC doesn't bias detection).
     pushFlux(kickFluxHistory, kickFlux);
     pushFlux(snareFluxHistory, snareFlux);
 
     const now = performance.now();
 
-    const { threshold: kickThreshold, stdDev: kickStd } =
-      computeAdaptiveThreshold(kickFluxHistory, KICK_THRESHOLD_K);
-    const kickHit = kickFlux > kickThreshold && (now - lastKickTime) > KICK_REFRACTORY_MS;
-    if (kickHit) lastKickTime = now;
+    const { threshold: kickThreshold, scale: kickScale } =
+      robustThreshold(kickFluxHistory, KICK_THRESHOLD_K);
+    let kickHit = kickFlux > kickThreshold && (now - lastKickTime) > KICK_REFRACTORY_MS;
+    // Tempo grid suppression: reject kicks that violate the locked tempo period.
+    if (kickHit && !tempo.fitsGrid(now, lastKickTime)) {
+      kickHit = false;
+    }
     const kickStrength = kickHit
-      ? Math.min(1, (kickFlux - kickThreshold) / Math.max(0.005, kickStd * 2))
+      ? Math.min(1, (kickFlux - kickThreshold) / Math.max(0.005, kickScale * 2))
       : 0;
+    if (kickHit) {
+      lastKickTime = now;
+      tempo.register(now);
+      lastFiredBeatTime = now;
+    }
 
-    const { threshold: snareThreshold, stdDev: snareStd } =
-      computeAdaptiveThreshold(snareFluxHistory, SNARE_THRESHOLD_K);
+    const { threshold: snareThreshold, scale: snareScale } =
+      robustThreshold(snareFluxHistory, SNARE_THRESHOLD_K);
     const snareHit = snareFlux > snareThreshold && (now - lastSnareTime) > SNARE_REFRACTORY_MS;
     if (snareHit) lastSnareTime = now;
     const snareStrength = snareHit
-      ? Math.min(1, (snareFlux - snareThreshold) / Math.max(0.005, snareStd * 2))
+      ? Math.min(1, (snareFlux - snareThreshold) / Math.max(0.005, snareScale * 2))
       : 0;
 
-    const isBeat = kickHit || snareHit;
-    const beatStrength = Math.max(kickStrength, snareStrength * 0.8);
+    // Tempo prediction: if we have a confident tempo lock and detection missed,
+    // synthesize a beat at the predicted time. Uses lastFiredBeatTime to debounce.
+    let predictedBeat = false;
+    if (!kickHit && tempo.shouldFirePredicted(now, lastFiredBeatTime)) {
+      predictedBeat = true;
+      lastFiredBeatTime = now;
+    }
+
+    const isBeat = kickHit || snareHit || predictedBeat;
+    // Predicted beats use a moderate strength (0.55) so they're visible but not
+    // overwhelming. Detected hits scale with their flux above threshold.
+    const detectedStrength = Math.max(kickStrength, snareStrength * 0.8);
+    const beatStrength = predictedBeat
+      ? Math.max(detectedStrength, 0.55)
+      : detectedStrength;
 
     return {
       bass: envBass,
