@@ -2,20 +2,6 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   images: {
-    domains: [
-      'sleeep.dev', 
-      'i.scdn.co', 
-      'mosaic.scdn.co', 
-      'blend-playlist-covers.spotifycdn.com', 
-      'charts-images.scdn.co', 
-      'newjams-images.scdn.co', 
-      'seeded-session-images.scdn.co', 
-      'thisis-images.scdn.co', 
-      'lineup-images.scdn.co', 
-      'daily-mix.scdn.co',
-      'image-cdn-ak.spotifycdn.com',
-      'image-cdn-fa.spotifycdn.com'
-    ],
     remotePatterns: [
       {
         protocol: 'https',

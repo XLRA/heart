@@ -240,17 +240,10 @@ class MeydaAudioService {
       if (this.currentAnalyzer) {
         this.currentAnalyzer.start();
         console.log('Meyda analysis started');
-        
-        // Add timeout to prevent infinite error loops
-        setTimeout(() => {
-          if (this.currentAnalyzer) {
-            try {
-              this.currentAnalyzer.stop();
-            } catch (error) {
-              console.warn('Error stopping Meyda analyzer:', error);
-            }
-          }
-        }, 30000); // Stop after 30 seconds to prevent memory leaks
+        // Cleanup is handled explicitly by track-change/unmount effects in
+        // AdvancedMusicPlayer (see calls to meydaAudioService.stopAnalysis).
+        // The previous 30s auto-stop here silently killed analysis on any
+        // track longer than 30s.
       }
     } catch (error) {
       console.error('Error starting Meyda analysis:', error);
@@ -304,12 +297,6 @@ class MeydaAudioService {
     // Spectral rolloff is in Hz, normalize to 0-1
     const rolloffValue = typeof rolloff === 'number' ? rolloff : 0;
     return Math.min(1, Math.max(0, rolloffValue / 22050)); // Nyquist frequency
-  }
-
-  private normalizeSpectralFlux(flux: unknown): number {
-    // Spectral flux can be any positive number, normalize based on typical range
-    const fluxValue = typeof flux === 'number' ? flux : 0;
-    return Math.min(1, Math.max(0, fluxValue / 10));
   }
 
   private normalizeSpectralSpread(spread: unknown): number {

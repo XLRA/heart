@@ -2,16 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { ParticleLevel, PARTICLE_MULTIPLIERS, TRACE_COUNTS } from '../context/SettingsContext';
-
-// Album colors interface (matches AudioVisualizerContext)
-interface AlbumColors {
-  dominant: string;
-  palette: string[];
-  raw: {
-    dominant: [number, number, number];
-    palette: [number, number, number][];
-  };
-}
+import type { AlbumColors } from '../../services/colorExtractor';
 
 interface AudioVisualizerProps {
   audioElement?: HTMLAudioElement | null;

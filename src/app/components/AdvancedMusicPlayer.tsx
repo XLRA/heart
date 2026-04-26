@@ -209,48 +209,32 @@ const AdvancedMusicPlayer = () => {
   };
 
   const handlePlaylistSelect = useCallback((playlist: SpotifyPlaylistData) => {
-    if (isReady && deviceId) {
-      // Use Spotify Web Player for full playback
-      // IMMEDIATELY stop and clear local audio BEFORE state updates (synchronous)
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current.src = '';
-        audioRef.current.load(); // Reset the audio element
-      }
-      
-      // Now set Spotify mode to prevent local audio from loading
-      setIsUsingSpotifyPlayer(true);
-      setCurrentPlaylist(playlist);
-      setShowPlaylistSelector(false);
-      setShowPlaylistSongs(true); // Show playlist songs panel
-      
-      // Start playback after state is set
-      const playlistUri = `spotify:playlist:${playlist.id}`;
-      playPlaylist(playlistUri);
-    } else {
-      // Fallback to preview URLs (limited functionality)
-      // Process tracks asynchronously to prevent UI freeze
-      setTimeout(() => {
-        const spotifySongs: Song[] = (playlist.tracks?.items || []).map((item) => {
-          const track = item.track;
-          return {
-            title: track.name,
-            artist: track.artists.map((artist) => artist.name).join(', '),
-            url: track.preview_url || '',
-            cover: track.album.images && track.album.images.length > 0 ? track.album.images[0].url : '/covers/cover1.jpg',
-            duration: track.duration_ms / 1000,
-            id: track.id,
-            uri: track.external_urls?.spotify || `spotify:track:${track.id}`
-          };
-        }).filter((song: Song) => song.url); // Only include songs with preview URLs
-
-        setCurrentPlaylistSongs(spotifySongs);
-        setCurrentPlaylist(playlist);
-        setIsUsingSpotifyPlayer(false);
-        setShowPlaylistSelector(false);
-        setShowPlaylistSongs(true); // Show playlist songs panel
-      }, 0);
+    // The PlaylistSelector blocks clicks until isReady, so we should always
+    // hit the Spotify Web Player path here. The preview_url fallback that
+    // used to live in this else branch was the source of the "selecting a
+    // playlist plays the local Arctic Monkeys track" bug: Spotify nulled out
+    // most preview_urls in late 2024, so .filter(s => s.url) produced an
+    // empty list and `songs` fell back to defaultSongs (local files).
+    if (!isReady || !deviceId) {
+      console.warn('[AdvancedMusicPlayer] Playlist selected before Web Player was ready - ignoring');
+      return;
     }
+
+    // Stop and clear local audio synchronously before state updates so it
+    // can't sneak in between renders.
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = '';
+      audioRef.current.load();
+    }
+
+    setIsUsingSpotifyPlayer(true);
+    setCurrentPlaylist(playlist);
+    setShowPlaylistSelector(false);
+    setShowPlaylistSongs(true);
+
+    const playlistUri = `spotify:playlist:${playlist.id}`;
+    playPlaylist(playlistUri);
   }, [isReady, deviceId, playPlaylist, setCurrentPlaylist]);
 
   const handlePlaylistToggle = () => {

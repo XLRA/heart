@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import Image from 'next/image';
 import { useSpotify } from '../context/SpotifyContext';
+import { useWebPlayer } from '../context/WebPlayerContext';
 
 interface SpotifyPlaylistData {
   id: string;
@@ -36,6 +37,7 @@ interface PlaylistSelectorProps {
 
 const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSelectorProps) => {
   const { playlists, loadUserPlaylists, loadPlaylistTracks, spotifyApi } = useSpotify();
+  const { isReady: isPlayerReady } = useWebPlayer();
   const [loading, setLoading] = useState(false);
   const [selectedPlaylist, setSelectedPlaylist] = useState<SpotifyPlaylistData | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -60,6 +62,10 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
   });
 
   const handlePlaylistClick = async (playlist: SpotifyPlaylistData) => {
+    if (!isPlayerReady) {
+      console.warn('[PlaylistSelector] Spotify player not ready yet, ignoring click');
+      return;
+    }
     setLoading(true);
     setSelectedPlaylist(playlist);
     
@@ -178,14 +184,34 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
           alignItems: 'center',
           justifyContent: 'space-between'
         }}>
-          <h2 style={{
-            color: '#f1f1f1',
-            fontSize: '20px',
-            fontWeight: 'bold',
-            margin: 0
-          }}>
-            Select a Playlist
-          </h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            <h2 style={{
+              color: '#f1f1f1',
+              fontSize: '20px',
+              fontWeight: 'bold',
+              margin: 0
+            }}>
+              Select a Playlist
+            </h2>
+            {!isPlayerReady && (
+              <span style={{
+                color: '#8f8f9d',
+                fontSize: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                <span style={{
+                  width: '8px',
+                  height: '8px',
+                  borderRadius: '50%',
+                  backgroundColor: '#1db954',
+                  animation: 'connectingPulse 1.2s ease-in-out infinite'
+                }} />
+                Connecting to Spotify...
+              </span>
+            )}
+          </div>
           <button
             onClick={onClose}
             style={{
@@ -324,15 +350,16 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
                     backgroundColor: selectedPlaylist?.id === playlist.id ? '#252529' : 'transparent',
                     borderRadius: '12px',
                     padding: '16px',
-                    cursor: 'pointer',
+                    cursor: isPlayerReady ? 'pointer' : 'not-allowed',
                     transition: 'all 0.2s ease',
                     border: '1px solid transparent',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '16px'
+                    gap: '16px',
+                    opacity: isPlayerReady ? 1 : 0.5
                   }}
                   onMouseEnter={(e) => {
-                    if (selectedPlaylist?.id !== playlist.id) {
+                    if (isPlayerReady && selectedPlaylist?.id !== playlist.id) {
                       e.currentTarget.style.backgroundColor = '#1a1a1d';
                       e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.1)';
                     }
@@ -452,6 +479,10 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
         @keyframes spin {
           0% { transform: rotate(0deg); }
           100% { transform: rotate(360deg); }
+        }
+        @keyframes connectingPulse {
+          0%, 100% { opacity: 0.4; transform: scale(0.85); }
+          50% { opacity: 1; transform: scale(1); }
         }
       `}</style>
       <style jsx global>{`

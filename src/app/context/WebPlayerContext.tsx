@@ -232,25 +232,6 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     });
   };
 
-  const waitForDeviceRegistration = async (targetDeviceId: string, maxAttempts: number = 10, delay: number = 1000): Promise<boolean> => {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      console.log(`Checking device registration (attempt ${attempt}/${maxAttempts})`);
-      const isRegistered = await checkAvailableDevices(targetDeviceId, true); // Verbose for registration
-      if (isRegistered) {
-        console.log('Device successfully registered with Spotify');
-        return true;
-      }
-      
-      if (attempt < maxAttempts) {
-        console.log(`Device not yet registered, waiting ${delay}ms before retry...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
-    
-    console.error('Device failed to register with Spotify after maximum attempts');
-    return false;
-  };
-
   const initializePlayer = (token: string) => {
     if (typeof window === 'undefined' || !window.Spotify) {
       console.error('Spotify Web Playback SDK not loaded');
@@ -342,8 +323,13 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       }));
     });
 
-    // Ready
-    newPlayer.addListener('ready', async (...args) => {
+    // Ready - SDK guarantees the device is registered when this fires.
+    // Trust the event and skip the previous 10x1s pre-flight polling that
+    // produced a long window where the player looked online but isReady was
+    // still false (causing playlist clicks to silently fall through to local
+    // audio mode). The per-action checkAvailableDevices guards still catch
+    // any rare propagation delay.
+    newPlayer.addListener('ready', (...args) => {
       const data = args[0] as { device_id: string };
       console.log('Spotify Web Player is ready with Device ID:', data.device_id);
       setDeviceId(data.device_id);
@@ -351,22 +337,9 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         ...prev,
         device_id: data.device_id
       }));
-      
-      // Wait for device to be registered with Spotify servers
-      const isRegistered = await waitForDeviceRegistration(data.device_id);
-      if (isRegistered) {
-        setIsReady(true);
-        console.log('Web Player is fully ready and registered');
-        // Start polling for state updates
-        startStatePolling();
-        // Start smooth position interpolation
-        startPositionInterpolation();
-      } else {
-        console.error('Web Player failed to register with Spotify servers');
-        setIsReady(false);
-      }
-      
-      // Clear initialization flag
+      setIsReady(true);
+      startStatePolling();
+      startPositionInterpolation();
       isInitializingRef.current = false;
     });
 

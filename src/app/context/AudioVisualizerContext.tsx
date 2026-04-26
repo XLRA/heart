@@ -1,16 +1,9 @@
 'use client';
 
 import { createContext, useContext, useState, ReactNode } from 'react';
+import type { AlbumColors } from '../../services/colorExtractor';
 
-// Album colors extracted from cover art
-export interface AlbumColors {
-  dominant: string;      // Most prominent color (HSLA)
-  palette: string[];     // 3-5+ prominent colors (HSLA)
-  raw: {
-    dominant: [number, number, number];  // RGB
-    palette: [number, number, number][]; // RGB array
-  };
-}
+export type { AlbumColors };
 
 interface AudioVisualizerContextType {
   audioElement: HTMLAudioElement | null;
