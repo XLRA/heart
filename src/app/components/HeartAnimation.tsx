@@ -14,6 +14,23 @@ type AudioFrameInput = LegacyAudioFields & Partial<AudioReactiveData>;
 const NEUTRAL_SPECTRAL = 0.5;
 const INDICATOR_THROTTLE_MS = 50; // ~20 Hz; plenty for the 10x10 px dot
 
+// A3 anticipatory pulse. Window over which we ramp into a predicted beat.
+// 130 ms gives a perceptible build without bleeding into the previous beat's
+// decay at common tempos. Gain scales with tempoConfidence so unstable locks
+// don't push false anticipations.
+const ANTICIPATION_WINDOW_MS = 130;
+const ANTICIPATION_GAIN = 0.3;
+
+// A4 tempo-locked breathing. A subtle continuous sine at the song's tempo so
+// the heart breathes *with* the music between hits. Smaller than the per-beat
+// kick spike on purpose -- this is the bed, kicks are the spike.
+const TEMPO_BREATHE_GAIN = 0.06;
+
+// A5 section transition. Decay rate of the section glow and the strength of the
+// one-shot radial burst that fires on the rising edge.
+const SECTION_DECAY_60 = 0.992; // ~3 s half-life at 60 fps
+const SECTION_BURST_STRENGTH = 8.0;
+
 const buildAudioFrame = (input: AudioFrameInput): AudioReactiveData => ({
   bass: input.bass,
   mid: input.mid,
@@ -31,6 +48,17 @@ const buildAudioFrame = (input: AudioFrameInput): AudioReactiveData => ({
   snareStrength: input.snareStrength ?? (input.beat ? input.beatStrength * 0.7 : 0),
   centroid: input.centroid ?? NEUTRAL_SPECTRAL,
   flatness: input.flatness ?? NEUTRAL_SPECTRAL,
+  // Tempo / section signals are only produced by the unified analyzer paths.
+  // Legacy paths get safe defaults that disable anticipation, tempo-breathing, and
+  // section transitions -- so those features only kick in when we actually have
+  // FFT-grade data flowing.
+  tempo: input.tempo ?? 0,
+  tempoConfidence: input.tempoConfidence ?? 0,
+  nextBeatIn: input.nextBeatIn ?? Infinity,
+  beatPhase: input.beatPhase ?? 0,
+  loudness: input.loudness ?? 0,
+  section: input.section ?? false,
+  sectionStrength: input.sectionStrength ?? 0,
 });
 
 interface AudioVisualizerProps {
@@ -701,8 +729,29 @@ const HeartAnimation = ({
       timeDelta: 0.005
     };
 
+    // Frame-rate decoupling. Every motion coefficient in this loop was tuned at
+    // 60 fps. We compute `dtFrames` (current frame interval / a 60-fps frame
+    // interval) each tick and:
+    //   * multiply linear additions by it          (e.g. `time +=`, position += vx)
+    //   * raise multiplicative decays to its power (e.g. glow *= 0.84)
+    // This makes wall-clock motion identical across 60 / 120 / 144 / 240 Hz, on
+    // battery vs plugged in, and across throttled environments.
+    const FRAME_DT_60_MS = 1000 / 60;
+    // Cap dtFrames so a tab returning from the background or a 30-second hitch
+    // doesn't translate to an enormous single-frame physics jump.
+    const MAX_DT_FRAMES = 4;
+    // Global animation speed multiplier. The original code was frame-rate-bound
+    // and ran at "2.4x" on a 144 Hz monitor versus a 60 Hz monitor. We tuned the
+    // visual feel against that 144 Hz speed, so apply the same multiplier
+    // uniformly across all displays. Lower this for a chiller animation, raise
+    // it for a more frenetic one. NOTE: changing this has no effect on FPS or
+    // CPU/GPU cost -- we do the same work per frame, the simulation just steps
+    // farther per frame.
+    const SPEED_MULTIPLIER = 144 / 60;
+
     let time = 0;
     let lastBeatTime = 0;
+    let lastFrameTime = 0;
     let animationId: number;
     // Independent envelope-followed glow trackers for kick (sub-bass) and snare
     // (upper-mid). Kick drives the central heart pulse + speed boost; snare drives
@@ -710,6 +759,9 @@ const HeartAnimation = ({
     // off-beats so the visualization decomposes the rhythm.
     let kickGlow = 0;
     let snareGlow = 0;
+    // A5 section glow: rises on a detected loudness-jump (chorus/drop) and decays
+    // slowly (~3 s) so the visual lift is sustained, unlike the per-beat glows.
+    let sectionGlow = 0;
     
     // Helper function to parse HSLA color string
     const parseHsla = (hsla: string): { h: number; s: number; l: number; a: number } => {
@@ -784,10 +836,30 @@ const HeartAnimation = ({
     };
     
     const loop = () => {
+      // Frame-rate normalization. dtFrames = 1.0 at 60 fps, 0.5 at 120 fps,
+      // 2.0 at 30 fps. Capped at MAX_DT_FRAMES so a returning background tab
+      // doesn't blow up the integration. On the very first frame, lastFrameTime
+      // is 0 -> synthesize one 60-fps step so dtFrames isn't astronomical.
+      const now = performance.now();
+      const rawDt = lastFrameTime === 0 ? FRAME_DT_60_MS : Math.max(0, now - lastFrameTime);
+      lastFrameTime = now;
+      // Cap real-time dt first (safety against background-tab huge jumps),
+      // then apply SPEED_MULTIPLIER. This keeps the safety bound in wall-clock
+      // terms rather than letting a 1-second hitch become 9.6 dt-frames of motion.
+      const dtFrames = Math.min(rawDt / FRAME_DT_60_MS, MAX_DT_FRAMES) * SPEED_MULTIPLIER;
+
+      // Precompute multiplicative decays so we don't redo the Math.pow per particle.
+      // (Per-particle velocity damping `Math.pow(u.force, dtFrames)` is unavoidable
+      // since u.force varies per particle.)
+      const kickDecay = Math.pow(0.84, dtFrames);
+      const snareDecay = Math.pow(0.78, dtFrames);
+      const sectionDecayDt = Math.pow(SECTION_DECAY_60, dtFrames);
+      const tracePullFactor = 1 - Math.pow(1 - config.traceK, dtFrames);
+
       // Get current values from refs
       const currentAudioData = audioDataRef.current;
       const currentIsPlaying = isPlayingRef.current;
-      
+
       // Update color transition progress
       if (colorTransitionProgressRef.current < 1) {
         const elapsed = performance.now() - colorTransitionStartTimeRef.current;
@@ -803,27 +875,37 @@ const HeartAnimation = ({
       const currentKickStrength = currentAudioData.kickStrength;
       const currentSnareStrength = currentAudioData.snareStrength;
 
-      // Kick: faster decay than the legacy beatGlow (0.82 -> 0.84 holds slightly
-      // longer because kicks define the rhythmic pulse and we want them visible
-      // a bit longer than snares).
+      // Kick: 0.84 per-frame at 60 fps -> ~70 ms half-life. dt-corrected.
       if (currentAudioData.kick && currentIsPlaying) {
         kickGlow = Math.max(kickGlow, 0.4 + currentKickStrength * 0.6);
       } else {
-        kickGlow *= 0.84;
+        kickGlow *= kickDecay;
         if (kickGlow < 0.01) kickGlow = 0;
       }
 
-      // Snare: snappier decay so each hi-hat / snare hit reads as a sharp spike,
-      // not a sustained glow.
+      // Snare: 0.78 per-frame at 60 fps -> ~50 ms half-life. dt-corrected.
       if (currentAudioData.snare && currentIsPlaying) {
         snareGlow = Math.max(snareGlow, 0.5 + currentSnareStrength * 0.5);
       } else {
-        snareGlow *= 0.78;
+        snareGlow *= snareDecay;
         if (snareGlow < 0.01) snareGlow = 0;
       }
 
+      // A5: section glow. Rises sharply on the rising edge of `section`, then
+      // decays slowly (~3 s half-life). We capture the rising edge BEFORE
+      // updating sectionGlow, since we'll use this flag inside the particle
+      // loop for the one-shot radial burst.
+      const sectionRisingEdge = currentAudioData.section && currentIsPlaying;
+      if (sectionRisingEdge) {
+        sectionGlow = Math.max(sectionGlow, 0.7 + currentAudioData.sectionStrength * 0.3);
+      } else {
+        sectionGlow *= sectionDecayDt;
+        if (sectionGlow < 0.005) sectionGlow = 0;
+      }
+
       // Used by global lightness/trail effects: any beat brightens the scene.
-      const combinedGlow = Math.max(kickGlow, snareGlow);
+      // Section folds in too so chorus/drop lifts everything for its full tail.
+      const combinedGlow = Math.max(kickGlow, snareGlow, sectionGlow * 0.8);
 
       // Pulse: energy envelope + KICK spike (not generic beat) for heart size changes.
       // Snares no longer pulse the heart -- they drive the outer ring instead.
@@ -840,17 +922,55 @@ const HeartAnimation = ({
           const beatDecay = Math.exp(-timeSinceBeat * 6);
           pulseFactor += beatDecay * 0.3;
         }
+
+        // A3: Anticipatory pulse. When tempo is locked, ramp the pulse up *before*
+        // the predicted beat lands so the visual peak coincides with the hit
+        // instead of trailing it. Without this, kicks visibly arrive before the
+        // animation responds (~30-80 ms detection latency on tab capture).
+        // Window of 130 ms gives a noticeable ramp without overlapping the
+        // previous beat's decay tail at typical tempos (>= 100 BPM => 600 ms period).
+        if (
+          currentAudioData.tempoConfidence > 0.7 &&
+          currentAudioData.nextBeatIn < ANTICIPATION_WINDOW_MS
+        ) {
+          const proximity = 1 - currentAudioData.nextBeatIn / ANTICIPATION_WINDOW_MS;
+          // Squared falloff so it rises gently at the edge and steepens as we approach.
+          pulseFactor += proximity * proximity * currentAudioData.tempoConfidence * ANTICIPATION_GAIN;
+        }
       }
-      pulseFactor += Math.sin(time * 2) * 0.04;
+
+      // A4: Baseline breathing. When tempo is locked, replace the generic time-based
+      // sine with one phased to the actual song tempo -- the heart breathes *with*
+      // the music instead of at an arbitrary rate. Falls back to the generic baseline
+      // when no lock (silence, tempo loss, song just started).
+      if (
+        currentIsPlaying &&
+        currentAudioData.tempoConfidence > 0.7 &&
+        currentAudioData.tempo > 0
+      ) {
+        // beatPhase in [0, 1) -> sin maps to a single cycle per beat. Phase-shift
+        // by -PI/2 so the trough lands on the beat (where the kick spike is) and
+        // the peak lands at the *off* (between beats), creating an anticipatory
+        // breath that exhales into each kick.
+        const breath = Math.sin(currentAudioData.beatPhase * 2 * Math.PI - Math.PI / 2);
+        pulseFactor += breath * TEMPO_BREATHE_GAIN * currentAudioData.tempoConfidence;
+      } else {
+        pulseFactor += Math.sin(time * 2) * 0.04;
+      }
       const clampedPulse = Math.max(0.8, Math.min(1.8, pulseFactor));
       pulse(clampedPulse, clampedPulse);
 
       const timeMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.5) : 1;
-      time += ((Math.sin(time)) < 0 ? 12 : (pulseFactor > 1.15) ? .3 : 1.5) * config.timeDelta * timeMultiplier;
+      time += ((Math.sin(time)) < 0 ? 12 : (pulseFactor > 1.15) ? .3 : 1.5) * config.timeDelta * timeMultiplier * dtFrames;
 
-      const trailOpacity = currentIsPlaying
+      // Trail erase: a black overlay with low alpha each frame multiplicatively
+      // fades old trails. Higher Hz means more applications/sec, so trails fade
+      // faster on high-Hz displays. Apply the multiplicative-decay correction
+      // (same trick as the glow decays) so wall-clock fade rate is constant.
+      const baseTrailAlpha = currentIsPlaying
         ? 0.04 + currentAudioData.overall * 0.08 + combinedGlow * 0.06
         : 0.08;
+      const trailOpacity = 1 - Math.pow(1 - baseTrailAlpha, dtFrames);
       ctx.fillStyle = `rgba(0,0,0,${trailOpacity})`;
       ctx.fillRect(0, 0, width, height);
 
@@ -878,10 +998,14 @@ const HeartAnimation = ({
         const length = Math.sqrt(dx * dx + dy * dy);
 
         if (10 > length) {
-          if (0.95 < Math.random()) {
+          // Target switching: 5% chance / direction flip: 1% chance, both at 60 fps.
+          // Linear scaling by dtFrames keeps event rate per second constant.
+          // (Linear is a fine approximation for small probabilities; capped dtFrames
+          // keeps it well-behaved.)
+          if (Math.random() < 0.05 * dtFrames) {
             u.q = ~~(Math.random() * heartPointsCount);
           } else {
-            if (0.99 < Math.random()) {
+            if (Math.random() < 0.01 * dtFrames) {
               u.D *= -1;
             }
             u.q += u.D;
@@ -899,46 +1023,67 @@ const HeartAnimation = ({
         const beatSpeedMult = currentAudioData.kick ? 1.2 + currentKickStrength * 0.2 : 1.0;
         const totalSpeedMultiplier = audioSpeedMultiplier * bassMultiplier * beatSpeedMult;
 
-        u.vx += -dx / length * u.speed * totalSpeedMultiplier;
-        u.vy += -dy / length * u.speed * totalSpeedMultiplier;
+        // Radial pull (acceleration): scales linearly with dt.
+        u.vx += -dx / length * u.speed * totalSpeedMultiplier * dtFrames;
+        u.vy += -dy / length * u.speed * totalSpeedMultiplier * dtFrames;
 
         // Tangential jitter: perpendicular to the radial pull, scaled by flatness.
-        // Random sign and magnitude per particle per frame -> particles wander
-        // around their target along the heart's circumferential direction. The
-        // radial pull is preserved, so particles still return to the silhouette;
-        // they just take a less direct path on noisy/percussive sections.
+        // Random sign per frame -> particles wander circumferentially. Stochastic
+        // accelerations need sqrt(dt) scaling (not linear) to preserve per-second
+        // variance: half the dt with twice the rate => sqrt(2) factor on amplitude.
         if (tangentialJitter > 0.01 && length > 1) {
           const tangX = -dy / length;
           const tangY = dx / length;
-          const jitter = (Math.random() - 0.5) * tangentialJitter;
+          const jitter = (Math.random() - 0.5) * tangentialJitter * Math.sqrt(dtFrames);
           u.vx += tangX * jitter;
           u.vy += tangY * jitter;
         }
 
-        // Outer ring spike: SNARE-driven (was beat-driven). Snares are sharper and
-        // less frequent than kicks, so the radial bursts match hi-hat / snare hits
-        // and the heart pulse now fires independently on kicks. Push strength bumped
-        // 3.5 -> 4.0 since snare-only is a less frequent event than any-beat was.
+        // Outer ring spike: SNARE-driven impulse. Acceleration -> scales by dt.
         if (snareGlow > 0.15 && u.q < outerRingCount && i % 3 === 0) {
           const spDx = u.trace[0].x - cX;
           const spDy = u.trace[0].y - cY;
           const spDist = Math.sqrt(spDx * spDx + spDy * spDy);
           if (spDist > 10) {
-            u.vx += (spDx / spDist) * snareGlow * 4.0;
-            u.vy += (spDy / spDist) * snareGlow * 4.0;
+            u.vx += (spDx / spDist) * snareGlow * 4.0 * dtFrames;
+            u.vy += (spDy / spDist) * snareGlow * 4.0 * dtFrames;
           }
         }
 
-        u.trace[0].x += u.vx;
-        u.trace[0].y += u.vy;
-        u.vx *= u.force;
-        u.vy *= u.force;
+        // A5: section burst. Fires once on the rising edge of a chorus/drop.
+        // Unlike the snare spike, this affects EVERY particle (not just outer
+        // ring, not every-3rd) and pushes them outward harder -- so a drop
+        // visibly explodes the heart silhouette outward before the radial pull
+        // brings it back. dtFrames-scaled like other accelerations. Strength
+        // is impulse-style (single frame), so we don't multiply by sectionGlow
+        // here -- it's the rising edge itself that gates this.
+        if (sectionRisingEdge) {
+          const bDx = u.trace[0].x - cX;
+          const bDy = u.trace[0].y - cY;
+          const bDist = Math.sqrt(bDx * bDx + bDy * bDy);
+          if (bDist > 10) {
+            const burst = SECTION_BURST_STRENGTH * (0.6 + currentAudioData.sectionStrength * 0.4);
+            u.vx += (bDx / bDist) * burst * dtFrames;
+            u.vy += (bDy / bDist) * burst * dtFrames;
+          }
+        }
 
+        // Position integration (vx is "units / 60-fps frame"; multiply by dt).
+        u.trace[0].x += u.vx * dtFrames;
+        u.trace[0].y += u.vy * dtFrames;
+        // Velocity damping: was per-frame retention. Math.pow per particle since
+        // u.force is per-particle (~0.7..0.9). Cost: ~50ns x particle count.
+        const dampingPow = Math.pow(u.force, dtFrames);
+        u.vx *= dampingPow;
+        u.vy *= dampingPow;
+
+        // Trail interpolation: per-frame multiplicative pull. tracePullFactor
+        // is the dt-corrected lerp coefficient (precomputed once per frame).
         for (let k = 0; k < u.trace.length - 1;) {
           const T = u.trace[k];
           const N = u.trace[++k];
-          N.x -= config.traceK * (N.x - T.x);
-          N.y -= config.traceK * (N.y - T.y);
+          N.x -= tracePullFactor * (N.x - T.x);
+          N.y -= tracePullFactor * (N.y - T.y);
         }
 
         const baseIntensity = currentIsPlaying ? 0.25 + currentAudioData.overall * 0.5 : 0.4;
@@ -962,15 +1107,16 @@ const HeartAnimation = ({
         }
       }
       
-      // Debug overlay (press D to toggle). Shows the bands, both glow trackers,
-      // both beat-strength sources, and the new spectral descriptors. Two
-      // indicator dots: green = kick fired this frame, magenta = snare fired.
+      // Debug overlay (press D to toggle). Shows the bands, all glow trackers,
+      // beat-strength sources, spectral descriptors, and tempo/section signals.
+      // Indicator dots: green = kick fired this frame, magenta = snare fired,
+      // cyan = section transition this frame.
       if (showDebug) {
         ctx.save();
         const pad = 12;
         const barW = 90;
         const lineH = 14;
-        const rows = 11;
+        const rows = 14;
         let dbgY = pad;
         ctx.fillStyle = 'rgba(0,0,0,0.8)';
         ctx.fillRect(pad - 4, pad - 4, barW + 80, lineH * rows + 12);
@@ -993,7 +1139,15 @@ const HeartAnimation = ({
         drawBar('sStr', currentSnareStrength, '#a0f');
         drawBar('cent', currentAudioData.centroid, '#0fa');
         drawBar('flat', currentAudioData.flatness, '#f80');
-        // Kick fired this frame -> top dot green; snare fired -> bottom dot magenta.
+        // Tempo: BPM read out as text, normalized for the bar to [0, 200] BPM.
+        ctx.fillStyle = '#777';
+        ctx.fillText(`bpm  ${currentAudioData.tempo.toFixed(0)}`, pad, dbgY + 10);
+        ctx.fillStyle = '#5af';
+        ctx.fillRect(pad + 52, dbgY + 2, Math.min(currentAudioData.tempo / 200, 1) * barW, 8);
+        dbgY += lineH;
+        drawBar('conf', currentAudioData.tempoConfidence, '#5af');
+        drawBar('sect', sectionGlow, '#0cf');
+        // Kick / snare / section indicator dots stacked on the right.
         ctx.fillStyle = currentAudioData.kick ? '#0f0' : '#333';
         ctx.beginPath();
         ctx.arc(pad + barW + 60, pad + lineH, 5, 0, Math.PI * 2);
@@ -1001,6 +1155,10 @@ const HeartAnimation = ({
         ctx.fillStyle = currentAudioData.snare ? '#f0f' : '#333';
         ctx.beginPath();
         ctx.arc(pad + barW + 60, pad + lineH * 3, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = currentAudioData.section ? '#0cf' : '#333';
+        ctx.beginPath();
+        ctx.arc(pad + barW + 60, pad + lineH * 5, 5, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
       }

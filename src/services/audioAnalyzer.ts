@@ -45,6 +45,26 @@ export interface AudioReactiveData {
   /** Spectral flatness (geometric mean / arithmetic mean of magnitudes). Smoothed.
    *  ~0 = pure tone (sustained vocals/strings), ~1 = noise (cymbals/snare/static). */
   flatness: number;
+  /** Locked tempo in BPM. 0 when no lock yet. */
+  tempo: number;
+  /** Lock confidence in [0, 1]. Derived from MAD over recent IBIs. */
+  tempoConfidence: number;
+  /** Milliseconds until the next predicted beat. Infinity when no lock. Used for
+   *  anticipatory animation that peaks ON the beat instead of trailing it. */
+  nextBeatIn: number;
+  /** Phase position within the current beat cycle in [0, 1) (0 = on the beat).
+   *  Continuous + wraps cleanly; suitable as a sin() argument for tempo-locked
+   *  baseline animations. NaN / 0 when no lock. */
+  beatPhase: number;
+  /** Long-term loudness EMA (~10 s). Useful for clients that want their own
+   *  thresholds; section detection uses it internally. */
+  loudness: number;
+  /** Fires for one frame when a sustained-loudness jump is detected (chorus,
+   *  drop, post-breakdown re-entry). Throttled by an internal cooldown. */
+  section: boolean;
+  /** Magnitude of the most recent section transition in [0, 1]. Persists for
+   *  the cooldown window so visualization can ramp/fade against it. */
+  sectionStrength: number;
 }
 
 export interface AudioAnalyzerConfig {
@@ -94,6 +114,20 @@ const LOUDNESS_TARGET = 0.45;
 const LOUDNESS_TIME_CONSTANT_FRAMES = 600; // ~10 seconds at 60 fps
 const AGC_MIN_GAIN = 0.5;
 const AGC_MAX_GAIN = 4.0;
+
+// Section detection. Compares short-term loudness (~2 s) to the long-term EMA
+// (~10 s, the AGC tracker). When the ratio jumps past SECTION_RATIO_THRESHOLD
+// we fire a one-frame `section` flag (cooled down for SECTION_COOLDOWN_MS so
+// each chorus/drop fires exactly once). SECTION_MIN_LOUDNESS prevents false
+// positives on very quiet songs / song starts where small absolute changes
+// produce huge ratios.
+const SHORT_LOUDNESS_TIME_CONSTANT_FRAMES = 120; // ~2 s at 60 fps
+const SECTION_RATIO_THRESHOLD = 1.30;
+const SECTION_COOLDOWN_MS = 6000;
+const SECTION_MIN_LOUDNESS = 0.15;
+// Section strength persists for the cooldown so visuals can sustain. After
+// cooldown it's zeroed for the next ramp-up. Decay below is per-frame at 60 fps.
+const SECTION_STRENGTH_HOLD_FRAMES = 360; // ~6 s
 
 // Spectral descriptors
 // Log-Hz normalization: centroid in [CENTROID_HZ_MIN, CENTROID_HZ_MAX] -> [0, 1].
@@ -246,6 +280,16 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
   let longTermLoudness = 0;
   const loudnessAlpha = 1 / LOUDNESS_TIME_CONSTANT_FRAMES;
 
+  // Section detection state. shortTermLoudness tracks ~2 s, longTermLoudness ~10 s.
+  // When short jumps significantly above long (and absolute level is high enough),
+  // we fire a one-frame section event. lastSectionStrength holds the magnitude so
+  // the visualization can fade against it for the cooldown duration.
+  let shortTermLoudness = 0;
+  const shortLoudnessAlpha = 1 / SHORT_LOUDNESS_TIME_CONSTANT_FRAMES;
+  let lastSectionTime = 0;
+  let lastSectionStrength = 0;
+  const sectionStrengthDecay = Math.exp(-1 / SECTION_STRENGTH_HOLD_FRAMES);
+
   // Spectral descriptor smoothing state
   let smoothedCentroid = 0.5; // start neutral so the first few frames don't slam to 0
   let smoothedFlatness = 0.5;
@@ -286,6 +330,9 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
         kick: false, kickStrength: 0,
         snare: false, snareStrength: 0,
         centroid: 0.5, flatness: 0.5,
+        tempo: 0, tempoConfidence: 0,
+        nextBeatIn: Infinity, beatPhase: 0,
+        loudness: 0, section: false, sectionStrength: 0,
       };
     }
 
@@ -348,12 +395,19 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       envOverall = applyEnvelope(envOverall, 0, ENV.overall.attack, ENV.overall.decay);
       pushFlux(kickFluxHistory, 0);
       pushFlux(snareFluxHistory, 0);
+      // Section strength decays even through silence so a long break doesn't keep
+      // the previous section glow alive forever.
+      lastSectionStrength *= sectionStrengthDecay;
       return {
         bass: envBass, mid: envMid, treble: envTreble, overall: envOverall,
         beat: false, beatStrength: 0,
         kick: false, kickStrength: 0,
         snare: false, snareStrength: 0,
         centroid: smoothedCentroid, flatness: smoothedFlatness,
+        tempo: tempo.tempo, tempoConfidence: tempo.confidence,
+        nextBeatIn: Infinity, beatPhase: 0,
+        loudness: longTermLoudness,
+        section: false, sectionStrength: lastSectionStrength,
       };
     }
 
@@ -380,6 +434,9 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
     // Long-term loudness EMA, only updated on non-silent frames so silence doesn't
     // drag the tracker down (which would over-amplify the next loud passage).
     longTermLoudness += loudnessAlpha * (rawOverall - longTermLoudness);
+    // Short-term loudness on the same input. Together they form a 2 s vs 10 s
+    // ratio that signals chorus / drop transitions.
+    shortTermLoudness += shortLoudnessAlpha * (rawOverall - shortTermLoudness);
 
     // AGC gain: target / longTermLoudness, clamped. Pre-envelope so the envelope
     // follower sees normalized dynamics across loud/quiet songs.
@@ -451,6 +508,43 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       ? Math.max(kickStrength, 0.55)
       : kickStrength;
 
+    // --- Section detection: short-vs-long loudness ratio ----------------------------
+    // Fires once per chorus / drop. Cooldown prevents spamming on sustained loud
+    // sections; min-loudness prevents false fires when the song is just starting up.
+    let sectionThisFrame = false;
+    if (
+      longTermLoudness > SECTION_MIN_LOUDNESS &&
+      now - lastSectionTime > SECTION_COOLDOWN_MS
+    ) {
+      const ratio = shortTermLoudness / longTermLoudness;
+      if (ratio > SECTION_RATIO_THRESHOLD) {
+        sectionThisFrame = true;
+        lastSectionTime = now;
+        // Strength: 0.0 at threshold, 1.0 at 80% above threshold (ratio = 1.30 + 0.40 = 1.70).
+        // Most "drops" land in [1.4, 1.8]; full-on chorus jumps can exceed that.
+        lastSectionStrength = Math.min(1, (ratio - SECTION_RATIO_THRESHOLD) / 0.4);
+      }
+    }
+    // Decay strength regardless of whether we fired this frame, so the visual fades.
+    if (!sectionThisFrame) {
+      lastSectionStrength *= sectionStrengthDecay;
+    }
+
+    // --- Tempo phase + lookahead ----------------------------------------------------
+    let nextBeatIn = Infinity;
+    let beatPhase = 0;
+    if (tempo.tempo > 0 && lastFiredBeatTime > 0) {
+      const period = 60000 / tempo.tempo;
+      const elapsed = now - lastFiredBeatTime;
+      // beatPhase: 0 immediately after the beat fires, climbs toward 1 over `period`,
+      // then wraps. We cap at 1.5 periods elapsed so a long drop-out doesn't make
+      // phase nonsensical (it'll re-anchor on the next detection/prediction).
+      if (elapsed < period * 1.5) {
+        beatPhase = (elapsed / period) % 1;
+        nextBeatIn = Math.max(0, period - elapsed);
+      }
+    }
+
     return {
       bass: envBass,
       mid: envMid,
@@ -464,6 +558,13 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       snareStrength,
       centroid: smoothedCentroid,
       flatness: smoothedFlatness,
+      tempo: tempo.tempo,
+      tempoConfidence: tempo.confidence,
+      nextBeatIn,
+      beatPhase,
+      loudness: longTermLoudness,
+      section: sectionThisFrame,
+      sectionStrength: lastSectionStrength,
     };
   }
 
