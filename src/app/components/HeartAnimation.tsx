@@ -743,25 +743,29 @@ const HeartAnimation = ({
       return `hsla(${h}, ${s}%, ${l}%, ${a.toFixed(2)})`;
     };
     
-    // Helper to get interpolated color for a particle. The hueShift parameter (in
-    // degrees) is added on top of the album palette hue to give the spectral
-    // centroid a subtle "warmth/coolness" influence on color: bright passages push
-    // hue warmer, dark passages push it cooler.
+    // Helper to get interpolated color for a particle.
+    //   hueShift (deg): centroid-driven warmth/coolness offset on the album hue.
+    //   saturationMod (0..1): flatness-driven saturation multiplier. 1 = album
+    //     palette unchanged; <1 = desaturate. Tonal/melodic passages stay vivid;
+    //     noisy/percussive passages drain toward grayscale, mirroring the audio
+    //     spectrum's loss of tonal peaks.
     const getInterpolatedColor = (
       colorIndex: number,
       audioIntensity: number = 0.4,
       lightnessBoost: number = 0,
       hueShift: number = 0,
+      saturationMod: number = 1,
     ): string => {
       const currentColors = currentColorsRef.current;
       const targetColors = targetColorsRef.current;
       const progress = colorTransitionProgressRef.current;
 
       const finalHue = (h: number) => Math.round(((h + hueShift) % 360 + 360) % 360);
+      const finalSat = (s: number) => Math.max(0, Math.min(100, Math.round(s * saturationMod)));
 
       if (currentColors.length === 0 || targetColors.length === 0) {
         const boostedL = Math.min(100, 50 + lightnessBoost);
-        return `hsla(${finalHue(320)}, 80%, ${boostedL}%, ${audioIntensity})`;
+        return `hsla(${finalHue(320)}, ${finalSat(80)}%, ${boostedL}%, ${audioIntensity})`;
       }
 
       const currentColor = currentColors[colorIndex % currentColors.length];
@@ -770,13 +774,13 @@ const HeartAnimation = ({
       if (progress >= 1) {
         const parsed = parseHsla(targetColor);
         const boostedL = Math.min(100, parsed.l + lightnessBoost);
-        return `hsla(${finalHue(parsed.h)}, ${parsed.s}%, ${boostedL}%, ${audioIntensity})`;
+        return `hsla(${finalHue(parsed.h)}, ${finalSat(parsed.s)}%, ${boostedL}%, ${audioIntensity})`;
       }
 
       const interpolated = interpolateColor(currentColor, targetColor, progress);
       const parsed = parseHsla(interpolated);
       const boostedL = Math.min(100, parsed.l + lightnessBoost);
-      return `hsla(${finalHue(parsed.h)}, ${parsed.s}%, ${boostedL}%, ${audioIntensity})`;
+      return `hsla(${finalHue(parsed.h)}, ${finalSat(parsed.s)}%, ${boostedL}%, ${audioIntensity})`;
     };
     
     const loop = () => {
@@ -853,6 +857,19 @@ const HeartAnimation = ({
       const cX = window.innerWidth / 2;
       const cY = window.innerHeight / 2;
 
+      // --- Flatness-driven scene parameters (computed once per frame, applied per-particle) ---
+      // Flatness ~ 0 (tonal: vocals, melody) -> heart silhouette stays crisp + vivid.
+      // Flatness ~ 0.5+ (noisy: drums, distortion) -> particles wander tangentially,
+      // saturation drains. Coefficients are conservative: max ~25% effect at peak
+      // flatness so the heart never dissolves and the album palette stays legible.
+      const currentFlatness = currentIsPlaying ? currentAudioData.flatness : 0;
+      // Tangential jitter magnitude: scales by both flatness AND overall (so silence
+      // doesn't twitch the heart even if flatness happens to be high momentarily).
+      const tangentialJitter = currentFlatness * currentAudioData.overall * 0.7;
+      // Saturation multiplier: 1.0 at flatness=0, 0.65 at flatness=1. Mostly stays
+      // in [0.78, 1.0] for typical music since flatness rarely exceeds ~0.6.
+      const saturationMod = 1 - currentFlatness * 0.35;
+
       for (let i = e.length; i--;) {
         const u = e[i];
         const q = targetPoints[u.q];
@@ -884,6 +901,19 @@ const HeartAnimation = ({
 
         u.vx += -dx / length * u.speed * totalSpeedMultiplier;
         u.vy += -dy / length * u.speed * totalSpeedMultiplier;
+
+        // Tangential jitter: perpendicular to the radial pull, scaled by flatness.
+        // Random sign and magnitude per particle per frame -> particles wander
+        // around their target along the heart's circumferential direction. The
+        // radial pull is preserved, so particles still return to the silhouette;
+        // they just take a less direct path on noisy/percussive sections.
+        if (tangentialJitter > 0.01 && length > 1) {
+          const tangX = -dy / length;
+          const tangY = dx / length;
+          const jitter = (Math.random() - 0.5) * tangentialJitter;
+          u.vx += tangX * jitter;
+          u.vy += tangY * jitter;
+        }
 
         // Outer ring spike: SNARE-driven (was beat-driven). Snares are sharper and
         // less frequent than kicks, so the radial bursts match hi-hat / snare hits
@@ -923,7 +953,8 @@ const HeartAnimation = ({
         // bright passages (cymbals, vocals, leads) warm it up. Subtle on purpose --
         // the album palette stays the visual anchor.
         const centroidShift = currentIsPlaying ? (currentAudioData.centroid - 0.5) * 24 : 0;
-        u.f = getInterpolatedColor(u.colorIndex, colorIntensity, lightnessBoost, centroidShift);
+        // Flatness -> saturation desaturation (computed once per frame above).
+        u.f = getInterpolatedColor(u.colorIndex, colorIntensity, lightnessBoost, centroidShift, saturationMod);
 
         ctx.fillStyle = u.f;
         for (let k = 0; k < u.trace.length; k++) {
