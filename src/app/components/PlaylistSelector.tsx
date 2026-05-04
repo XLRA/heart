@@ -37,7 +37,7 @@ interface PlaylistSelectorProps {
 
 const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSelectorProps) => {
   const { playlists, loadUserPlaylists, loadPlaylistTracks, spotifyApi } = useSpotify();
-  const { isReady: isPlayerReady } = useWebPlayer();
+  const { isReady: isPlayerReady, playerError } = useWebPlayer();
   const [loading, setLoading] = useState(false);
   const [selectedPlaylist, setSelectedPlaylist] = useState<SpotifyPlaylistData | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -193,7 +193,7 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
             }}>
               Select a Playlist
             </h2>
-            {!isPlayerReady && (
+            {!isPlayerReady && !playerError && (
               <span style={{
                 color: '#8f8f9d',
                 fontSize: '12px',
@@ -209,6 +209,29 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
                   animation: 'connectingPulse 1.2s ease-in-out infinite'
                 }} />
                 Connecting to Spotify...
+              </span>
+            )}
+            {!isPlayerReady && playerError && (
+              <span style={{
+                color: '#ff6b6b',
+                fontSize: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                <span style={{
+                  width: '8px',
+                  height: '8px',
+                  borderRadius: '50%',
+                  backgroundColor: '#ff6b6b'
+                }} />
+                {playerError.code === 'eme'
+                  ? 'Browser DRM disabled — playback unavailable'
+                  : playerError.code === 'account'
+                    ? 'Spotify Premium required for in-app playback'
+                    : playerError.code === 'authentication'
+                      ? 'Spotify session expired — please log out and back in'
+                      : 'Spotify player failed to initialise'}
               </span>
             )}
           </div>
@@ -309,6 +332,63 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
             )}
           </div>
         </div>
+
+        {/* Player error banner (EME / account / auth / connection). Renders
+            inside the modal body so the user can actually see *why* clicking
+            a playlist does nothing, instead of an indefinite spinner. */}
+        {playerError && (
+          <div style={{
+            margin: '0 24px 12px 24px',
+            padding: '12px 14px',
+            borderRadius: '10px',
+            backgroundColor: 'rgba(255, 107, 107, 0.08)',
+            border: '1px solid rgba(255, 107, 107, 0.35)',
+            color: '#ffd6d6',
+            fontSize: '12px',
+            lineHeight: 1.5,
+          }}>
+            <div style={{ fontWeight: 600, marginBottom: 4, color: '#ff8a8a' }}>
+              {playerError.code === 'eme' && 'Browser DRM is required for Spotify playback'}
+              {playerError.code === 'account' && 'Spotify Premium required'}
+              {playerError.code === 'authentication' && 'Spotify session expired'}
+              {playerError.code === 'initialization' && 'Spotify player failed to start'}
+              {playerError.code === 'connection' && 'Could not reach Spotify'}
+            </div>
+            {playerError.code === 'eme' && (
+              <div>
+                Spotify’s Web Playback SDK uses encrypted media (Widevine).
+                In Chrome, enable it at{' '}
+                <code style={{
+                  backgroundColor: 'rgba(255,255,255,0.08)',
+                  padding: '1px 4px',
+                  borderRadius: 4,
+                }}>chrome://settings/content/protectedContent</code>{' '}
+                → “Sites can play protected content”, then reload.
+                Some hardened browsers (Brave, LibreWolf) and privacy
+                extensions block this by design.
+              </div>
+            )}
+            {playerError.code === 'account' && (
+              <div>
+                In-browser playback requires a Spotify Premium account.
+                Free accounts can still browse playlists, but cannot stream
+                from this player.
+              </div>
+            )}
+            {playerError.code === 'authentication' && (
+              <div>
+                Your Spotify access token is no longer valid. Please log out
+                from the badge in the top-right and log back in.
+              </div>
+            )}
+            {(playerError.code === 'initialization' || playerError.code === 'connection') && (
+              <div>
+                {playerError.message}. Try reloading the page; if it persists,
+                disable strict ad/tracker blockers for this site.
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Playlist List */}
         <div 

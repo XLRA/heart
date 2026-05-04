@@ -51,11 +51,30 @@ interface SpotifyPlayer {
   nextTrack(): Promise<void>;
 }
 
+// Categorised player errors so the UI can show actionable guidance instead of
+// an indefinite "Connecting to Spotify..." spinner. EME maps to "browser DRM
+// disabled" (the Web Playback SDK requires Widevine to decode protected audio
+// — common reasons: chrome://settings/content/protectedContent toggled off,
+// hardened browser, missing Widevine package on Linux). Account maps to
+// "Premium required". Auth maps to "stale token, please re-login".
+export type PlayerErrorCode =
+  | 'eme'
+  | 'initialization'
+  | 'authentication'
+  | 'account'
+  | 'connection';
+
+export interface PlayerError {
+  code: PlayerErrorCode;
+  message: string;
+}
+
 interface WebPlayerContextType {
   player: SpotifyPlayer | null;
   playerState: WebPlayerState;
   isReady: boolean;
   deviceId: string | null;
+  playerError: PlayerError | null;
   initializePlayer: (token: string) => void;
   playTrack: (trackUri: string) => void;
   playPlaylist: (playlistUri: string) => void;
@@ -72,6 +91,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
   const [player, setPlayer] = useState<SpotifyPlayer | null>(null);
   const [isReady, setIsReady] = useState(false);
   const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [playerError, setPlayerError] = useState<PlayerError | null>(null);
   const [playerState, setPlayerState] = useState<WebPlayerState>({
     is_paused: true,
     is_active: false,
@@ -246,6 +266,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
 
     // Set initialization flag
     isInitializingRef.current = true;
+    setPlayerError(null);
     console.log('Starting Web Player initialization...');
 
     // Disconnect existing player if any (cleanup)
@@ -267,22 +288,40 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       volume: 0.5
     });
 
-    // Error handling
+    // Error handling. Spotify's SDK reports errors via these listeners; we
+    // categorise the message so the UI can render actionable guidance instead
+    // of a perpetual "Connecting to Spotify..." spinner. Initialization
+    // failures most commonly originate from EME (Widevine missing/disabled);
+    // sniff the message string to detect that case specifically.
     newPlayer.addListener('initialization_error', (...args) => {
       const error = args[0] as { message: string };
-      console.error('Failed to initialize Spotify player:', error.message);
+      const message = error?.message ?? 'Unknown initialization error';
+      console.error('Failed to initialize Spotify player:', message);
+      const looksLikeEme = /eme|keysystem|widevine|encrypted|drm/i.test(message);
+      setPlayerError({
+        code: looksLikeEme ? 'eme' : 'initialization',
+        message,
+      });
       isInitializingRef.current = false;
     });
 
     newPlayer.addListener('authentication_error', (...args) => {
       const error = args[0] as { message: string };
       console.error('Failed to authenticate with Spotify:', error.message);
+      setPlayerError({
+        code: 'authentication',
+        message: error?.message ?? 'Authentication failed',
+      });
       isInitializingRef.current = false;
     });
 
     newPlayer.addListener('account_error', (...args) => {
       const error = args[0] as { message: string };
       console.error('Failed to validate Spotify account:', error.message);
+      setPlayerError({
+        code: 'account',
+        message: error?.message ?? 'Account error',
+      });
       isInitializingRef.current = false;
     });
 
@@ -338,6 +377,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         device_id: data.device_id
       }));
       setIsReady(true);
+      setPlayerError(null);
       startStatePolling();
       startPositionInterpolation();
       isInitializingRef.current = false;
@@ -360,10 +400,18 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         playerRef.current = newPlayer;
       } else {
         console.error('Failed to connect to Spotify Web Player');
+        setPlayerError({
+          code: 'connection',
+          message: 'Could not connect to Spotify Web Player',
+        });
         isInitializingRef.current = false;
       }
     }).catch((error) => {
       console.error('Error connecting to Spotify Web Player:', error);
+      setPlayerError({
+        code: 'connection',
+        message: error instanceof Error ? error.message : 'Connection error',
+      });
       isInitializingRef.current = false;
     });
   };
@@ -645,6 +693,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     playerState,
     isReady,
     deviceId,
+    playerError,
     initializePlayer,
     playTrack,
     playPlaylist,

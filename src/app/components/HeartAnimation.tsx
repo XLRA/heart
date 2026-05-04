@@ -33,9 +33,11 @@ const SECTION_BURST_STRENGTH = 8.0;
 
 // Particles operate under constant-force radial pull within this distance from
 // their target (preserves the original "stretch out, drift back" feel). Beyond
-// this, pull amplifies linearly with distance so particles can't fly so far
-// off-screen that their slow return leaves a persistent streak.
-const MAX_FREE_EXCURSION = 300;
+// this, pull amplifies linearly with distance so particles can't fly off-screen
+// and leave a persistent streak. Generous bound so the kick-spike effect can
+// fly visibly far before being yanked back -- the integration-dt cap below is
+// the actual structural fix for tab-return teleports.
+const MAX_FREE_EXCURSION = 550;
 
 // Cap the dt used for POSITION integration only (velocity update + glow decays
 // still use the full dtFrames so they recover properly after a hitch). Without
@@ -46,15 +48,27 @@ const MAX_FREE_EXCURSION = 300;
 // (dtFrames = 2.4 with SPEED_MULTIPLIER) so normal frames are unaffected.
 const MAX_INTEGRATION_DT = 2.5;
 
-// Music-reactive "spark" effect. On detected kicks, each particle has a small
-// probability of being randomly flung in a random direction (recreates the
-// initial-load "sparks flying out of the heart" look as a recurring rhythmic
-// event). Probability and force both scale with kickStrength so soft kicks are
-// subtle, hard kicks visibly fling sparks.
-const KICK_SPIKE_MIN_STRENGTH = 0.3;        // below this, no sparks
-const KICK_SPIKE_PROB_GAIN = 0.15;          // ~15% of particles per full-strength kick
-const KICK_SPIKE_FORCE_BASE = 12;           // base outward velocity
-const KICK_SPIKE_FORCE_RANDOM = 18;         // additional random magnitude
+// Music-reactive "spark" effect. On detected kicks, a fraction of particles
+// get launched radially outward from screen center (with a small angular
+// jitter for variety). Recreates the initial-load "particles flying out of
+// the heart and tracing back" look as a recurring rhythmic event, scaled
+// with kickStrength so soft kicks barely sparkle and hard kicks fling
+// dozens of visible streamers.
+// Kick spike tuning. Bumped 2026-05 after live testing on bundled mp3s
+// showed audio-driven bursts plateauing at ~40-50% of the manual `B` burst
+// ceiling -- probability and force were the limiting factors. New values
+// target ~55% of particles spiking on a strong kick (was ~21%) and ~75% of
+// the manual-burst force (was ~65%). Strength-scaling kept so weak kicks
+// stay visibly different from strong ones; we don't want it to read as a
+// constant strobe.
+const KICK_SPIKE_MIN_STRENGTH = 0.12;       // slightly more permissive floor
+const KICK_SPIKE_PROB_GAIN = 0.55;          // ~55% of particles per full-strength kick
+const KICK_SPIKE_FORCE_BASE = 36;           // base outward velocity
+const KICK_SPIKE_FORCE_RANDOM = 38;         // additional random magnitude
+const KICK_SPIKE_ANGLE_JITTER = Math.PI / 4; // ±45 deg from radial (visible scatter, mostly outward)
+// Manual test trigger: press 'B' to fire a maximum-strength burst on demand,
+// independent of the audio. Useful for visually calibrating the effect when
+// the music isn't producing strong kicks. Sets manualBurstFlag for one frame.
 
 const buildAudioFrame = (input: AudioFrameInput): AudioReactiveData => ({
   bass: input.bass,
@@ -650,10 +664,15 @@ const HeartAnimation = ({
 
     window.addEventListener('resize', handleResize);
 
-    // Debug overlay toggle (press D to show/hide)
+    // Debug overlay toggle (press D to show/hide).
+    // Manual burst trigger (press B) -- fires a kick-spike at maximum strength
+    // for one frame, useful for visually calibrating the effect when the
+    // music isn't producing strong-enough kicks.
     let showDebug = false;
+    let manualBurstFlag = false;
     const handleKeyDown = (ev: KeyboardEvent) => {
       if (ev.key === 'd' || ev.key === 'D') showDebug = !showDebug;
+      else if (ev.key === 'b' || ev.key === 'B') manualBurstFlag = true;
     };
     window.addEventListener('keydown', handleKeyDown);
 
@@ -1097,15 +1116,19 @@ const HeartAnimation = ({
               currentAudioData.bass * 0.4 +
               currentAudioData.treble * 0.2
             );
-            const widerNet = snareSpikeIntensity > 1.3;
+            // Wider-net threshold lowered (1.3 -> 1.0) so percussive hits in
+            // moderately loud songs more often engage the entire outer ring,
+            // not just every 3rd particle. Per-particle force when wider net
+            // is active was bumped 2.2 -> 2.6 to keep visual weight roughly
+            // proportional to perceived loudness even after the /3x increase
+            // in affected particle count.
+            const widerNet = snareSpikeIntensity > 1.0;
             if (widerNet || i % 3 === 0) {
               const spDx = u.trace[0].x - cX;
               const spDy = u.trace[0].y - cY;
               const spDist = Math.sqrt(spDx * spDx + spDy * spDy);
               if (spDist > 10) {
-                // Halve per-particle force when wider net is active (~3x more
-                // particles affected, so /2 keeps the heart from launching).
-                const perParticleBase = widerNet ? 2.2 : 4.0;
+                const perParticleBase = widerNet ? 2.6 : 4.4;
                 const radial = snareSpikeIntensity * perParticleBase * dtFrames;
                 u.vx += (spDx / spDist) * radial;
                 u.vy += (spDy / spDist) * radial;
@@ -1139,24 +1162,45 @@ const HeartAnimation = ({
           }
         }
 
-        // Music-reactive "spark" spike. On every detected kick of sufficient
-        // strength, each particle has a probability of being randomly flung in
-        // a random direction. Recreates the initial-load "sparks flying out of
-        // the heart" feel as a recurring rhythmic event -- this is the effect
-        // the user wants on cue with the music, where a few particles visibly
-        // shoot out and trace their way back to the heart. Probability AND
-        // force scale with kickStrength so soft kicks are subtle, hard kicks
-        // are dramatic. Random angle (not radial) gives chaotic spread.
+        // Music-reactive "spark" spike. On every detected kick (or manual 'B'
+        // press), each particle rolls a probability check; selected particles
+        // get launched radially OUTWARD from screen center with a ±45° angular
+        // jitter and a random magnitude. The particle then traces back to its
+        // target via the normal radial pull, which is exactly the "shoot out,
+        // come back" visual of the initial load.
+        //
+        // Direction is radial-outward (not pure random) because:
+        //   - Pure random would send half the particles INWARD past center,
+        //     looking like noise instead of sparks.
+        //   - The initial-load motion that this is mimicking IS radial-outward
+        //     (particles spawn at center, targets are on the heart silhouette).
+        //
         // No dt scaling on the probability: kicks are one-frame events, the
         // selection roll is per-event not per-second.
-        if (
-          currentAudioData.kick &&
+        const audioSpike = currentAudioData.kick &&
           currentKickStrength > KICK_SPIKE_MIN_STRENGTH &&
-          Math.random() < currentKickStrength * KICK_SPIKE_PROB_GAIN
-        ) {
-          const angle = Math.random() * Math.PI * 2;
+          Math.random() < currentKickStrength * KICK_SPIKE_PROB_GAIN;
+        const manualSpike = manualBurstFlag && Math.random() < 0.5;
+        if (audioSpike || manualSpike) {
+          const pdx = u.trace[0].x - cX;
+          const pdy = u.trace[0].y - cY;
+          const pdist = Math.sqrt(pdx * pdx + pdy * pdy);
+          // Base angle = particle's current angular position from center.
+          // Particles right at center fall back to a fully random angle.
+          const baseAngle = pdist > 1 ? Math.atan2(pdy, pdx) : Math.random() * Math.PI * 2;
+          const angle = baseAngle + (Math.random() - 0.5) * KICK_SPIKE_ANGLE_JITTER;
+          // Force scales with kickStrength AND overall loudness, so a hard
+          // kick during a loud chorus produces ~2x the magnitude of a kick
+          // during a quiet verse.
+          const strengthFactor = manualSpike ? 1.0 : currentKickStrength;
+          const loudnessFactor = manualSpike ? 1.2 : (0.7 + currentAudioData.overall * 0.6);
+          // Floor raised from 0.5 to 0.65 so even a moderate kick (strength
+          // 0.4) still throws particles with ~85% of a strong kick's force --
+          // the perceptual impact comes mostly from probability, not force,
+          // and a too-soft floor made moderate kicks look like neutral drift.
           const force = (KICK_SPIKE_FORCE_BASE + Math.random() * KICK_SPIKE_FORCE_RANDOM)
-            * (0.5 + currentKickStrength * 0.5);
+            * (0.65 + strengthFactor * 0.45)
+            * loudnessFactor;
           u.vx += Math.cos(angle) * force;
           u.vy += Math.sin(angle) * force;
         }
@@ -1203,6 +1247,10 @@ const HeartAnimation = ({
           ctx.fillRect(u.trace[k].x, u.trace[k].y, 1, 1);
         }
       }
+
+      // Manual burst is a one-frame impulse: clear the flag after the particle
+      // loop has consumed it so the next frame doesn't re-trigger.
+      manualBurstFlag = false;
       
       // Debug overlay (press D to toggle). Shows the bands, all glow trackers,
       // beat-strength sources, spectral descriptors, and tempo/section signals.
