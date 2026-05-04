@@ -34,18 +34,27 @@ const SECTION_BURST_STRENGTH = 8.0;
 // Particles operate under constant-force radial pull within this distance from
 // their target (preserves the original "stretch out, drift back" feel). Beyond
 // this, pull amplifies linearly with distance so particles can't fly so far
-// off-screen that their slow return leaves a persistent streak. Tuned to the
-// heart's natural radius (~250 px) plus headroom for normal beat excursions.
-//
-// Long-running bug this fixes: outer-ring spike pushes particles radially
-// outward from SCREEN CENTER, but particles aimed at the heart's bottom point
-// (~247 px below center) get accelerated nearly straight down. With constant
-// force pull-back, recovery from far excursions takes 1-2 seconds, during which
-// the slowly-returning particle paints a pixel every frame. At equilibrium with
-// the trail-erase fade rate, this produces a faint persistent streak below the
-// heart that looks like a frozen afterimage but is actually being continuously
-// refreshed.
+// off-screen that their slow return leaves a persistent streak.
 const MAX_FREE_EXCURSION = 300;
+
+// Cap the dt used for POSITION integration only (velocity update + glow decays
+// still use the full dtFrames so they recover properly after a hitch). Without
+// this, a returning background tab can integrate ~10 frames worth of stale
+// velocity in a single step, teleporting particles 500-700 px below the heart.
+// Capping at 2.5 means tab-return causes a slow-motion catchup over the next
+// few frames instead of one giant fling. Tuned just above 60 Hz nominal
+// (dtFrames = 2.4 with SPEED_MULTIPLIER) so normal frames are unaffected.
+const MAX_INTEGRATION_DT = 2.5;
+
+// Music-reactive "spark" effect. On detected kicks, each particle has a small
+// probability of being randomly flung in a random direction (recreates the
+// initial-load "sparks flying out of the heart" look as a recurring rhythmic
+// event). Probability and force both scale with kickStrength so soft kicks are
+// subtle, hard kicks visibly fling sparks.
+const KICK_SPIKE_MIN_STRENGTH = 0.3;        // below this, no sparks
+const KICK_SPIKE_PROB_GAIN = 0.15;          // ~15% of particles per full-strength kick
+const KICK_SPIKE_FORCE_BASE = 12;           // base outward velocity
+const KICK_SPIKE_FORCE_RANDOM = 18;         // additional random magnitude
 
 const buildAudioFrame = (input: AudioFrameInput): AudioReactiveData => ({
   bass: input.bass,
@@ -1130,9 +1139,35 @@ const HeartAnimation = ({
           }
         }
 
-        // Position integration (vx is "units / 60-fps frame"; multiply by dt).
-        u.trace[0].x += u.vx * dtFrames;
-        u.trace[0].y += u.vy * dtFrames;
+        // Music-reactive "spark" spike. On every detected kick of sufficient
+        // strength, each particle has a probability of being randomly flung in
+        // a random direction. Recreates the initial-load "sparks flying out of
+        // the heart" feel as a recurring rhythmic event -- this is the effect
+        // the user wants on cue with the music, where a few particles visibly
+        // shoot out and trace their way back to the heart. Probability AND
+        // force scale with kickStrength so soft kicks are subtle, hard kicks
+        // are dramatic. Random angle (not radial) gives chaotic spread.
+        // No dt scaling on the probability: kicks are one-frame events, the
+        // selection roll is per-event not per-second.
+        if (
+          currentAudioData.kick &&
+          currentKickStrength > KICK_SPIKE_MIN_STRENGTH &&
+          Math.random() < currentKickStrength * KICK_SPIKE_PROB_GAIN
+        ) {
+          const angle = Math.random() * Math.PI * 2;
+          const force = (KICK_SPIKE_FORCE_BASE + Math.random() * KICK_SPIKE_FORCE_RANDOM)
+            * (0.5 + currentKickStrength * 0.5);
+          u.vx += Math.cos(angle) * force;
+          u.vy += Math.sin(angle) * force;
+        }
+
+        // Position integration. dt is capped at MAX_INTEGRATION_DT so a single
+        // huge-dt frame (tab returning from background) can't teleport
+        // particles 500+ px in one step. Velocity update above uses full
+        // dtFrames so damping still recovers properly; only position is bounded.
+        const integrationDt = dtFrames > MAX_INTEGRATION_DT ? MAX_INTEGRATION_DT : dtFrames;
+        u.trace[0].x += u.vx * integrationDt;
+        u.trace[0].y += u.vy * integrationDt;
         // Velocity damping: was per-frame retention. Math.pow per particle since
         // u.force is per-particle (~0.7..0.9). Cost: ~50ns x particle count.
         const dampingPow = Math.pow(u.force, dtFrames);
