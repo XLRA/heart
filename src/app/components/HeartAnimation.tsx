@@ -31,6 +31,22 @@ const TEMPO_BREATHE_GAIN = 0.06;
 const SECTION_DECAY_60 = 0.992; // ~3 s half-life at 60 fps
 const SECTION_BURST_STRENGTH = 8.0;
 
+// Particles operate under constant-force radial pull within this distance from
+// their target (preserves the original "stretch out, drift back" feel). Beyond
+// this, pull amplifies linearly with distance so particles can't fly so far
+// off-screen that their slow return leaves a persistent streak. Tuned to the
+// heart's natural radius (~250 px) plus headroom for normal beat excursions.
+//
+// Long-running bug this fixes: outer-ring spike pushes particles radially
+// outward from SCREEN CENTER, but particles aimed at the heart's bottom point
+// (~247 px below center) get accelerated nearly straight down. With constant
+// force pull-back, recovery from far excursions takes 1-2 seconds, during which
+// the slowly-returning particle paints a pixel every frame. At equilibrium with
+// the trail-erase fade rate, this produces a faint persistent streak below the
+// heart that looks like a frozen afterimage but is actually being continuously
+// refreshed.
+const MAX_FREE_EXCURSION = 300;
+
 const buildAudioFrame = (input: AudioFrameInput): AudioReactiveData => ({
   bass: input.bass,
   mid: input.mid,
@@ -1023,9 +1039,17 @@ const HeartAnimation = ({
         const beatSpeedMult = currentAudioData.kick ? 1.2 + currentKickStrength * 0.2 : 1.0;
         const totalSpeedMultiplier = audioSpeedMultiplier * bassMultiplier * beatSpeedMult;
 
-        // Radial pull (acceleration): scales linearly with dt.
-        u.vx += -dx / length * u.speed * totalSpeedMultiplier * dtFrames;
-        u.vy += -dy / length * u.speed * totalSpeedMultiplier * dtFrames;
+        // Radial pull (acceleration): scales linearly with dt. Within
+        // MAX_FREE_EXCURSION it's constant force (the original feel); beyond,
+        // amplifies linearly with distance so particles can't fly off-screen
+        // and leave a persistent streak. See MAX_FREE_EXCURSION declaration
+        // for the full bug write-up.
+        const excursionFactor = length > MAX_FREE_EXCURSION
+          ? 1 + (length - MAX_FREE_EXCURSION) / MAX_FREE_EXCURSION
+          : 1;
+        const radialAccel = u.speed * totalSpeedMultiplier * excursionFactor * dtFrames;
+        u.vx += -dx / length * radialAccel;
+        u.vy += -dy / length * radialAccel;
 
         // Tangential jitter: perpendicular to the radial pull, scaled by flatness.
         // Random sign per frame -> particles wander circumferentially. Stochastic
@@ -1039,14 +1063,52 @@ const HeartAnimation = ({
           u.vy += tangY * jitter;
         }
 
-        // Outer ring spike: SNARE-driven impulse. Acceleration -> scales by dt.
-        if (snareGlow > 0.15 && u.q < outerRingCount && i % 3 === 0) {
-          const spDx = u.trace[0].x - cX;
-          const spDy = u.trace[0].y - cY;
-          const spDist = Math.sqrt(spDx * spDx + spDy * spDy);
-          if (spDist > 10) {
-            u.vx += (spDx / spDist) * snareGlow * 4.0 * dtFrames;
-            u.vy += (spDy / spDist) * snareGlow * 4.0 * dtFrames;
+        // Outer-ring expressiveness. Two coupled responses:
+        //
+        // 1. Snare spike (expansion). Pushes outer-ring particles outward from
+        //    screen center. Magnitude was `snareGlow * 4.0` (only reactive to
+        //    snare detection). Now scales with the full music signature:
+        //    snareGlow envelope * (overall energy + bass weight + treble
+        //    sparkle). Quiet passages produce subtle blooms; loud, full-spectrum
+        //    drops produce dramatic ones -- same detection, much wider dynamic
+        //    range. On big hits (intensity > 1.3) every outer-ring particle
+        //    responds instead of every 3rd, with per-particle strength halved
+        //    to keep total energy similar.
+        //
+        // 2. Kick contraction. On kicks, outer-ring particles get an extra pull
+        //    toward target scaled by kickStrength. Combined with (1), this
+        //    creates a breathe-in-on-kick / breathe-out-on-snare rhythm:
+        //    expressive motion in the outer ring instead of just brightness.
+        const isOuterRing = u.q < outerRingCount;
+        if (isOuterRing) {
+          if (snareGlow > 0.15) {
+            const snareSpikeIntensity = snareGlow * (
+              1 +
+              currentAudioData.overall * 0.5 +
+              currentAudioData.bass * 0.4 +
+              currentAudioData.treble * 0.2
+            );
+            const widerNet = snareSpikeIntensity > 1.3;
+            if (widerNet || i % 3 === 0) {
+              const spDx = u.trace[0].x - cX;
+              const spDy = u.trace[0].y - cY;
+              const spDist = Math.sqrt(spDx * spDx + spDy * spDy);
+              if (spDist > 10) {
+                // Halve per-particle force when wider net is active (~3x more
+                // particles affected, so /2 keeps the heart from launching).
+                const perParticleBase = widerNet ? 2.2 : 4.0;
+                const radial = snareSpikeIntensity * perParticleBase * dtFrames;
+                u.vx += (spDx / spDist) * radial;
+                u.vy += (spDy / spDist) * radial;
+              }
+            }
+          }
+          if (currentAudioData.kick) {
+            // Pull toward target (heart silhouette). dx/dy already point from
+            // particle to target, so -dx/length is the toward-target unit vector.
+            const kickPull = currentKickStrength * 5.0 * dtFrames;
+            u.vx += -dx / length * kickPull;
+            u.vy += -dy / length * kickPull;
           }
         }
 
