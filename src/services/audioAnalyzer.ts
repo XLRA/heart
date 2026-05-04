@@ -30,8 +30,21 @@ export interface AudioReactiveData {
   mid: number;
   treble: number;
   overall: number;
+  /** Generic beat (kick OR snare OR predicted). Kept for backward compatibility. */
   beat: boolean;
   beatStrength: number;
+  /** Sub-bass kick onset this frame. */
+  kick: boolean;
+  kickStrength: number;
+  /** Upper-mid snare/hi-hat onset this frame. */
+  snare: boolean;
+  snareStrength: number;
+  /** Spectral centroid mapped to a perceptual 0..1 scale via log-Hz. Smoothed.
+   *  ~0 = bass-heavy / dark, ~0.5 = balanced, ~1 = bright / treble-rich. */
+  centroid: number;
+  /** Spectral flatness (geometric mean / arithmetic mean of magnitudes). Smoothed.
+   *  ~0 = pure tone (sustained vocals/strings), ~1 = noise (cymbals/snare/static). */
+  flatness: number;
 }
 
 export interface AudioAnalyzerConfig {
@@ -81,6 +94,17 @@ const LOUDNESS_TARGET = 0.45;
 const LOUDNESS_TIME_CONSTANT_FRAMES = 600; // ~10 seconds at 60 fps
 const AGC_MIN_GAIN = 0.5;
 const AGC_MAX_GAIN = 4.0;
+
+// Spectral descriptors
+// Log-Hz normalization: centroid in [CENTROID_HZ_MIN, CENTROID_HZ_MAX] -> [0, 1].
+// Below the floor or above the ceiling clamps. Tuned to perceptually meaningful range.
+const CENTROID_HZ_MIN = 200;
+const CENTROID_HZ_MAX = 4000;
+// Smoothing time constants (per-frame alpha at ~60 fps): fast enough to track musical
+// changes (verses vs choruses), slow enough not to jitter on individual hits.
+const CENTROID_SMOOTH_ALPHA = 0.10; // ~150 ms time constant
+const FLATNESS_SMOOTH_ALPHA = 0.05; // ~300 ms time constant
+const FLATNESS_LOG_EPS = 1e-6;
 
 // Tempo tracking
 const TEMPO_MAX_KICKS = 16;
@@ -222,6 +246,14 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
   let longTermLoudness = 0;
   const loudnessAlpha = 1 / LOUDNESS_TIME_CONSTANT_FRAMES;
 
+  // Spectral descriptor smoothing state
+  let smoothedCentroid = 0.5; // start neutral so the first few frames don't slam to 0
+  let smoothedFlatness = 0.5;
+
+  // Precompute log-Hz mapping bounds for centroid normalization (avoids per-frame Math.log).
+  const centroidLogMin = Math.log(CENTROID_HZ_MIN);
+  const centroidLogRange = Math.log(CENTROID_HZ_MAX) - centroidLogMin;
+
   const tempo = createTempoTracker();
 
   const applyEnvelope = (current: number, raw: number, attack: number, decay: number) => {
@@ -248,7 +280,13 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
 
   function read(): AudioReactiveData {
     if (disposed) {
-      return { bass: 0, mid: 0, treble: 0, overall: 0, beat: false, beatStrength: 0 };
+      return {
+        bass: 0, mid: 0, treble: 0, overall: 0,
+        beat: false, beatStrength: 0,
+        kick: false, kickStrength: 0,
+        snare: false, snareStrength: 0,
+        centroid: 0.5, flatness: 0.5,
+      };
     }
 
     analyser.getFloatFrequencyData(floatData);
@@ -256,6 +294,10 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
     let subBassSum = 0, bassSum = 0, midSum = 0, upperMidSum = 0, trebleSum = 0;
     let subBassCount = 0, bassCount = 0, midCount = 0, upperMidCount = 0, trebleCount = 0;
     let kickFlux = 0, snareFlux = 0;
+    // Centroid: bin-weighted magnitude mean. Flatness: log-sum for geometric mean.
+    let centroidNumerator = 0;
+    let centroidDenominator = 0;
+    let logMagSum = 0;
 
     for (let i = 1; i < trebleEnd; i++) {
       const magnitude = (floatData[i] + 100) / 90;
@@ -278,6 +320,12 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       } else {
         trebleSum += m; trebleCount++;
       }
+
+      // Centroid: weighted mean of bin index (proxy for frequency, scaled later by binWidth)
+      centroidNumerator += i * m;
+      centroidDenominator += m;
+      // Flatness: epsilon-protected log so silent bins don't blow up to -Infinity
+      logMagSum += Math.log(m + FLATNESS_LOG_EPS);
     }
     prevFloatData.set(floatData);
 
@@ -292,7 +340,8 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
     const rawOverall   = combinedBass * 0.35 + combinedMid * 0.35 + rawTreble * 0.30;
 
     if (rawOverall < NOISE_FLOOR) {
-      // Decay to silence; don't update AGC tracker (would drift on long silence).
+      // Decay to silence; don't update AGC, centroid, or flatness trackers (silence is
+      // not informative about the song's character, and updating would drag them around).
       envBass    = applyEnvelope(envBass,    0, ENV.bass.attack,    ENV.bass.decay);
       envMid     = applyEnvelope(envMid,     0, ENV.mid.attack,     ENV.mid.decay);
       envTreble  = applyEnvelope(envTreble,  0, ENV.treble.attack,  ENV.treble.decay);
@@ -302,7 +351,30 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       return {
         bass: envBass, mid: envMid, treble: envTreble, overall: envOverall,
         beat: false, beatStrength: 0,
+        kick: false, kickStrength: 0,
+        snare: false, snareStrength: 0,
+        centroid: smoothedCentroid, flatness: smoothedFlatness,
       };
+    }
+
+    // --- Spectral descriptors (only updated on non-silent frames) ---------------------
+    // Centroid: convert bin-weighted mean to Hz, then log-normalize to 0..1.
+    if (centroidDenominator > 0) {
+      const centroidBin = centroidNumerator / centroidDenominator;
+      const centroidHz = Math.max(centroidBin * binWidth, CENTROID_HZ_MIN);
+      const rawCentroid = Math.max(0, Math.min(1,
+        (Math.log(centroidHz) - centroidLogMin) / centroidLogRange
+      ));
+      smoothedCentroid += CENTROID_SMOOTH_ALPHA * (rawCentroid - smoothedCentroid);
+    }
+    // Flatness: geometric mean / arithmetic mean. Both computed over the same bin set
+    // [1, trebleEnd), so they share the same N. Use the centroid sum as arith.
+    const totalBins = trebleEnd - 1;
+    if (totalBins > 0 && centroidDenominator > 0) {
+      const arithMean = centroidDenominator / totalBins;
+      const geoMean = Math.exp(logMagSum / totalBins);
+      const rawFlatness = Math.max(0, Math.min(1, geoMean / arithMean));
+      smoothedFlatness += FLATNESS_SMOOTH_ALPHA * (rawFlatness - smoothedFlatness);
     }
 
     // Long-term loudness EMA, only updated on non-silent frames so silence doesn't
@@ -372,6 +444,13 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       ? Math.max(detectedStrength, 0.55)
       : detectedStrength;
 
+    // For the legacy `beat` flag, predicted beats are reported as "kick" since they
+    // continue the rhythmic pulse even when detection missed.
+    const kickEvent = kickHit || predictedBeat;
+    const reportedKickStrength = predictedBeat
+      ? Math.max(kickStrength, 0.55)
+      : kickStrength;
+
     return {
       bass: envBass,
       mid: envMid,
@@ -379,6 +458,12 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       overall: envOverall,
       beat: isBeat,
       beatStrength,
+      kick: kickEvent,
+      kickStrength: reportedKickStrength,
+      snare: snareHit,
+      snareStrength,
+      centroid: smoothedCentroid,
+      flatness: smoothedFlatness,
     };
   }
 

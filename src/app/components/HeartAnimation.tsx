@@ -3,7 +3,35 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { ParticleLevel, PARTICLE_MULTIPLIERS, TRACE_COUNTS } from '../context/SettingsContext';
 import type { AlbumColors } from '../../services/colorExtractor';
-import { createAudioAnalyzer, type AudioAnalyzer } from '../../services/audioAnalyzer';
+import { createAudioAnalyzer, type AudioAnalyzer, type AudioReactiveData } from '../../services/audioAnalyzer';
+
+// Legacy audio frames from non-analyzer paths (Meyda, Spotify simulation/analysis fallback)
+// only carry the original six fields. The unified ref shape adds kick/snare/centroid/flatness
+// derived from the legacy values when the richer data isn't available.
+type LegacyAudioFields = Pick<AudioReactiveData, 'bass' | 'mid' | 'treble' | 'overall' | 'beat' | 'beatStrength'>;
+type AudioFrameInput = LegacyAudioFields & Partial<AudioReactiveData>;
+
+const NEUTRAL_SPECTRAL = 0.5;
+const INDICATOR_THROTTLE_MS = 50; // ~20 Hz; plenty for the 10x10 px dot
+
+const buildAudioFrame = (input: AudioFrameInput): AudioReactiveData => ({
+  bass: input.bass,
+  mid: input.mid,
+  treble: input.treble,
+  overall: input.overall,
+  beat: input.beat,
+  beatStrength: input.beatStrength,
+  // Legacy paths fuse kick + snare into `beat`. Mirror them with slight asymmetry so
+  // the visualization at least gets *some* differentiation while playing local files
+  // with Meyda or Spotify simulation. Tab capture and local-file modes pass full data
+  // and overwrite these defaults.
+  kick: input.kick ?? input.beat,
+  kickStrength: input.kickStrength ?? (input.beat ? input.beatStrength : 0),
+  snare: input.snare ?? input.beat,
+  snareStrength: input.snareStrength ?? (input.beat ? input.beatStrength * 0.7 : 0),
+  centroid: input.centroid ?? NEUTRAL_SPECTRAL,
+  flatness: input.flatness ?? NEUTRAL_SPECTRAL,
+});
 
 interface AudioVisualizerProps {
   audioElement?: HTMLAudioElement | null;
@@ -81,44 +109,49 @@ const HeartAnimation = ({
   const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
   const localAnalyzerRef = useRef<AudioAnalyzer | null>(null);
   const animationFrameRef = useRef<number | null>(null);
-  const [audioData, setAudioData] = useState<{
-    bass: number;
-    mid: number;
-    treble: number;
-    overall: number;
-    beat: boolean;
-    beatStrength: number;
-  }>({
-    bass: 0,
-    mid: 0,
-    treble: 0,
-    overall: 0,
-    beat: false,
-    beatStrength: 0
+
+  // Canvas-side audio data lives in a ref so the animation loop reads it with zero
+  // React-render overhead and zero one-frame staleness. All five audio paths write
+  // here directly via writeAudioData.
+  const audioDataRef = useRef<AudioReactiveData>(buildAudioFrame({
+    bass: 0, mid: 0, treble: 0, overall: 0, beat: false, beatStrength: 0,
+  }));
+
+  // The indicator dot is the only React consumer of audio data. It's updated at
+  // ~20 Hz instead of 60 Hz; carries only the two fields the JSX uses.
+  const [indicatorData, setIndicatorData] = useState<{ overall: number; beat: boolean }>({
+    overall: 0, beat: false,
   });
+  const lastIndicatorUpdateRef = useRef(0);
 
   const [spotifyAnalysis, setSpotifyAnalysis] = useState<SpotifyAudioAnalysis | null>(null);
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
-  
-  // Use refs to access current values in animation loop
-  const audioDataRef = useRef(audioData);
+
   const isPlayingRef = useRef(isPlaying);
-  
+
   // Color transition refs
   const currentColorsRef = useRef<string[]>([]);
   const targetColorsRef = useRef<string[]>([]);
   const colorTransitionProgressRef = useRef(1); // 1 = complete, 0 = just started
   const colorTransitionStartTimeRef = useRef(0);
   const COLOR_TRANSITION_DURATION = 1500; // 1.5 seconds for smooth transition
-  
-  // Update refs when values change
-  useEffect(() => {
-    audioDataRef.current = audioData;
-  }, [audioData]);
-  
+
   useEffect(() => {
     isPlayingRef.current = isPlaying;
   }, [isPlaying]);
+
+  // Single write-path for audio frames. Analyzer paths pass the full AudioReactiveData;
+  // legacy paths pass just the six core fields and we synthesize the rest. Throttles
+  // the React state update for the indicator dot so we don't churn renders at 60 Hz.
+  const writeAudioData = useCallback((input: AudioFrameInput) => {
+    const frame = buildAudioFrame(input);
+    audioDataRef.current = frame;
+    const now = performance.now();
+    if (now - lastIndicatorUpdateRef.current >= INDICATOR_THROTTLE_MS) {
+      lastIndicatorUpdateRef.current = now;
+      setIndicatorData({ overall: frame.overall, beat: frame.beat });
+    }
+  }, []);
   
   // Handle album color changes with fade transition
   useEffect(() => {
@@ -154,13 +187,13 @@ const HeartAnimation = ({
       // Beat detection from spectral flux and RMS
       const beat = meydaData.spectralFlux > 0.1 || meydaData.rms > 0.3;
 
-      setAudioData({
+      writeAudioData({
         bass,
         mid,
         treble,
         overall,
         beat,
-        beatStrength: beat ? 0.5 : 0
+        beatStrength: beat ? 0.5 : 0,
       });
     };
 
@@ -171,7 +204,7 @@ const HeartAnimation = ({
     const interval = setInterval(convertMeydaToAudioData, 50); // Update every 50ms
     
     return () => clearInterval(interval);
-  }, [meydaData, isPlaying, tabAudioStream]);
+  }, [meydaData, isPlaying, tabAudioStream, writeAudioData]);
 
   // Fetch Spotify audio analysis data with fallback
   const fetchSpotifyAudioAnalysis = useCallback(async (trackId: string) => {
@@ -314,7 +347,7 @@ const HeartAnimation = ({
 
     const tick = () => {
       if (localAnalyzerRef.current === analyzer && isPlayingRef.current) {
-        setAudioData(analyzer.read());
+        writeAudioData(analyzer.read());
       }
       animationFrameRef.current = requestAnimationFrame(tick);
     };
@@ -324,7 +357,7 @@ const HeartAnimation = ({
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
-  }, [isPlaying, isSpotifyMode, tabAudioStream]);
+  }, [isPlaying, isSpotifyMode, tabAudioStream, writeAudioData]);
 
   // Spotify mode: Enhanced simulation when audio analysis is not available
   useEffect(() => {
@@ -369,20 +402,20 @@ const HeartAnimation = ({
         const treble = Math.max(0, Math.min(1, timeBasedIntensity * 0.3 * valenceMultiplier + randomVariation + 0.1));
         const overall = (bass + mid + treble) / 3;
         
-        setAudioData({
+        writeAudioData({
           bass,
           mid,
           treble,
           overall,
           beat: Boolean(beatPattern),
-          beatStrength: beatPattern ? 0.5 : 0
+          beatStrength: beatPattern ? 0.5 : 0,
         });
       };
 
       const interval = setInterval(simulateEnhancedAudioData, 50);
       return () => clearInterval(interval);
     }
-  }, [isSpotifyMode, isPlaying, currentPosition, spotifyAnalysis, meydaData, spotifyTrackData, tabAudioStream]);
+  }, [isSpotifyMode, isPlaying, currentPosition, spotifyAnalysis, meydaData, spotifyTrackData, tabAudioStream, writeAudioData]);
 
   // Spotify mode: Real audio-reactive behavior based on audio analysis
   useEffect(() => {
@@ -427,13 +460,13 @@ const HeartAnimation = ({
         const isBeat = currentBeat && 
           (currentTimeSeconds - currentBeat.start) < 0.15; // Within 150ms of beat start for more responsive detection
         
-        setAudioData({
+        writeAudioData({
           bass: Math.max(0, Math.min(1, bass)),
           mid: Math.max(0, Math.min(1, mid)),
           treble: Math.max(0, Math.min(1, treble)),
           overall: loudnessNormalized,
           beat: Boolean(isBeat),
-          beatStrength: isBeat ? 0.6 : 0
+          beatStrength: isBeat ? 0.6 : 0,
         });
       } else if (currentSection) {
         // Fallback to section data with more dramatic values
@@ -446,13 +479,13 @@ const HeartAnimation = ({
         const mid = loudnessNormalized * 0.7 + Math.random() * 0.1;
         const treble = loudnessNormalized * 0.5 + Math.random() * 0.1;
         
-        setAudioData({
+        writeAudioData({
           bass: Math.max(0, Math.min(1, bass)),
           mid: Math.max(0, Math.min(1, mid)),
           treble: Math.max(0, Math.min(1, treble)),
           overall: loudnessNormalized,
           beat: false,
-          beatStrength: 0
+          beatStrength: 0,
         });
       }
     };
@@ -460,7 +493,7 @@ const HeartAnimation = ({
     const interval = setInterval(updateAudioDataFromAnalysis, 50); // Update every 50ms
     
     return () => clearInterval(interval);
-  }, [isSpotifyMode, isPlaying, spotifyAnalysis, currentPosition, tabAudioStream]);
+  }, [isSpotifyMode, isPlaying, spotifyAnalysis, currentPosition, tabAudioStream, writeAudioData]);
 
   // Tab audio capture: real-time analysis of audio shared via getDisplayMedia.
   // Uses the unified analyzer (pre-emphasis + per-band beat detection + noise gate).
@@ -490,7 +523,7 @@ const HeartAnimation = ({
         const tick = () => {
           if (cleanedUp || !analyzer) return;
           if (isPlayingRef.current) {
-            setAudioData(analyzer.read());
+            writeAudioData(analyzer.read());
           }
           frameId = requestAnimationFrame(tick);
         };
@@ -514,7 +547,7 @@ const HeartAnimation = ({
         audioCtx.close();
       }
     };
-  }, [tabAudioStream]);
+  }, [tabAudioStream, writeAudioData]);
 
   // Initialize canvas and particles once, then animate continuously
   useEffect(() => {
@@ -671,7 +704,12 @@ const HeartAnimation = ({
     let time = 0;
     let lastBeatTime = 0;
     let animationId: number;
-    let beatGlow = 0;
+    // Independent envelope-followed glow trackers for kick (sub-bass) and snare
+    // (upper-mid). Kick drives the central heart pulse + speed boost; snare drives
+    // the outer-ring radial spike. They overlap on most beats but separate on
+    // off-beats so the visualization decomposes the rhythm.
+    let kickGlow = 0;
+    let snareGlow = 0;
     
     // Helper function to parse HSLA color string
     const parseHsla = (hsla: string): { h: number; s: number; l: number; a: number } => {
@@ -705,30 +743,40 @@ const HeartAnimation = ({
       return `hsla(${h}, ${s}%, ${l}%, ${a.toFixed(2)})`;
     };
     
-    // Helper to get interpolated color for a particle
-    const getInterpolatedColor = (colorIndex: number, audioIntensity: number = 0.4, lightnessBoost: number = 0): string => {
+    // Helper to get interpolated color for a particle. The hueShift parameter (in
+    // degrees) is added on top of the album palette hue to give the spectral
+    // centroid a subtle "warmth/coolness" influence on color: bright passages push
+    // hue warmer, dark passages push it cooler.
+    const getInterpolatedColor = (
+      colorIndex: number,
+      audioIntensity: number = 0.4,
+      lightnessBoost: number = 0,
+      hueShift: number = 0,
+    ): string => {
       const currentColors = currentColorsRef.current;
       const targetColors = targetColorsRef.current;
       const progress = colorTransitionProgressRef.current;
-      
+
+      const finalHue = (h: number) => Math.round(((h + hueShift) % 360 + 360) % 360);
+
       if (currentColors.length === 0 || targetColors.length === 0) {
         const boostedL = Math.min(100, 50 + lightnessBoost);
-        return `hsla(320, 80%, ${boostedL}%, ${audioIntensity})`;
+        return `hsla(${finalHue(320)}, 80%, ${boostedL}%, ${audioIntensity})`;
       }
-      
+
       const currentColor = currentColors[colorIndex % currentColors.length];
       const targetColor = targetColors[colorIndex % targetColors.length];
-      
+
       if (progress >= 1) {
         const parsed = parseHsla(targetColor);
         const boostedL = Math.min(100, parsed.l + lightnessBoost);
-        return `hsla(${parsed.h}, ${parsed.s}%, ${boostedL}%, ${audioIntensity})`;
+        return `hsla(${finalHue(parsed.h)}, ${parsed.s}%, ${boostedL}%, ${audioIntensity})`;
       }
-      
+
       const interpolated = interpolateColor(currentColor, targetColor, progress);
       const parsed = parseHsla(interpolated);
       const boostedL = Math.min(100, parsed.l + lightnessBoost);
-      return `hsla(${parsed.h}, ${parsed.s}%, ${boostedL}%, ${audioIntensity})`;
+      return `hsla(${finalHue(parsed.h)}, ${parsed.s}%, ${boostedL}%, ${audioIntensity})`;
     };
     
     const loop = () => {
@@ -748,22 +796,40 @@ const HeartAnimation = ({
         }
       }
       
-      const currentBs = currentAudioData.beatStrength || 0.5;
-      if (currentAudioData.beat && currentIsPlaying) {
-        beatGlow = Math.max(beatGlow, 0.4 + currentBs * 0.6);
+      const currentKickStrength = currentAudioData.kickStrength;
+      const currentSnareStrength = currentAudioData.snareStrength;
+
+      // Kick: faster decay than the legacy beatGlow (0.82 -> 0.84 holds slightly
+      // longer because kicks define the rhythmic pulse and we want them visible
+      // a bit longer than snares).
+      if (currentAudioData.kick && currentIsPlaying) {
+        kickGlow = Math.max(kickGlow, 0.4 + currentKickStrength * 0.6);
       } else {
-        beatGlow *= 0.82;
-        if (beatGlow < 0.01) beatGlow = 0;
+        kickGlow *= 0.84;
+        if (kickGlow < 0.01) kickGlow = 0;
       }
-      
-      // Pulse: energy envelope + beat spike for heart size changes
+
+      // Snare: snappier decay so each hi-hat / snare hit reads as a sharp spike,
+      // not a sustained glow.
+      if (currentAudioData.snare && currentIsPlaying) {
+        snareGlow = Math.max(snareGlow, 0.5 + currentSnareStrength * 0.5);
+      } else {
+        snareGlow *= 0.78;
+        if (snareGlow < 0.01) snareGlow = 0;
+      }
+
+      // Used by global lightness/trail effects: any beat brightens the scene.
+      const combinedGlow = Math.max(kickGlow, snareGlow);
+
+      // Pulse: energy envelope + KICK spike (not generic beat) for heart size changes.
+      // Snares no longer pulse the heart -- they drive the outer ring instead.
       let pulseFactor = 1.0;
       if (currentIsPlaying && currentAudioData.overall > 0) {
         pulseFactor += currentAudioData.overall * 0.2;
         pulseFactor += currentAudioData.bass * 0.1;
-        
-        if (currentAudioData.beat) {
-          pulseFactor += 0.25 + currentBs * 0.35;
+
+        if (currentAudioData.kick) {
+          pulseFactor += 0.25 + currentKickStrength * 0.35;
           lastBeatTime = time;
         } else {
           const timeSinceBeat = time - lastBeatTime;
@@ -774,12 +840,12 @@ const HeartAnimation = ({
       pulseFactor += Math.sin(time * 2) * 0.04;
       const clampedPulse = Math.max(0.8, Math.min(1.8, pulseFactor));
       pulse(clampedPulse, clampedPulse);
-      
+
       const timeMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.5) : 1;
       time += ((Math.sin(time)) < 0 ? 12 : (pulseFactor > 1.15) ? .3 : 1.5) * config.timeDelta * timeMultiplier;
-      
+
       const trailOpacity = currentIsPlaying
-        ? 0.04 + currentAudioData.overall * 0.08 + beatGlow * 0.06
+        ? 0.04 + currentAudioData.overall * 0.08 + combinedGlow * 0.06
         : 0.08;
       ctx.fillStyle = `rgba(0,0,0,${trailOpacity})`;
       ctx.fillRect(0, 0, width, height);
@@ -811,21 +877,25 @@ const HeartAnimation = ({
 
         const audioSpeedMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.35) : 1;
         const bassMultiplier = currentIsPlaying ? (1 + currentAudioData.bass * 0.2) : 1;
-        const beatSpeedMult = currentAudioData.beat ? 1.2 + currentBs * 0.2 : 1.0;
+        // Speed boost now keyed to KICK, the rhythmic anchor. Snare-only hits don't
+        // accelerate the particle wash (they already get the radial spike below).
+        const beatSpeedMult = currentAudioData.kick ? 1.2 + currentKickStrength * 0.2 : 1.0;
         const totalSpeedMultiplier = audioSpeedMultiplier * bassMultiplier * beatSpeedMult;
-        
+
         u.vx += -dx / length * u.speed * totalSpeedMultiplier;
         u.vy += -dy / length * u.speed * totalSpeedMultiplier;
 
-        // Outer ring spike: particles on the outer ring get pushed outward on beats,
-        // creating sharp radiating lines that visually react to the music.
-        if (beatGlow > 0.15 && u.q < outerRingCount && i % 3 === 0) {
+        // Outer ring spike: SNARE-driven (was beat-driven). Snares are sharper and
+        // less frequent than kicks, so the radial bursts match hi-hat / snare hits
+        // and the heart pulse now fires independently on kicks. Push strength bumped
+        // 3.5 -> 4.0 since snare-only is a less frequent event than any-beat was.
+        if (snareGlow > 0.15 && u.q < outerRingCount && i % 3 === 0) {
           const spDx = u.trace[0].x - cX;
           const spDy = u.trace[0].y - cY;
           const spDist = Math.sqrt(spDx * spDx + spDy * spDy);
           if (spDist > 10) {
-            u.vx += (spDx / spDist) * beatGlow * 3.5;
-            u.vy += (spDy / spDist) * beatGlow * 3.5;
+            u.vx += (spDx / spDist) * snareGlow * 4.0;
+            u.vy += (spDy / spDist) * snareGlow * 4.0;
           }
         }
 
@@ -843,11 +913,17 @@ const HeartAnimation = ({
 
         const baseIntensity = currentIsPlaying ? 0.25 + currentAudioData.overall * 0.5 : 0.4;
         const bassIntensity = currentIsPlaying ? currentAudioData.bass * 0.2 : 0;
-        const glowIntensity = beatGlow * 0.35;
+        // Brightness flash on either kick OR snare so any beat brightens the scene.
+        const glowIntensity = combinedGlow * 0.35;
         const trebleSparkle = currentIsPlaying ? currentAudioData.treble * 0.1 : 0;
         const colorIntensity = Math.min(1.0, baseIntensity + bassIntensity + glowIntensity + trebleSparkle);
-        const lightnessBoost = beatGlow * 15;
-        u.f = getInterpolatedColor(u.colorIndex, colorIntensity, lightnessBoost);
+        const lightnessBoost = combinedGlow * 15;
+        // Spectral centroid -> hue shift. Centroid is in [0, 1] (perceptual log-Hz).
+        // Map [0, 1] to [-12, +12] degrees: bass-heavy passages cool the palette,
+        // bright passages (cymbals, vocals, leads) warm it up. Subtle on purpose --
+        // the album palette stays the visual anchor.
+        const centroidShift = currentIsPlaying ? (currentAudioData.centroid - 0.5) * 24 : 0;
+        u.f = getInterpolatedColor(u.colorIndex, colorIntensity, lightnessBoost, centroidShift);
 
         ctx.fillStyle = u.f;
         for (let k = 0; k < u.trace.length; k++) {
@@ -855,33 +931,45 @@ const HeartAnimation = ({
         }
       }
       
-      // Debug overlay (press D to toggle)
+      // Debug overlay (press D to toggle). Shows the bands, both glow trackers,
+      // both beat-strength sources, and the new spectral descriptors. Two
+      // indicator dots: green = kick fired this frame, magenta = snare fired.
       if (showDebug) {
         ctx.save();
         const pad = 12;
         const barW = 90;
         const lineH = 14;
+        const rows = 11;
         let dbgY = pad;
         ctx.fillStyle = 'rgba(0,0,0,0.8)';
-        ctx.fillRect(pad - 4, pad - 4, barW + 80, lineH * 8 + 12);
+        ctx.fillRect(pad - 4, pad - 4, barW + 80, lineH * rows + 12);
         ctx.font = '10px monospace';
         const drawBar = (label: string, val: number, color: string) => {
           ctx.fillStyle = '#777';
           ctx.fillText(`${label} ${val.toFixed(2)}`, pad, dbgY + 10);
           ctx.fillStyle = color;
-          ctx.fillRect(pad + 52, dbgY + 2, Math.min(val, 1) * barW, 8);
+          ctx.fillRect(pad + 52, dbgY + 2, Math.max(0, Math.min(val, 1)) * barW, 8);
           dbgY += lineH;
         };
         drawBar('bass', currentAudioData.bass, '#f55');
         drawBar('mid ', currentAudioData.mid, '#5f5');
         drawBar('trbl', currentAudioData.treble, '#55f');
         drawBar('ovrl', currentAudioData.overall, '#ff5');
-        drawBar('glow', beatGlow, '#0ff');
-        drawBar('plse', clampedPulse - 0.8, '#f0f');
-        drawBar('bStr', currentBs, '#fa0');
-        ctx.fillStyle = currentAudioData.beat ? '#0f0' : '#333';
+        drawBar('kGlw', kickGlow, '#0ff');
+        drawBar('sGlw', snareGlow, '#f0f');
+        drawBar('plse', clampedPulse - 0.8, '#fff');
+        drawBar('kStr', currentKickStrength, '#fa0');
+        drawBar('sStr', currentSnareStrength, '#a0f');
+        drawBar('cent', currentAudioData.centroid, '#0fa');
+        drawBar('flat', currentAudioData.flatness, '#f80');
+        // Kick fired this frame -> top dot green; snare fired -> bottom dot magenta.
+        ctx.fillStyle = currentAudioData.kick ? '#0f0' : '#333';
         ctx.beginPath();
         ctx.arc(pad + barW + 60, pad + lineH, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = currentAudioData.snare ? '#f0f' : '#333';
+        ctx.beginPath();
+        ctx.arc(pad + barW + 60, pad + lineH * 3, 5, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
       }
@@ -916,15 +1004,15 @@ const HeartAnimation = ({
             backgroundColor: isLoadingAnalysis
               ? '#ff6b6b'
               : tabAudioStream
-                ? `hsl(${180 + audioData.overall * 40}, 70%, 60%)`
-                : isSpotifyMode 
-                  ? (meydaData ? `hsl(${120 + audioData.overall * 40}, 70%, 60%)` : `hsl(${30 + audioData.overall * 40}, 70%, 60%)`)
-                  : `hsl(${280 + audioData.overall * 40}, 70%, 60%)`,
+                ? `hsl(${180 + indicatorData.overall * 40}, 70%, 60%)`
+                : isSpotifyMode
+                  ? (meydaData ? `hsl(${120 + indicatorData.overall * 40}, 70%, 60%)` : `hsl(${30 + indicatorData.overall * 40}, 70%, 60%)`)
+                  : `hsl(${280 + indicatorData.overall * 40}, 70%, 60%)`,
             opacity: 0.7,
             zIndex: 1000,
             transition: 'all 0.1s ease',
-            transform: `scale(${1 + audioData.overall * 0.5})`,
-            boxShadow: audioData.beat ? '0 0 20px rgba(255, 0, 150, 0.8)' : 'none'
+            transform: `scale(${1 + indicatorData.overall * 0.5})`,
+            boxShadow: indicatorData.beat ? '0 0 20px rgba(255, 0, 150, 0.8)' : 'none'
           }}
             title={
             isLoadingAnalysis
