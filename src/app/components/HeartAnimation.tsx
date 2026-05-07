@@ -676,6 +676,22 @@ const HeartAnimation = ({
     };
     window.addEventListener('keydown', handleKeyDown);
 
+    // Tab visibility tracking. When the tab returns from hidden, the trail
+    // chain (50 trace points per particle, lerped toward each other every
+    // frame) can be left in a stretched-out state because rAF didn't fire
+    // while hidden -- and even if our dt cap prevents physics teleports,
+    // the chain itself doesn't auto-collapse. We snap all trace[k] to
+    // trace[0] on visibility return; see pendingTrailCollapse declaration
+    // below for details. Also reset lastFrameTime so the first post-return
+    // frame uses a synthesized 60 fps dt instead of the cap.
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        pendingTrailCollapse = true;
+        lastFrameTime = 0;
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     // Get particle settings based on level
     const particleMultiplier = PARTICLE_MULTIPLIERS[particleLevel];
     const traceCount = TRACE_COUNTS[particleLevel];
@@ -793,29 +809,22 @@ const HeartAnimation = ({
     // farther per frame.
     const SPEED_MULTIPLIER = 144 / 60;
 
-    // GPU canvas trail-ghosting eviction.
-    // Chrome's hardware-accelerated 2D canvas backbuffer is 8-bit per channel.
-    // The per-frame trail erase blends `rgba(0,0,0, ~0.04)` over the scene,
-    // which mathematically multiplies each pixel by ~0.96. For a pixel that
-    // has decayed to value 1/255, `1 * 0.96 = 0.96` rounds back to 1 -- the
-    // pixel is stuck at 1 forever. After a tab-return spike (or any long-
-    // distance excursion) this leaves a permanent dim "ghost" trail, most
-    // visible toward the screen edges. Edge without GPU accel uses a
-    // higher-precision software path and the ghosts fade properly, which is
-    // why the user only sees this in Chrome.
+    // Tab-return trail collapse. The "wedge of stuck particles below the heart
+    // after tabbing back" bug is *not* a framebuffer ghost (an earlier theory)
+    // -- the pixels are too bright. It's the per-particle trail chain getting
+    // stretched out across the screen during a tab-return frame and then
+    // taking many seconds to converge: each trace[k] follows trace[k-1] via
+    // lerp(traceK), so a chain of length 50 with a small per-frame pull leaves
+    // a long visible tail any time trace[0] makes a big jump. Edge with
+    // software canvas had it too in principle, but the absence of the
+    // GPU-accel rounding artifact masked it visually.
     //
-    // Fix: every ~1.5 wall-clock seconds, apply a single high-alpha black
-    // pass (~0.45) on top of the normal trail erase. That pushes any pixel
-    // with value <= 1 below the rounding threshold, killing stuck ghosts.
-    // 1.5s is chosen because (a) it's long enough that the trail effect is
-    // unaffected -- a normal trail decays through this pass naturally and
-    // re-builds within a couple frames, (b) it's short enough that ghosts
-    // never become persistently visible. The eviction is deliberately tied
-    // to wall-clock seconds, not frame count, so it fires at the same rate
-    // on 60 Hz vs 144 Hz vs 240 Hz displays.
-    const EVICTION_INTERVAL_MS = 1500;
-    const EVICTION_ALPHA = 0.45;
-    let evictionAccumulatorMs = 0;
+    // Fix is surgical: when the tab becomes visible again, snap every
+    // particle's trace[1..N] to its trace[0]. This eliminates accumulated
+    // chain-stretch from however long the tab was hidden without affecting
+    // any normal-runtime motion. We set this flag from the visibilitychange
+    // listener and consume it on the next animation frame.
+    let pendingTrailCollapse = false;
 
     let time = 0;
     let lastBeatTime = 0;
@@ -915,6 +924,28 @@ const HeartAnimation = ({
       // then apply SPEED_MULTIPLIER. This keeps the safety bound in wall-clock
       // terms rather than letting a 1-second hitch become 9.6 dt-frames of motion.
       const dtFrames = Math.min(rawDt / FRAME_DT_60_MS, MAX_DT_FRAMES) * SPEED_MULTIPLIER;
+
+      // Collapse stretched trails on tab return. Set by the visibilitychange
+      // listener; consumed exactly once. Snapping trace[1..N] -> trace[0]
+      // and zeroing velocity removes any chain-stretch the trail accumulated
+      // while hidden (when rAF was paused but conceptual time advanced).
+      // Also paint a fully opaque black so any *real* framebuffer ghost from
+      // before the hide is dropped in one frame instead of fading slowly.
+      if (pendingTrailCollapse) {
+        pendingTrailCollapse = false;
+        for (const u of e) {
+          const headX = u.trace[0].x;
+          const headY = u.trace[0].y;
+          for (let k = 1; k < u.trace.length; k++) {
+            u.trace[k].x = headX;
+            u.trace[k].y = headY;
+          }
+          u.vx = 0;
+          u.vy = 0;
+        }
+        ctx.fillStyle = 'rgba(0,0,0,1)';
+        ctx.fillRect(0, 0, width, height);
+      }
 
       // Precompute multiplicative decays so we don't redo the Math.pow per particle.
       // (Per-particle velocity damping `Math.pow(u.force, dtFrames)` is unavoidable
@@ -1041,17 +1072,6 @@ const HeartAnimation = ({
       const trailOpacity = 1 - Math.pow(1 - baseTrailAlpha, dtFrames);
       ctx.fillStyle = `rgba(0,0,0,${trailOpacity})`;
       ctx.fillRect(0, 0, width, height);
-
-      // Periodic stuck-pixel eviction (see EVICTION_INTERVAL_MS comment above).
-      // Accumulate wall-clock ms across frames; when we cross the interval,
-      // apply one extra strong-alpha pass and reset. Use rawDt rather than
-      // dtFrames so the cadence is independent of SPEED_MULTIPLIER.
-      evictionAccumulatorMs += rawDt;
-      if (evictionAccumulatorMs >= EVICTION_INTERVAL_MS) {
-        evictionAccumulatorMs = 0;
-        ctx.fillStyle = `rgba(0,0,0,${EVICTION_ALPHA})`;
-        ctx.fillRect(0, 0, width, height);
-      }
 
       const cX = window.innerWidth / 2;
       const cY = window.innerHeight / 2;
@@ -1352,6 +1372,7 @@ const HeartAnimation = ({
     return () => {
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (animationId) {
         cancelAnimationFrame(animationId);
       }
