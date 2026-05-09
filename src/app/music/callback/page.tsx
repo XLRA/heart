@@ -14,15 +14,14 @@ export default function Callback() {
 
       if (error) {
         console.error('Spotify authentication error:', error);
-        router.push('/');
+        router.push('/music');
         return;
       }
 
       if (code) {
         try {
           console.log('Authorization code received:', code);
-          
-          // Exchange authorization code for access token
+
           const response = await fetch('/api/spotify/token', {
             method: 'POST',
             headers: {
@@ -41,21 +40,19 @@ export default function Callback() {
 
           const data = await response.json();
           console.log('Token exchange successful:', data);
-          
+
           localStorage.setItem('spotify_access_token', data.access_token);
           if (data.token_type) localStorage.setItem('spotify_token_type', data.token_type);
           if (data.expires_in) localStorage.setItem('spotify_expires_in', data.expires_in);
-          
+
           console.log('Tokens stored in localStorage');
-          
-          // Dispatch custom event to notify context of token change
+
           window.dispatchEvent(new CustomEvent('spotifyTokenUpdated'));
-          
-          // Redirect back to home page
-          router.push('/');
+
+          router.push('/music');
         } catch (error) {
           console.error('Error exchanging code for token:', error);
-          router.push('/');
+          router.push('/music');
         }
       }
     };

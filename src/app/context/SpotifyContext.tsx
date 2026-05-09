@@ -66,7 +66,7 @@ interface SpotifyContextType {
 const SpotifyContext = createContext<SpotifyContextType | undefined>(undefined);
 
 const CLIENT_ID = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || '';
-const REDIRECT_URI = process.env.NEXT_PUBLIC_SPOTIFY_REDIRECT_URI || 'http://localhost:3000/callback';
+const REDIRECT_URI = process.env.NEXT_PUBLIC_SPOTIFY_REDIRECT_URI || 'http://localhost:3000/music/callback';
 const SCOPES = [
   'user-read-private',
   'user-read-email',

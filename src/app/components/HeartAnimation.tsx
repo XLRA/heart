@@ -1275,11 +1275,48 @@ const HeartAnimation = ({
 
         // Trail interpolation: per-frame multiplicative pull. tracePullFactor
         // is the dt-corrected lerp coefficient (precomputed once per frame).
+        //
+        // Two safety clamps after the lerp:
+        //   1. Per-link cap (MAX_LINK_DIST). Caps individual link length.
+        //      Catches single-frame teleports.
+        //   2. Per-particle MAX trail extent. Caps how far any trace[k] can
+        //      be from the head trace[0]. Catches the slow accumulation
+        //      case (chain stretches gradually over many frames without any
+        //      single link being huge) which produced the "wedge of frozen
+        //      particles below the heart" bug. Both clamps are cheap (no
+        //      sqrt unless we're over budget) and only trigger in pathological
+        //      cases -- normal motion has links of <10 px and trails of
+        //      <150 px, well under the bounds.
+        const MAX_LINK_DIST = 32;
+        const MAX_LINK_DIST_SQ = MAX_LINK_DIST * MAX_LINK_DIST;
+        const MAX_TRAIL_EXTENT = 220;
+        const MAX_TRAIL_EXTENT_SQ = MAX_TRAIL_EXTENT * MAX_TRAIL_EXTENT;
+        const headX = u.trace[0].x;
+        const headY = u.trace[0].y;
         for (let k = 0; k < u.trace.length - 1;) {
           const T = u.trace[k];
           const N = u.trace[++k];
           N.x -= tracePullFactor * (N.x - T.x);
           N.y -= tracePullFactor * (N.y - T.y);
+
+          const lx = N.x - T.x;
+          const ly = N.y - T.y;
+          const linkSq = lx * lx + ly * ly;
+          if (linkSq > MAX_LINK_DIST_SQ) {
+            const scale = MAX_LINK_DIST / Math.sqrt(linkSq);
+            N.x = T.x + lx * scale;
+            N.y = T.y + ly * scale;
+          }
+
+          // Bound trace[k] within MAX_TRAIL_EXTENT of trace[0].
+          const ex = N.x - headX;
+          const ey = N.y - headY;
+          const extentSq = ex * ex + ey * ey;
+          if (extentSq > MAX_TRAIL_EXTENT_SQ) {
+            const scale = MAX_TRAIL_EXTENT / Math.sqrt(extentSq);
+            N.x = headX + ex * scale;
+            N.y = headY + ey * scale;
+          }
         }
 
         const baseIntensity = currentIsPlaying ? 0.25 + currentAudioData.overall * 0.5 : 0.4;
