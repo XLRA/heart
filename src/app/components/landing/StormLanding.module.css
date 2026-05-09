@@ -145,8 +145,9 @@
   pointer-events: none;
   opacity: 0;
   filter:
-    drop-shadow(0 0 14px rgba(190, 160, 230, 0.55))
-    drop-shadow(0 0 60px rgba(140, 100, 200, 0.25));
+    drop-shadow(0 0 12px rgba(225, 205, 250, 0.7))
+    drop-shadow(0 0 40px rgba(180, 145, 230, 0.4))
+    drop-shadow(0 0 90px rgba(130, 90, 200, 0.22));
   animation: strikeSequence 1.4s linear 1s 1 forwards;
   will-change: opacity;
 }
@@ -169,27 +170,40 @@
   100%  { opacity: 0; }
 }
 
-.boltOuter { fill: none; stroke: rgba(180, 140, 230, 0.35); stroke-width: 9; filter: blur(5px); stroke-linecap: round; stroke-linejoin: miter; }
-.boltHalo  { fill: none; stroke: rgba(220, 200, 240, 0.7);  stroke-width: 4; filter: blur(2px); stroke-linecap: round; stroke-linejoin: miter; }
-.boltMid   { fill: none; stroke: rgba(250, 245, 255, 0.95); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: miter; }
-.boltCore  { fill: none; stroke: #ffffff;                    stroke-width: 0.8; stroke-linecap: round; stroke-linejoin: miter; }
+/*
+   Stroke widths are tuned for the dense midpoint-displacement
+   path (hundreds of small segments). 4-layer stack produces a
+   white-violet halo with a pure-white hairline core.
+*/
+.boltOuter { fill: none; stroke: rgba(170, 130, 230, 0.32); stroke-width: 8;   filter: blur(6px); stroke-linecap: round; stroke-linejoin: round; }
+.boltHalo  { fill: none; stroke: rgba(215, 195, 245, 0.55); stroke-width: 3.2; filter: blur(2px); stroke-linecap: round; stroke-linejoin: round; }
+.boltMid   { fill: none; stroke: rgba(248, 244, 255, 0.95); stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
+.boltCore  { fill: none; stroke: #ffffff;                    stroke-width: 0.5; stroke-linecap: round; stroke-linejoin: round; }
 
-.branchHalo { fill: none; stroke: rgba(200, 170, 235, 0.4); stroke-width: 3; filter: blur(2px); stroke-linecap: round; stroke-linejoin: miter; }
-.branchCore { fill: none; stroke: rgba(245, 240, 255, 0.9); stroke-width: 0.7; stroke-linecap: round; stroke-linejoin: miter; }
+.branchHalo { fill: none; stroke: rgba(190, 160, 235, 0.38); stroke-width: 3;  filter: blur(2.5px); stroke-linecap: round; stroke-linejoin: round; }
+.branchMid  { fill: none; stroke: rgba(240, 232, 255, 0.85); stroke-width: 0.9; stroke-linecap: round; stroke-linejoin: round; }
+.branchCore { fill: none; stroke: rgba(255, 255, 255, 0.95); stroke-width: 0.4; stroke-linecap: round; stroke-linejoin: round; }
 
 /* ── Scene-wide flash: illuminates the whole viewport ─────── */
 
+/*
+   Scene-wide flash: peaks at near full white for a single frame
+   to match a real lightning illumination, then decays into a
+   warmer purple tint. Re-flashes track the bolt's secondary
+   and tertiary strikes.
+*/
 .flash {
   position: absolute;
   inset: 0;
   z-index: 9;
   pointer-events: none;
   background: radial-gradient(
-    ellipse 100% 80% at 70% 25%,
-    rgba(255, 250, 255, 0.95),
-    rgba(220, 200, 240, 0.55) 35%,
-    rgba(150, 120, 200, 0.18) 65%,
-    transparent 90%
+    ellipse 110% 90% at 55% 45%,
+    rgba(255, 255, 255, 1),
+    rgba(245, 235, 255, 0.85) 25%,
+    rgba(200, 170, 235, 0.45) 55%,
+    rgba(120, 90, 180, 0.15) 80%,
+    transparent 100%
   );
   opacity: 0;
   animation: sceneFlash 1.4s linear 1s 1 forwards;
@@ -198,13 +212,16 @@
 
 @keyframes sceneFlash {
   0%    { opacity: 0; }
-  1.5%  { opacity: 0.85; }
-  6%    { opacity: 0.45; }
-  12%   { opacity: 0.12; }
-  /* sympathy with re-strikes */
-  14%   { opacity: 0.4; }
-  20%   { opacity: 0.1; }
-  29%   { opacity: 0.18; }
+  1.5%  { opacity: 1; }
+  4%    { opacity: 0.75; }
+  9%    { opacity: 0.3; }
+  /* sympathy with secondary re-strike */
+  13%   { opacity: 0.65; }
+  18%   { opacity: 0.35; }
+  24%   { opacity: 0.08; }
+  /* sympathy with tertiary micro-strike */
+  28%   { opacity: 0.32; }
+  33%   { opacity: 0.12; }
   100%  { opacity: 0; }
 }
 
@@ -225,9 +242,9 @@
 
 .wordmark {
   font-weight: 200;
-  font-size: clamp(2rem, 3.2vw, 3.25rem);
+  font-size: clamp(1.65rem, 2.5vw, 2.5rem);
   line-height: 1;
-  letter-spacing: -0.045em;
+  letter-spacing: -0.04em;
   color: #f0f0f0;
   text-shadow:
     0 0 18px rgba(200, 180, 230, 0.25),
