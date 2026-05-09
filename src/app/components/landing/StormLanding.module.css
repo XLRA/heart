@@ -1,141 +1,140 @@
 /* ──────────────────────────────────────────────────────────────
-   StormLanding
-   Cinematic dark-storm landing with one-time lightning intro.
-   All timing is centralized below; tweak intro feel from here.
+   StormLanding — true-black storm with photorealistic lightning.
+
+   Design notes
+   ------------
+   • Background is true near-black (#040404) + filmic SVG grain.
+     No blue cloud layers; the only color event is the strike itself.
+   • Lightning is rendered in 4 stacked stroke layers
+     (outer violet halo → warm halo → bright mid → pure-white core)
+     and appears INSTANTLY (no draw animation) — real bolts don't
+     draw, they appear in one frame.
+   • The strike sequence is a multi-keyframe opacity flicker:
+     primary stroke → fast decay → secondary re-strike → tertiary
+     micro-strike → after-image fade. Mirrors real lightning.
+   • A scene-wide warm flash overlay illuminates the entire
+     viewport for ~80ms on the primary strike.
+   • Reduced motion: no flash, no flicker, just the static end state.
    ────────────────────────────────────────────────────────────── */
 
 /*
   TIMELINE
-  --------
-   0.00s  scene appears (deep storm sky drifting, word hidden)
-   0.45s  pre-flicker — leader stroke micro-flash
-   1.00s  main bolt begins drawing (top-right → bottom-left, ~300ms)
-   1.20s  full-screen flash peaks, decays over ~700ms
-   1.20s  wordmark reveals on the flash peak
-   2.20s  tagline fades in
-   2.80s  music link fades in
-   3.00s  lightning bolt fades out; ambient atmosphere continues
+   0.00s  scene appears (pitch-near-black, grain, vignette)
+   0.55s  pre-flicker — micro horizon flash (distant strike)
+   1.00s  STRIKE — bolt appears in a single frame
+          + scene-wide warm flash peaks ~80ms then decays
+   1.18s  secondary re-strike (dimmer)
+   1.32s  tertiary micro-strike (faint)
+   1.45s  bolt fades to invisible
+   1.20s  wordmark "sleep" reveals on the flash
+   2.10s  tagline fades in
+   2.70s  corner labels + music link fade in
 */
 
 .scene {
   position: fixed;
   inset: 0;
   overflow: hidden;
-  background: #03050a;
+  background: #040404;
   isolation: isolate;
   cursor: default;
+  color: #e8e8e8;
+  font-family: var(--font-inter), system-ui, sans-serif;
 }
 
-/* ── Sky: layered drifting cloud gradients ─────────────────── */
+/* ── Background: subtle gradient + filmic grain ───────────── */
 
 .sky {
   position: absolute;
   inset: 0;
   z-index: 0;
   background:
-    radial-gradient(ellipse at 70% 20%, rgba(30, 50, 90, 0.55), transparent 55%),
-    radial-gradient(ellipse at 20% 80%, rgba(20, 30, 70, 0.45), transparent 60%),
-    radial-gradient(circle at 50% 50%, rgba(8, 12, 24, 0.4), #03050a 75%);
+    radial-gradient(ellipse 80% 60% at 50% 50%, #0a0a0a 0%, #040404 70%, #000 100%);
 }
 
-.cloudA,
-.cloudB,
-.cloudC {
+.haze {
   position: absolute;
-  inset: -30%;
+  inset: -20%;
+  z-index: 1;
   pointer-events: none;
-  will-change: transform;
-}
-
-.cloudA {
   background: radial-gradient(
-    ellipse 60% 50% at 30% 40%,
-    rgba(40, 70, 130, 0.28),
-    transparent 65%
-  );
-  animation: driftA 90s ease-in-out infinite alternate;
-}
-
-.cloudB {
-  background: radial-gradient(
-    ellipse 70% 40% at 75% 65%,
-    rgba(60, 40, 110, 0.22),
+    ellipse 70% 50% at 75% 25%,
+    rgba(40, 30, 50, 0.35),
     transparent 70%
   );
-  animation: driftB 110s ease-in-out infinite alternate;
+  opacity: 0.6;
+  animation: hazeDrift 60s ease-in-out infinite alternate;
 }
 
-.cloudC {
-  background: radial-gradient(
-    circle 40% at 60% 30%,
-    rgba(80, 130, 210, 0.08),
-    transparent 75%
-  );
-  animation: driftC 70s ease-in-out infinite alternate;
-}
-
-@keyframes driftA {
-  from { transform: translate3d(0, 0, 0) scale(1); }
-  to   { transform: translate3d(6%, -4%, 0) scale(1.05); }
-}
-
-@keyframes driftB {
-  from { transform: translate3d(0, 0, 0) scale(1.02); }
-  to   { transform: translate3d(-5%, 3%, 0) scale(1); }
-}
-
-@keyframes driftC {
+@keyframes hazeDrift {
   from { transform: translate3d(0, 0, 0); }
-  to   { transform: translate3d(4%, 6%, 0); }
+  to   { transform: translate3d(-3%, 2%, 0); }
 }
-
-/* ── Filmic grain via SVG noise (data URI) ─────────────────── */
 
 .grain {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: 5;
-  opacity: 0.18;
-  mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.9  0 0 0 0 0.95  0 0 0 0 1  0 0 0 0.5 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
-  background-size: 240px 240px;
+  z-index: 6;
+  opacity: 0.07;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.55 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  background-size: 220px 220px;
 }
-
-/* ── Vignette: pull the eye to center ──────────────────────── */
 
 .vignette {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: 6;
+  z-index: 7;
   background: radial-gradient(
     ellipse at center,
-    transparent 35%,
-    rgba(0, 0, 0, 0.55) 95%,
+    transparent 30%,
+    rgba(0, 0, 0, 0.5) 90%,
     rgba(0, 0, 0, 0.85) 100%
   );
 }
 
-/* ── Pre-flicker (leader stroke) ───────────────────────────── */
+/* ── Hairline horizon (subtle depth cue) ───────────────────── */
+
+.horizon {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 30%;
+  height: 1px;
+  z-index: 4;
+  background: linear-gradient(
+    to right,
+    transparent,
+    rgba(255, 255, 255, 0.04) 30%,
+    rgba(255, 255, 255, 0.06) 50%,
+    rgba(255, 255, 255, 0.04) 70%,
+    transparent
+  );
+}
+
+/* ── Pre-flicker: distant horizon strike ───────────────────── */
 
 .preflicker {
   position: absolute;
   inset: 0;
   z-index: 8;
   pointer-events: none;
-  background: rgba(180, 210, 255, 0.18);
+  background: radial-gradient(
+    ellipse 80% 30% at 50% 65%,
+    rgba(220, 200, 230, 0.18),
+    transparent 70%
+  );
   opacity: 0;
-  animation: preflicker 0.18s ease-out 0.45s 1 forwards;
+  animation: preflicker 0.14s ease-out 0.55s 1 forwards;
 }
 
 @keyframes preflicker {
-  0%   { opacity: 0; }
-  35%  { opacity: 1; }
-  100% { opacity: 0; }
+  0%, 100% { opacity: 0; }
+  40%      { opacity: 1; }
 }
 
-/* ── Lightning bolt SVG ────────────────────────────────────── */
+/* ── Lightning: instant appearance, multi-flicker decay ──── */
 
 .lightning {
   position: absolute;
@@ -145,71 +144,71 @@
   z-index: 10;
   pointer-events: none;
   opacity: 0;
-  filter: drop-shadow(0 0 20px rgba(160, 200, 255, 0.7))
-          drop-shadow(0 0 60px rgba(120, 180, 255, 0.35));
-  animation:
-    lightningOn 0.05s linear 1s 1 forwards,
-    lightningOff 1.4s ease-out 3s 1 forwards;
+  filter:
+    drop-shadow(0 0 14px rgba(190, 160, 230, 0.55))
+    drop-shadow(0 0 60px rgba(140, 100, 200, 0.25));
+  animation: strikeSequence 1.4s linear 1s 1 forwards;
+  will-change: opacity;
 }
 
-@keyframes lightningOn  { to { opacity: 1; } }
-@keyframes lightningOff { from { opacity: 1; } to { opacity: 0; visibility: hidden; } }
-
-.bolt {
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-dasharray: 1;
-  stroke-dashoffset: 1;
-  animation: drawBolt 0.32s cubic-bezier(0.55, 0.05, 0.7, 0.4) 1s 1 forwards;
+@keyframes strikeSequence {
+  /* primary strike — appears in a single frame */
+  0%    { opacity: 0; }
+  1.5%  { opacity: 1; }
+  4%    { opacity: 0.92; }
+  9%    { opacity: 0.35; }
+  /* secondary re-strike */
+  13%   { opacity: 0.7; }
+  18%   { opacity: 0.45; }
+  24%   { opacity: 0.12; }
+  /* tertiary micro-strike */
+  28%   { opacity: 0.42; }
+  33%   { opacity: 0.18; }
+  /* lingering after-image */
+  55%   { opacity: 0.06; }
+  100%  { opacity: 0; }
 }
 
-.boltGlow  { stroke: rgba(140, 190, 255, 0.65); stroke-width: 10; filter: blur(4px); }
-.boltMid   { stroke: rgba(220, 235, 255, 0.95); stroke-width: 3.5; }
-.boltCore  { stroke: #ffffff;                    stroke-width: 1.4; }
+.boltOuter { fill: none; stroke: rgba(180, 140, 230, 0.35); stroke-width: 9; filter: blur(5px); stroke-linecap: round; stroke-linejoin: miter; }
+.boltHalo  { fill: none; stroke: rgba(220, 200, 240, 0.7);  stroke-width: 4; filter: blur(2px); stroke-linecap: round; stroke-linejoin: miter; }
+.boltMid   { fill: none; stroke: rgba(250, 245, 255, 0.95); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: miter; }
+.boltCore  { fill: none; stroke: #ffffff;                    stroke-width: 0.8; stroke-linecap: round; stroke-linejoin: miter; }
 
-.branch {
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-dasharray: 1;
-  stroke-dashoffset: 1;
-  animation: drawBolt 0.22s cubic-bezier(0.55, 0.05, 0.7, 0.4) 1.12s 1 forwards;
-}
+.branchHalo { fill: none; stroke: rgba(200, 170, 235, 0.4); stroke-width: 3; filter: blur(2px); stroke-linecap: round; stroke-linejoin: miter; }
+.branchCore { fill: none; stroke: rgba(245, 240, 255, 0.9); stroke-width: 0.7; stroke-linecap: round; stroke-linejoin: miter; }
 
-.branchGlow { stroke: rgba(140, 190, 255, 0.5); stroke-width: 5; filter: blur(3px); }
-.branchCore { stroke: rgba(240, 248, 255, 0.95); stroke-width: 1.2; }
-
-@keyframes drawBolt {
-  to { stroke-dashoffset: 0; }
-}
-
-/* ── Full-screen flash ─────────────────────────────────────── */
+/* ── Scene-wide flash: illuminates the whole viewport ─────── */
 
 .flash {
   position: absolute;
   inset: 0;
-  z-index: 12;
+  z-index: 9;
   pointer-events: none;
   background: radial-gradient(
-    ellipse at 70% 30%,
-    rgba(255, 255, 255, 1),
-    rgba(220, 235, 255, 0.85) 40%,
-    rgba(180, 210, 255, 0.4) 70%,
-    transparent 100%
+    ellipse 100% 80% at 70% 25%,
+    rgba(255, 250, 255, 0.95),
+    rgba(220, 200, 240, 0.55) 35%,
+    rgba(150, 120, 200, 0.18) 65%,
+    transparent 90%
   );
   opacity: 0;
-  animation: flash 0.85s cubic-bezier(0.2, 0.7, 0.3, 1) 1.2s 1 forwards;
+  animation: sceneFlash 1.4s linear 1s 1 forwards;
+  mix-blend-mode: screen;
 }
 
-@keyframes flash {
-  0%   { opacity: 0; }
-  10%  { opacity: 0.85; }
-  35%  { opacity: 0.45; }
-  100% { opacity: 0; }
+@keyframes sceneFlash {
+  0%    { opacity: 0; }
+  1.5%  { opacity: 0.85; }
+  6%    { opacity: 0.45; }
+  12%   { opacity: 0.12; }
+  /* sympathy with re-strikes */
+  14%   { opacity: 0.4; }
+  20%   { opacity: 0.1; }
+  29%   { opacity: 0.18; }
+  100%  { opacity: 0; }
 }
 
-/* ── Wordmark ──────────────────────────────────────────────── */
+/* ── Wordmark + tagline ────────────────────────────────────── */
 
 .stage {
   position: absolute;
@@ -219,62 +218,83 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: clamp(1rem, 2.4vw, 2rem);
+  gap: clamp(0.85rem, 1.4vw, 1.4rem);
   padding: 2rem;
   text-align: center;
 }
 
 .wordmark {
-  font-weight: 100;
-  font-size: clamp(5.5rem, 18vw, 16rem);
-  line-height: 0.9;
-  letter-spacing: -0.06em;
-  color: #f0f6ff;
+  font-weight: 200;
+  font-size: clamp(2rem, 3.2vw, 3.25rem);
+  line-height: 1;
+  letter-spacing: -0.045em;
+  color: #f0f0f0;
   text-shadow:
-    -1px 0 0 rgba(255, 90, 110, 0.22),
-    1px 0 0 rgba(110, 200, 255, 0.22),
-    0 0 25px rgba(150, 200, 255, 0.45),
-    0 0 80px rgba(80, 140, 220, 0.3),
-    0 0 160px rgba(60, 110, 200, 0.18);
+    0 0 18px rgba(200, 180, 230, 0.25),
+    0 0 50px rgba(150, 120, 200, 0.12);
   opacity: 0;
-  transform: scale(0.97);
   animation:
-    wordReveal 1.2s cubic-bezier(0.2, 0.7, 0.2, 1) 1.2s 1 forwards,
-    wordBreathe 8s ease-in-out 3s infinite;
+    wordReveal 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) 1.2s 1 forwards,
+    wordBreathe 9s ease-in-out 3s infinite;
+  user-select: none;
 }
 
 @keyframes wordReveal {
-  from { opacity: 0; transform: scale(0.97); filter: blur(6px); }
-  to   { opacity: 1; transform: scale(1);    filter: blur(0); }
+  from { opacity: 0; filter: blur(5px); transform: translateY(4px); }
+  to   { opacity: 1; filter: blur(0);    transform: translateY(0); }
 }
 
 @keyframes wordBreathe {
-  0%, 100% {
-    text-shadow:
-      -1px 0 0 rgba(255, 90, 110, 0.22),
-      1px 0 0 rgba(110, 200, 255, 0.22),
-      0 0 25px rgba(150, 200, 255, 0.45),
-      0 0 80px rgba(80, 140, 220, 0.3),
-      0 0 160px rgba(60, 110, 200, 0.18);
-  }
-  50% {
-    text-shadow:
-      -1px 0 0 rgba(255, 90, 110, 0.22),
-      1px 0 0 rgba(110, 200, 255, 0.22),
-      0 0 35px rgba(170, 215, 255, 0.55),
-      0 0 110px rgba(100, 160, 230, 0.4),
-      0 0 200px rgba(80, 130, 210, 0.22);
-  }
+  0%, 100% { text-shadow: 0 0 18px rgba(200, 180, 230, 0.25), 0 0 50px rgba(150, 120, 200, 0.12); }
+  50%      { text-shadow: 0 0 28px rgba(220, 200, 240, 0.35), 0 0 75px rgba(170, 140, 220, 0.18); }
 }
 
 .tagline {
-  font-weight: 200;
-  font-size: clamp(0.85rem, 1.1vw, 1.05rem);
-  letter-spacing: 0.45em;
+  font-weight: 300;
+  font-size: 0.7rem;
+  letter-spacing: 0.5em;
   text-transform: uppercase;
-  color: rgba(220, 230, 250, 0.55);
+  color: rgba(230, 225, 240, 0.4);
+  margin: 0;
+  padding-left: 0.5em;
   opacity: 0;
-  animation: fadeIn 1s ease-out 2.2s 1 forwards;
+  animation: fadeIn 0.9s ease-out 2.1s 1 forwards;
+}
+
+/* ── Corner UI: micro-caps reference frame ─────────────────── */
+
+.corner {
+  position: absolute;
+  z-index: 20;
+  font-size: 0.62rem;
+  font-weight: 400;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: rgba(230, 225, 240, 0.32);
+  opacity: 0;
+  animation: fadeIn 0.9s ease-out 2.7s 1 forwards;
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+}
+
+.cornerTL { top: clamp(1.5rem, 3vw, 2.5rem); left: clamp(1.5rem, 3vw, 2.5rem); }
+.cornerTR { top: clamp(1.5rem, 3vw, 2.5rem); right: clamp(1.5rem, 3vw, 2.5rem); }
+.cornerBL { bottom: clamp(1.5rem, 3vw, 2.5rem); left: clamp(1.5rem, 3vw, 2.5rem); }
+
+.dot {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(230, 225, 240, 0.55);
+  box-shadow: 0 0 6px rgba(220, 200, 240, 0.4);
+  animation: pulse 2.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.45; transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(1.15); }
 }
 
 .musicLink {
@@ -282,58 +302,44 @@
   bottom: clamp(1.5rem, 3vw, 2.5rem);
   right: clamp(1.5rem, 3vw, 2.5rem);
   z-index: 20;
-  font-size: 0.7rem;
-  font-weight: 300;
+  font-size: 0.62rem;
+  font-weight: 400;
   letter-spacing: 0.32em;
   text-transform: uppercase;
-  color: rgba(220, 230, 250, 0.45);
+  color: rgba(230, 225, 240, 0.45);
   text-decoration: none;
-  padding: 0.5rem 0.25rem;
+  padding: 0.5rem 0;
   opacity: 0;
-  transition: color 0.4s ease, transform 0.4s ease;
-  animation: fadeIn 0.9s ease-out 2.8s 1 forwards;
+  display: flex;
+  align-items: center;
+  gap: 0.7em;
+  transition: color 0.4s ease, gap 0.4s ease;
+  animation: fadeIn 0.9s ease-out 2.7s 1 forwards;
 }
 
 .musicLink::after {
   content: "";
-  display: inline-block;
-  width: 1.5rem;
+  display: block;
+  width: 1.4rem;
   height: 1px;
   background: currentColor;
-  vertical-align: middle;
-  margin-left: 0.6rem;
   transition: width 0.4s ease;
 }
 
 .musicLink:hover {
-  color: rgba(240, 246, 255, 0.95);
-  transform: translateX(-2px);
+  color: rgba(245, 240, 255, 0.95);
+  gap: 0.95em;
 }
 
 .musicLink:hover::after {
-  width: 2.25rem;
+  width: 2rem;
 }
-
-.cornerMark {
-  position: absolute;
-  z-index: 20;
-  font-size: 0.62rem;
-  font-weight: 300;
-  letter-spacing: 0.4em;
-  text-transform: uppercase;
-  color: rgba(220, 230, 250, 0.3);
-  opacity: 0;
-  animation: fadeIn 0.9s ease-out 2.8s 1 forwards;
-}
-
-.cornerTL { top: clamp(1.5rem, 3vw, 2.5rem); left: clamp(1.5rem, 3vw, 2.5rem); }
-.cornerBL { bottom: clamp(1.5rem, 3vw, 2.5rem); left: clamp(1.5rem, 3vw, 2.5rem); }
 
 @keyframes fadeIn {
   to { opacity: 1; }
 }
 
-/* ── Reduced motion: skip intro, show final state ──────────── */
+/* ── Reduced motion ────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
   .preflicker,
@@ -342,22 +348,18 @@
     display: none;
   }
 
-  .cloudA,
-  .cloudB,
-  .cloudC {
+  .haze,
+  .dot {
     animation: none;
   }
 
-  .wordmark {
-    opacity: 1;
-    transform: none;
-    animation: none;
-  }
-
+  .wordmark,
   .tagline,
-  .musicLink,
-  .cornerMark {
+  .corner,
+  .musicLink {
     opacity: 1;
     animation: none;
+    filter: none;
+    transform: none;
   }
 }
