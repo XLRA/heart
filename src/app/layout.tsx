@@ -8,9 +8,8 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata: Metadata = {
   title: "sleep",
   description: "where do we go from here?",
-  icons: {
-    icon: '/favicon.ico'
-  }
+  // Favicon is auto-detected from src/app/icon.svg (Next.js 15
+  // app router convention) — no explicit `icons` field needed.
 };
 
 export default function RootLayout({

@@ -1,35 +1,12 @@
 /* ──────────────────────────────────────────────────────────────
    StormLanding — true-black storm with photorealistic lightning.
 
-   Design notes
-   ------------
-   • Background is true near-black (#040404) + filmic SVG grain.
-     No blue cloud layers; the only color event is the strike itself.
-   • Lightning is rendered in 4 stacked stroke layers
-     (outer violet halo → warm halo → bright mid → pure-white core)
-     and appears INSTANTLY (no draw animation) — real bolts don't
-     draw, they appear in one frame.
-   • The strike sequence is a multi-keyframe opacity flicker:
-     primary stroke → fast decay → secondary re-strike → tertiary
-     micro-strike → after-image fade. Mirrors real lightning.
-   • A scene-wide warm flash overlay illuminates the entire
-     viewport for ~80ms on the primary strike.
-   • Reduced motion: no flash, no flicker, just the static end state.
+   The bolt + embers + scene flash are all drawn on <canvas> with
+   additive compositing for photographic bloom (see StormLanding.tsx).
+   This stylesheet handles only the static atmosphere (sky / grain /
+   vignette), the wordmark + glow transition, the corner UI, and
+   the brief impact shake.
    ────────────────────────────────────────────────────────────── */
-
-/*
-  TIMELINE
-   0.00s  scene appears (pitch-near-black, grain, vignette)
-   0.55s  pre-flicker — micro horizon flash (distant strike)
-   1.00s  STRIKE — bolt appears in a single frame
-          + scene-wide warm flash peaks ~80ms then decays
-   1.18s  secondary re-strike (dimmer)
-   1.32s  tertiary micro-strike (faint)
-   1.45s  bolt fades to invisible
-   1.20s  wordmark "sleep" reveals on the flash
-   2.10s  tagline fades in
-   2.70s  corner labels + music link fade in
-*/
 
 .scene {
   position: fixed;
@@ -42,44 +19,85 @@
   font-family: var(--font-inter), system-ui, sans-serif;
 }
 
-/* ── Background: subtle gradient + filmic grain ───────────── */
+/* ── Background gradient (very subtle haze toward upper-right) ── */
 
+/*
+   Background is built from two static layers:
+   .sky — layered radial gradients suggesting cloud cover
+   .skyDrift — slowly drifting secondary layer for atmospheric motion
+   These are intentionally STATIC (no live filter coupling) so the
+   browser doesn't repaint them every frame. All brightness response
+   to strikes / background flashes happens on the canvas via additive
+   overlays — that's GPU work, not paint work.
+*/
 .sky {
   position: absolute;
   inset: 0;
   z-index: 0;
   background:
-    radial-gradient(ellipse 80% 60% at 50% 50%, #0a0a0a 0%, #040404 70%, #000 100%);
+    /* Patchy cloud cover — pure neutral charcoal, no color tint */
+    radial-gradient(ellipse 55% 35% at 22% 38%, rgba(36, 36, 36, 0.55), transparent 65%),
+    radial-gradient(ellipse 65% 35% at 78% 26%, rgba(28, 28, 28, 0.5),  transparent 70%),
+    radial-gradient(ellipse 80% 45% at 50% 78%, rgba(18, 18, 18, 0.6),  transparent 70%),
+    /* Base sky — top slightly lifted, fading to near-black at the horizon */
+    linear-gradient(180deg, #0c0c0c 0%, #060606 55%, #020202 100%);
+  /* Hint for the compositor: this layer will be transformed by the
+     parallax pass each frame. transform itself is composited (no
+     paint), but will-change promotes it to its own layer eagerly. */
+  will-change: transform;
 }
 
-.haze {
+/*
+   Cloud layer drifting linearly at a constant pace — reads as wind
+   moving the storm across the sky rather than "breathing." Original
+   gradient alphas (0.16 / 0.13) preserved to keep the scene as dark
+   as the rest of the design; only the animation speed and amplitude
+   changed from the original implementation.
+
+   Larger inset (-15%) gives the clouds room to translate without
+   exposing the screen edges as the drift carries them.
+*/
+.skyDrift {
   position: absolute;
-  inset: -20%;
+  inset: -15%;
   z-index: 1;
   pointer-events: none;
-  background: radial-gradient(
-    ellipse 70% 50% at 75% 25%,
-    rgba(40, 30, 50, 0.35),
-    transparent 70%
-  );
-  opacity: 0.6;
-  animation: hazeDrift 60s ease-in-out infinite alternate;
+  background:
+    radial-gradient(ellipse 42% 28% at 35% 30%, rgba(70, 70, 70, 0.16), transparent 70%),
+    radial-gradient(ellipse 52% 30% at 65% 60%, rgba(55, 55, 55, 0.13), transparent 72%);
+  animation: skyDrift 45s linear infinite alternate;
+  will-change: transform;
 }
 
-@keyframes hazeDrift {
-  from { transform: translate3d(0, 0, 0); }
-  to   { transform: translate3d(-3%, 2%, 0); }
+@keyframes skyDrift {
+  from { transform: translate3d(-7%, -3%, 0) scale(1.04); }
+  to   { transform: translate3d( 8%,  4%, 0) scale(1.0);  }
 }
+
+/* ── Canvas: sits above the sky, below the grain ─────────────── */
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 5;
+  pointer-events: none;
+}
+
+/* ── Filmic grain ────────────────────────────────────────────── */
 
 .grain {
   position: absolute;
   inset: 0;
   pointer-events: none;
   z-index: 6;
-  opacity: 0.07;
+  opacity: 0.06;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.95' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 0.55 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
   background-size: 220px 220px;
 }
+
+/* ── Vignette ────────────────────────────────────────────────── */
 
 .vignette {
   position: absolute;
@@ -94,191 +112,237 @@
   );
 }
 
-/* ── Hairline horizon (subtle depth cue) ───────────────────── */
-
-.horizon {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 30%;
-  height: 1px;
-  z-index: 4;
-  background: linear-gradient(
-    to right,
-    transparent,
-    rgba(255, 255, 255, 0.04) 30%,
-    rgba(255, 255, 255, 0.06) 50%,
-    rgba(255, 255, 255, 0.04) 70%,
-    transparent
-  );
-}
-
-/* ── Pre-flicker: distant horizon strike ───────────────────── */
-
-.preflicker {
-  position: absolute;
-  inset: 0;
-  z-index: 8;
-  pointer-events: none;
-  background: radial-gradient(
-    ellipse 80% 30% at 50% 65%,
-    rgba(220, 200, 230, 0.18),
-    transparent 70%
-  );
-  opacity: 0;
-  animation: preflicker 0.14s ease-out 0.55s 1 forwards;
-}
-
-@keyframes preflicker {
-  0%, 100% { opacity: 0; }
-  40%      { opacity: 1; }
-}
-
-/* ── Lightning: instant appearance, multi-flicker decay ──── */
-
-.lightning {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 10;
-  pointer-events: none;
-  opacity: 0;
-  filter:
-    drop-shadow(0 0 12px rgba(225, 205, 250, 0.7))
-    drop-shadow(0 0 40px rgba(180, 145, 230, 0.4))
-    drop-shadow(0 0 90px rgba(130, 90, 200, 0.22));
-  animation: strikeSequence 1.4s linear 1s 1 forwards;
-  will-change: opacity;
-}
-
-@keyframes strikeSequence {
-  /* primary strike — appears in a single frame */
-  0%    { opacity: 0; }
-  1.5%  { opacity: 1; }
-  4%    { opacity: 0.92; }
-  9%    { opacity: 0.35; }
-  /* secondary re-strike */
-  13%   { opacity: 0.7; }
-  18%   { opacity: 0.45; }
-  24%   { opacity: 0.12; }
-  /* tertiary micro-strike */
-  28%   { opacity: 0.42; }
-  33%   { opacity: 0.18; }
-  /* lingering after-image */
-  55%   { opacity: 0.06; }
-  100%  { opacity: 0; }
-}
-
-/*
-   Stroke widths are tuned for the dense midpoint-displacement
-   path (hundreds of small segments). 4-layer stack produces a
-   white-violet halo with a pure-white hairline core.
-*/
-.boltOuter { fill: none; stroke: rgba(170, 130, 230, 0.32); stroke-width: 8;   filter: blur(6px); stroke-linecap: round; stroke-linejoin: round; }
-.boltHalo  { fill: none; stroke: rgba(215, 195, 245, 0.55); stroke-width: 3.2; filter: blur(2px); stroke-linecap: round; stroke-linejoin: round; }
-.boltMid   { fill: none; stroke: rgba(248, 244, 255, 0.95); stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
-.boltCore  { fill: none; stroke: #ffffff;                    stroke-width: 0.5; stroke-linecap: round; stroke-linejoin: round; }
-
-.branchHalo { fill: none; stroke: rgba(190, 160, 235, 0.38); stroke-width: 3;  filter: blur(2.5px); stroke-linecap: round; stroke-linejoin: round; }
-.branchMid  { fill: none; stroke: rgba(240, 232, 255, 0.85); stroke-width: 0.9; stroke-linecap: round; stroke-linejoin: round; }
-.branchCore { fill: none; stroke: rgba(255, 255, 255, 0.95); stroke-width: 0.4; stroke-linecap: round; stroke-linejoin: round; }
-
-/* ── Scene-wide flash: illuminates the whole viewport ─────── */
-
-/*
-   Scene-wide flash: peaks at near full white for a single frame
-   to match a real lightning illumination, then decays into a
-   warmer purple tint. Re-flashes track the bolt's secondary
-   and tertiary strikes.
-*/
-.flash {
-  position: absolute;
-  inset: 0;
-  z-index: 9;
-  pointer-events: none;
-  background: radial-gradient(
-    ellipse 110% 90% at 55% 45%,
-    rgba(255, 255, 255, 1),
-    rgba(245, 235, 255, 0.85) 25%,
-    rgba(200, 170, 235, 0.45) 55%,
-    rgba(120, 90, 180, 0.15) 80%,
-    transparent 100%
-  );
-  opacity: 0;
-  animation: sceneFlash 1.4s linear 1s 1 forwards;
-  mix-blend-mode: screen;
-}
-
-@keyframes sceneFlash {
-  0%    { opacity: 0; }
-  1.5%  { opacity: 1; }
-  4%    { opacity: 0.75; }
-  9%    { opacity: 0.3; }
-  /* sympathy with secondary re-strike */
-  13%   { opacity: 0.65; }
-  18%   { opacity: 0.35; }
-  24%   { opacity: 0.08; }
-  /* sympathy with tertiary micro-strike */
-  28%   { opacity: 0.32; }
-  33%   { opacity: 0.12; }
-  100%  { opacity: 0; }
-}
-
-/* ── Wordmark + tagline ────────────────────────────────────── */
+/* ── Wordmark + tagline ───────────────────────────────────────
+   The wordmark stays invisible until the strike hits, then fades
+   in with a hot-orange glow as if ignited by the embers. The glow
+   cools from orange → neutral white over the next ~1.5s, mirroring
+   the ember lifecycle.
+   ─────────────────────────────────────────────────────────────── */
 
 .stage {
   position: absolute;
   inset: 0;
   z-index: 15;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: clamp(0.85rem, 1.4vw, 1.4rem);
   padding: 2rem;
   text-align: center;
+  pointer-events: none;
+  /* Stage moves with parallax (counter to .sky), so it gets its own
+     compositor layer too. */
+  will-change: transform;
 }
 
+/*
+  The wordmark FLICKERS WITH the lightning. Both opacity AND glow
+  follow the three-strike envelope: visible at each strike peak,
+  almost invisible in the dark gaps between strikes, then resolving
+  into permanent visibility as the storm calms.
+
+  This is a single keyframe animation — opacity, text-shadow, and
+  the post-storm settle all live in wordPulse. The element's default
+  opacity is 0 (used during the 1s delay before the animation starts)
+  so the word stays invisible until the primary strike fires.
+
+  Strike timeline alignment (animation starts at t=1000ms, runs 1.4s):
+    0%    →  1000ms  ⚡ PRIMARY STRIKE peak  → opacity 1, full glow
+    6%    →  1084ms     primary fading       → opacity 0.35, dim glow
+    12%   →  1168ms     dark gap             → opacity 0.05, glow gone
+    13%   →  1182ms  ⚡ SECONDARY peak       → opacity 1, full glow
+    18%   →  1252ms     secondary fading     → opacity 0.30
+    23%   →  1322ms     dark gap             → opacity 0.08
+    24%   →  1336ms  ⚡ TERTIARY peak        → opacity 0.95
+    30%   →  1420ms     post-strike calm     → opacity 0.55
+    50%   →  1700ms     settling             → opacity 0.85
+   100%   →  2400ms     fully settled        → opacity 1, ambient glow
+
+  Bounded duration (1.4s) means the browser stops re-rasterizing the
+  text once it's done — no perpetual paint cost.
+*/
 .wordmark {
   font-weight: 200;
-  font-size: clamp(1.65rem, 2.5vw, 2.5rem);
+  font-size: clamp(1.6rem, 2.4vw, 2.4rem);
   line-height: 1;
   letter-spacing: -0.04em;
   color: #f0f0f0;
-  text-shadow:
-    0 0 18px rgba(200, 180, 230, 0.25),
-    0 0 50px rgba(150, 120, 200, 0.12);
-  opacity: 0;
-  animation:
-    wordReveal 0.9s cubic-bezier(0.2, 0.7, 0.2, 1) 1.2s 1 forwards,
-    wordBreathe 9s ease-in-out 3s infinite;
-  user-select: none;
-}
-
-@keyframes wordReveal {
-  from { opacity: 0; filter: blur(5px); transform: translateY(4px); }
-  to   { opacity: 1; filter: blur(0);    transform: translateY(0); }
-}
-
-@keyframes wordBreathe {
-  0%, 100% { text-shadow: 0 0 18px rgba(200, 180, 230, 0.25), 0 0 50px rgba(150, 120, 200, 0.12); }
-  50%      { text-shadow: 0 0 28px rgba(220, 200, 240, 0.35), 0 0 75px rgba(170, 140, 220, 0.18); }
-}
-
-.tagline {
-  font-weight: 300;
-  font-size: 0.7rem;
-  letter-spacing: 0.5em;
-  text-transform: uppercase;
-  color: rgba(230, 225, 240, 0.4);
   margin: 0;
-  padding-left: 0.5em;
   opacity: 0;
-  animation: fadeIn 0.9s ease-out 2.1s 1 forwards;
+  user-select: none;
+  /* Origin centered so the per-strike scale pulse expands evenly. */
+  transform-origin: 50% 50%;
+
+  /* Static ambient glow — neutral white-gray, no color cast.
+     Fully composited into the text raster once wordPulse completes. */
+  text-shadow:
+    0 0 18px rgba(230, 230, 230, 0.28),
+    0 0 50px rgba(180, 180, 180, 0.12);
 }
 
-/* ── Corner UI: micro-caps reference frame ─────────────────── */
+/* The .flicker modifier is added by the JS rAF loop at the EXACT
+   instant the primary strike fires on the canvas. Driving the
+   animation from JS rather than a CSS delay guarantees frame-perfect
+   sync between the bolt and the wordmark — a CSS delay starts from
+   element creation (page load), but the canvas timer starts from
+   useEffect mount (after hydration), and the gap between those two
+   events would otherwise make the word appear before the lightning. */
+.wordmark.flicker {
+  animation: wordPulse 1.4s linear 0s 1 forwards;
+}
+
+/*
+  Each strike peak is a "blown out" frame: the text color flips to
+  pure #fff, gets briefly boosted by a brightness filter, scales up
+  ~2.5%, and stacks a SEVEN-LAYER text-shadow halo extending out to
+  ~380px past the letterforms. The eye reads this as the word
+  absorbing the lightning's light — you can almost see it
+  electrifying. The peaks last ~25-40ms (matching the canvas strike
+  envelope) before snapping back to a near-dead dim gap; that
+  contrast is what sells "struck" rather than "lit."
+
+  All animated properties are paint-cheap or compositor-only:
+    - opacity, transform     → composited (GPU)
+    - filter: brightness()   → composited once on its own layer
+    - text-shadow            → painted into the text bitmap (cheap
+                               at this small size, bounded by 1.4s)
+    - color                  → cheap repaint, only on keyframe ticks
+*/
+@keyframes wordPulse {
+  /* ── Primary strike — word is BLOWN OUT, full white-hot. */
+  0% {
+    opacity: 1;
+    color: #ffffff;
+    transform: scale(1.025);
+    filter: brightness(1.4);
+    text-shadow:
+      0 0 3px   rgba(255, 255, 255, 1),
+      0 0 10px  rgba(255, 255, 255, 0.95),
+      0 0 26px  rgba(255, 255, 255, 0.85),
+      0 0 60px  rgba(255, 255, 255, 0.62),
+      0 0 130px rgba(245, 245, 245, 0.42),
+      0 0 240px rgba(220, 220, 220, 0.26),
+      0 0 380px rgba(180, 180, 180, 0.14);
+  }
+  /* Sharp drop-off (matches the canvas strike envelope's 25ms peak). */
+  3% {
+    opacity: 0.65;
+    color: #f5f5f5;
+    transform: scale(1.01);
+    filter: brightness(1.15);
+    text-shadow:
+      0 0 12px  rgba(255, 255, 255, 0.5),
+      0 0 40px  rgba(245, 245, 245, 0.32),
+      0 0 90px  rgba(220, 220, 220, 0.16);
+  }
+  /* Continued decay. */
+  7% {
+    opacity: 0.32;
+    color: #f0f0f0;
+    transform: scale(1.0);
+    filter: brightness(1.02);
+    text-shadow:
+      0 0 16px rgba(252, 252, 252, 0.28),
+      0 0 48px rgba(232, 232, 232, 0.15);
+  }
+  /* Dark gap before secondary — word nearly gone. */
+  12% {
+    opacity: 0.04;
+    color: #f0f0f0;
+    transform: scale(1.0);
+    filter: brightness(0.85);
+    text-shadow: 0 0 0 rgba(0, 0, 0, 0);
+  }
+
+  /* ── Secondary strike — flashes back, slightly less intense. */
+  13% {
+    opacity: 1;
+    color: #ffffff;
+    transform: scale(1.02);
+    filter: brightness(1.32);
+    text-shadow:
+      0 0 3px   rgba(255, 255, 255, 0.95),
+      0 0 10px  rgba(255, 255, 255, 0.85),
+      0 0 26px  rgba(255, 255, 255, 0.7),
+      0 0 60px  rgba(255, 255, 255, 0.5),
+      0 0 130px rgba(245, 245, 245, 0.32),
+      0 0 240px rgba(220, 220, 220, 0.18),
+      0 0 380px rgba(180, 180, 180, 0.10);
+  }
+  16% {
+    opacity: 0.55;
+    color: #f5f5f5;
+    transform: scale(1.008);
+    filter: brightness(1.1);
+    text-shadow:
+      0 0 12px rgba(255, 255, 255, 0.4),
+      0 0 40px rgba(245, 245, 245, 0.24),
+      0 0 90px rgba(220, 220, 220, 0.12);
+  }
+  19% {
+    opacity: 0.28;
+    color: #f0f0f0;
+    transform: scale(1.0);
+    filter: brightness(1.0);
+    text-shadow:
+      0 0 16px rgba(252, 252, 252, 0.22),
+      0 0 48px rgba(232, 232, 232, 0.12);
+  }
+  /* Dark gap before tertiary. */
+  23% {
+    opacity: 0.06;
+    color: #f0f0f0;
+    transform: scale(1.0);
+    filter: brightness(0.88);
+    text-shadow: 0 0 0 rgba(0, 0, 0, 0);
+  }
+
+  /* ── Tertiary strike — softer flash. */
+  24% {
+    opacity: 0.95;
+    color: #ffffff;
+    transform: scale(1.015);
+    filter: brightness(1.22);
+    text-shadow:
+      0 0 3px   rgba(255, 255, 255, 0.85),
+      0 0 10px  rgba(255, 255, 255, 0.7),
+      0 0 26px  rgba(255, 255, 255, 0.55),
+      0 0 60px  rgba(255, 255, 255, 0.38),
+      0 0 130px rgba(245, 245, 245, 0.24),
+      0 0 240px rgba(220, 220, 220, 0.13);
+  }
+  /* Tertiary decay. */
+  30% {
+    opacity: 0.55;
+    color: #f2f2f2;
+    transform: scale(1.0);
+    filter: brightness(1.05);
+    text-shadow:
+      0 0 16px rgba(248, 248, 248, 0.28),
+      0 0 50px rgba(220, 220, 220, 0.15),
+      0 0 100px rgba(200, 200, 200, 0.08);
+  }
+  /* Post-storm — word is now permanent, dialing back to ambient. */
+  50% {
+    opacity: 0.85;
+    color: #f0f0f0;
+    transform: scale(1.0);
+    filter: brightness(1.0);
+    text-shadow:
+      0 0 18px rgba(238, 238, 238, 0.29),
+      0 0 50px rgba(200, 200, 200, 0.14);
+  }
+  100% {
+    opacity: 1;
+    color: #f0f0f0;
+    transform: scale(1.0);
+    filter: brightness(1.0);
+    text-shadow:
+      0 0 18px rgba(230, 230, 230, 0.28),
+      0 0 50px rgba(180, 180, 180, 0.12);
+  }
+}
+
+/* ── Corner UI ───────────────────────────────────────────────── */
 
 .corner {
   position: absolute;
@@ -287,31 +351,52 @@
   font-weight: 400;
   letter-spacing: 0.32em;
   text-transform: uppercase;
-  color: rgba(230, 225, 240, 0.32);
+  color: rgba(220, 220, 220, 0.32);
   opacity: 0;
-  animation: fadeIn 0.9s ease-out 2.7s 1 forwards;
+  animation: fadeIn 0.9s ease-out 3s 1 forwards;
   display: flex;
   align-items: center;
   gap: 0.6em;
+  pointer-events: auto;
 }
 
-.cornerTL { top: clamp(1.5rem, 3vw, 2.5rem); left: clamp(1.5rem, 3vw, 2.5rem); }
-.cornerTR { top: clamp(1.5rem, 3vw, 2.5rem); right: clamp(1.5rem, 3vw, 2.5rem); }
 .cornerBL { bottom: clamp(1.5rem, 3vw, 2.5rem); left: clamp(1.5rem, 3vw, 2.5rem); }
 
-.dot {
-  display: inline-block;
-  width: 5px;
-  height: 5px;
+/* ── Audio toggle ───────────────────────────────────────────
+   Minimal speaker icon, top-right. Three states (locked/on/off)
+   handled by swapping the icon SVG path; the button itself just
+   provides the click target + hover affordance. */
+
+.audioToggle {
+  position: absolute;
+  top: clamp(1.5rem, 3vw, 2.5rem);
+  right: clamp(1.5rem, 3vw, 2.5rem);
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border: none;
   border-radius: 50%;
-  background: rgba(230, 225, 240, 0.55);
-  box-shadow: 0 0 6px rgba(220, 200, 240, 0.4);
-  animation: pulse 2.2s ease-in-out infinite;
+  color: rgba(220, 220, 220, 0.4);
+  cursor: pointer;
+  opacity: 0;
+  animation: fadeIn 0.9s ease-out 3s 1 forwards;
+  transition: color 0.3s ease, background-color 0.3s ease;
+  -webkit-tap-highlight-color: transparent;
 }
 
-@keyframes pulse {
-  0%, 100% { opacity: 0.45; transform: scale(1); }
-  50%      { opacity: 1;    transform: scale(1.15); }
+.audioToggle:hover {
+  color: rgba(245, 245, 245, 0.95);
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.audioToggle:focus-visible {
+  outline: 1px solid rgba(220, 220, 220, 0.4);
+  outline-offset: 2px;
 }
 
 .musicLink {
@@ -323,7 +408,7 @@
   font-weight: 400;
   letter-spacing: 0.32em;
   text-transform: uppercase;
-  color: rgba(230, 225, 240, 0.45);
+  color: rgba(220, 220, 220, 0.45);
   text-decoration: none;
   padding: 0.5rem 0;
   opacity: 0;
@@ -331,7 +416,7 @@
   align-items: center;
   gap: 0.7em;
   transition: color 0.4s ease, gap 0.4s ease;
-  animation: fadeIn 0.9s ease-out 2.7s 1 forwards;
+  animation: fadeIn 0.9s ease-out 3s 1 forwards;
 }
 
 .musicLink::after {
@@ -344,7 +429,7 @@
 }
 
 .musicLink:hover {
-  color: rgba(245, 240, 255, 0.95);
+  color: rgba(245, 245, 245, 0.95);
   gap: 0.95em;
 }
 
@@ -356,27 +441,45 @@
   to { opacity: 1; }
 }
 
-/* ── Reduced motion ────────────────────────────────────────── */
+/* ── Impact shake ────────────────────────────────────────────── */
+
+.shake {
+  animation: impactShake 0.22s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+
+@keyframes impactShake {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  15%      { transform: translate3d(-3px, 1px, 0); }
+  30%      { transform: translate3d(2px, -2px, 0); }
+  45%      { transform: translate3d(-2px, 3px, 0); }
+  60%      { transform: translate3d(3px, -1px, 0); }
+  75%      { transform: translate3d(-1px, 2px, 0); }
+  90%      { transform: translate3d(1px, -1px, 0); }
+}
+
+/* ── Reduced motion: skip the strike, show final calm state ──── */
 
 @media (prefers-reduced-motion: reduce) {
-  .preflicker,
-  .lightning,
-  .flash {
+  .canvas {
     display: none;
   }
 
-  .haze,
-  .dot {
+  .skyDrift {
     animation: none;
   }
 
   .wordmark,
-  .tagline,
   .corner,
-  .musicLink {
+  .musicLink,
+  .audioToggle {
     opacity: 1;
     animation: none;
     filter: none;
-    transform: none;
+  }
+
+  .wordmark {
+    text-shadow:
+      0 0 18px rgba(230, 230, 230, 0.3),
+      0 0 50px rgba(180, 180, 180, 0.15);
   }
 }
