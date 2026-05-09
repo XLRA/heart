@@ -17,13 +17,13 @@ import {
 } from './strikes';
 import {
   VARIANT_COUNT,
-  buildVariantPool,
+  buildVariantRange,
   compositeBolt,
   renderFlash,
 } from './boltRender';
 import {
-  LAYERS,
   makeRaindrops,
+  makeEmptyDrops,
   rainBudget,
   tickRain,
   createWindSheetState,
@@ -127,14 +127,77 @@ export default function StormLanding() {
     let dpr = Math.min(window.devicePixelRatio || 1, 2);
     let width = window.innerWidth;
     let height = window.innerHeight;
-    let rainLayers: LayeredDrops = LAYERS.map(() => []);
+    let rainLayers: LayeredDrops = makeEmptyDrops();
 
-    const generateAndPrerender = () => {
-      buildVariantPool(offscreens, generateLightning, width, height, dpr);
-      rainLayers = makeRaindrops(width, height, rainBudget(width, height));
+    /* Variant readiness — variants 0-2 are required for the scripted
+       intro and are always rendered synchronously on init / resize.
+       Variants 3-7 are click-only and rendered in idle time so they
+       don't block first paint. If the user clicks before idle finishes,
+       handleSceneClick falls back to a ready variant. */
+    const INTRO_VARIANT_COUNT = 3;
+    const variantReady = new Array<boolean>(VARIANT_COUNT).fill(false);
+    let idleHandle: number | null = null;
+
+    const cancelIdleVariantBuild = () => {
+      if (idleHandle === null) return;
+      // requestIdleCallback / setTimeout return ids in the same numeric
+      // space; cancel both ways to be safe across the polyfill path.
+      const w = window as Window & {
+        cancelIdleCallback?: (h: number) => void;
+      };
+      if (typeof w.cancelIdleCallback === 'function') {
+        w.cancelIdleCallback(idleHandle);
+      }
+      window.clearTimeout(idleHandle);
+      idleHandle = null;
     };
 
-    const resize = () => {
+    const scheduleClickVariantBuild = () => {
+      cancelIdleVariantBuild();
+      const build = () => {
+        idleHandle = null;
+        buildVariantRange(
+          offscreens, generateLightning, width, height, dpr,
+          INTRO_VARIANT_COUNT, VARIANT_COUNT,
+        );
+        for (let i = INTRO_VARIANT_COUNT; i < VARIANT_COUNT; i++) {
+          variantReady[i] = true;
+        }
+      };
+      const w = window as Window & {
+        requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+      };
+      if (typeof w.requestIdleCallback === 'function') {
+        idleHandle = w.requestIdleCallback(build, { timeout: 2000 });
+      } else {
+        // Safari fallback. Still defers to next tick + a short delay
+        // so first paint isn't blocked by ~5 prerenders.
+        idleHandle = window.setTimeout(build, 500);
+      }
+    };
+
+    const generateAndPrerender = () => {
+      // Mark all click-only variants as not-ready before rebuild, so
+      // a click during the rebuild window falls back to an intro
+      // variant rather than drawing an empty offscreen.
+      for (let i = INTRO_VARIANT_COUNT; i < VARIANT_COUNT; i++) {
+        variantReady[i] = false;
+      }
+      buildVariantRange(
+        offscreens, generateLightning, width, height, dpr,
+        0, INTRO_VARIANT_COUNT,
+      );
+      for (let i = 0; i < INTRO_VARIANT_COUNT; i++) variantReady[i] = true;
+      rainLayers = makeRaindrops(width, height, rainBudget(width, height));
+      scheduleClickVariantBuild();
+    };
+
+    /* Resize handling is split into a LIGHT pass that runs on every
+       resize event (canvas dimensions only — the canvas would visibly
+       stretch otherwise) and a HEAVY pass (bolt prerenders + rain
+       layer rebuild) that's debounced. Window-drag-resize stops
+       hitching, steady-state visuals are unchanged. */
+    const lightResize = () => {
       dpr = Math.min(window.devicePixelRatio || 1, 2);
       width = window.innerWidth;
       height = window.innerHeight;
@@ -143,11 +206,21 @@ export default function StormLanding() {
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      generateAndPrerender();
     };
 
-    resize();
-    window.addEventListener('resize', resize);
+    let heavyResizeTimer: number | null = null;
+    const handleResize = () => {
+      lightResize();
+      if (heavyResizeTimer !== null) window.clearTimeout(heavyResizeTimer);
+      heavyResizeTimer = window.setTimeout(() => {
+        heavyResizeTimer = null;
+        generateAndPrerender();
+      }, 200);
+    };
+
+    lightResize();
+    generateAndPrerender();
+    window.addEventListener('resize', handleResize);
 
     const start = performance.now();
     let rafId = 0;
@@ -252,8 +325,14 @@ export default function StormLanding() {
       lastClickStrikeTime = now;
 
       // Click strikes draw from the full 8-variant pool so each click
-      // can come from a different angle.
-      const variant = Math.floor(Math.random() * VARIANT_COUNT);
+      // can come from a different angle. If the chosen variant hasn't
+      // been prerendered yet (idle build still pending), fall back to
+      // a guaranteed-ready intro variant so the click never produces
+      // an empty bolt.
+      let variant = Math.floor(Math.random() * VARIANT_COUNT);
+      if (!variantReady[variant]) {
+        variant = Math.floor(Math.random() * INTRO_VARIANT_COUNT);
+      }
       const intensity = 0.7 + Math.random() * 0.3;
       adHocStrikes.push({ startTime: now, variant, intensity });
       pulseWordmark(intensity);
@@ -292,8 +371,18 @@ export default function StormLanding() {
       );
     }
 
+    /* Per-frame intensity buffer — reused across frames to skip a
+       per-frame allocation. Float32Array is exactly the right shape
+       for this hot read/write pattern. */
+    const variantIntensity = new Float32Array(VARIANT_COUNT);
+
     const tick = (now: number) => {
       rafId = requestAnimationFrame(tick);
+
+      // Tab is hidden — skip all canvas work. rAF self-throttles to
+      // ~0Hz when hidden in modern browsers so this rarely fires, but
+      // some power-saver modes still wake it occasionally.
+      if (typeof document !== 'undefined' && document.hidden) return;
 
       const elapsed = now - start;
       const dt = Math.min(0.05, (now - lastTick) / 1000);
@@ -330,7 +419,7 @@ export default function StormLanding() {
       }
 
       // Per-variant intensity so each strike uses its own bolt geometry.
-      const variantIntensity: number[] = new Array(VARIANT_COUNT).fill(0);
+      variantIntensity.fill(0);
       let flashIntensity = 0;
       for (const s of STRIKES) {
         const local = elapsed - s.t;
@@ -462,13 +551,31 @@ export default function StormLanding() {
 
     rafId = requestAnimationFrame(tick);
 
+    /* Tab-visibility coupling. The AudioContext keeps consuming CPU
+       at full rate even when the tab is hidden — Chrome ~5-15% on
+       weaker laptops. Suspending it on hide is the single biggest
+       battery win on this scene. We also reset lastTick on resume
+       so the dt cap doesn't kick in for one frame after returning. */
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        audioRef.current?.suspend();
+      } else {
+        lastTick = performance.now();
+        audioRef.current?.resume();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
       cancelAnimationFrame(rafId);
+      cancelIdleVariantBuild();
+      if (heavyResizeTimer !== null) window.clearTimeout(heavyResizeTimer);
       window.clearTimeout(shakeTimer);
       window.clearTimeout(flickerTimer);
       for (const id of thunderTimers) window.clearTimeout(id);
-      window.removeEventListener('resize', resize);
+      window.removeEventListener('resize', handleResize);
       window.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       sceneEl.removeEventListener('click', handleSceneClick);
     };
   }, [debugEnabled]);

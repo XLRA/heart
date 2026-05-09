@@ -173,9 +173,42 @@ export function renderFlash(
 }
 
 /**
- * Generate fresh lightning + pre-render to all VARIANT_COUNT
- * offscreens. Called on init and on resize.
+ * Generate fresh lightning + pre-render variant indices [startIdx, endIdx).
+ * Called on init for the always-needed intro variants (0..3) and
+ * deferred via requestIdleCallback for the click-only variants
+ * (3..VARIANT_COUNT) so they don't block first paint.
+ *
+ * Re-rendering on resize calls this with the full range to rebuild
+ * the whole pool against the new dimensions.
  */
+export function buildVariantRange(
+  offscreens: HTMLCanvasElement[],
+  generateLightning: (
+    seed: number,
+    source: Pt,
+    dest: Pt,
+    sway: number,
+    branchDepth: number,
+  ) => Lightning,
+  width: number,
+  height: number,
+  dpr: number,
+  startIdx: number,
+  endIdx: number,
+) {
+  const sway = Math.min(120, width * 0.1);
+  const lo = Math.max(0, startIdx);
+  const hi = Math.min(VARIANT_COUNT, endIdx);
+  for (let i = lo; i < hi; i++) {
+    const path = VARIANT_PATHS[i];
+    const source: Pt = [width * path.srcX, -60];
+    const dest: Pt = [width * path.dstX, height + 60];
+    const bolt = generateLightning(SEEDS[i], source, dest, sway, 4);
+    prerenderBolt(offscreens[i], bolt, width, height, dpr);
+  }
+}
+
+/** Convenience wrapper preserving the previous full-pool API. */
 export function buildVariantPool(
   offscreens: HTMLCanvasElement[],
   generateLightning: (
@@ -189,12 +222,5 @@ export function buildVariantPool(
   height: number,
   dpr: number,
 ) {
-  const sway = Math.min(120, width * 0.1);
-  for (let i = 0; i < VARIANT_COUNT; i++) {
-    const path = VARIANT_PATHS[i];
-    const source: Pt = [width * path.srcX, -60];
-    const dest: Pt = [width * path.dstX, height + 60];
-    const bolt = generateLightning(SEEDS[i], source, dest, sway, 4);
-    prerenderBolt(offscreens[i], bolt, width, height, dpr);
-  }
+  buildVariantRange(offscreens, generateLightning, width, height, dpr, 0, VARIANT_COUNT);
 }

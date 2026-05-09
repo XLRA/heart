@@ -270,6 +270,23 @@ export class StormAudio {
     }
   }
 
+  /**
+   * Suspend the AudioContext — call when the tab goes hidden.
+   * The context stops consuming CPU until resume() is called.
+   * No-op if not unlocked yet, not muted, or already suspended.
+   * Mute state is preserved across suspend/resume.
+   */
+  suspend(): void {
+    if (!this.ctx || this.ctx.state !== 'running') return;
+    void this.ctx.suspend().catch(() => { /* ignore */ });
+  }
+
+  /** Resume the AudioContext — call when the tab becomes visible. */
+  resume(): void {
+    if (!this.ctx || this.ctx.state !== 'suspended') return;
+    void this.ctx.resume().catch(() => { /* ignore */ });
+  }
+
   /** Smooth ramp so mute/unmute never pops. */
   setMuted(muted: boolean) {
     if (!this.ctx || !this.master) return;
