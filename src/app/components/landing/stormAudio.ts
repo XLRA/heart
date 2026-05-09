@@ -1,34 +1,49 @@
 /* ──────────────────────────────────────────────────────────────
-   stormAudio — fully procedural storm SFX via Web Audio API.
+   stormAudio — real-sample storm SFX via Web Audio.
 
-   Two voices:
-     • Rain ambient: pink-noise loop through a bandpass + highpass
-       filter pair, with a slow LFO on gain for natural variation.
-       Sounds like a steady downpour (not perfectly identifiable as
-       any specific recording — which is the goal: ambient bed,
-       not "I recognize this rain sample").
+   Two voices, both backed by real recordings:
 
-     • Thunder: synthesized per-trigger from layered brown-noise
-       crackle bursts + a sub-bass rumble layer. The "distance"
-       parameter controls the crackle high-frequency content,
-       attack sharpness, and rumble ratio — closer thunder is
-       brighter and sharper, distant thunder is bassier and longer.
+     • Rain ambient: a single seamless rain loop streamed through
+       a master gain. Fades in over 1.5s on unlock so it never
+       pops in.
 
-   Why procedural?
-     - Zero asset payload (no .mp3 / .wav files to host)
-     - Sample-accurate sync to the canvas strikes via ctx.currentTime
-     - Each thunder is unique — no repeat-sample fatigue
-     - Easy to swap in real samples later (same API surface)
+     • Thunder: two role-based sample pools.
+         NEAR  — used for close strikes (the click-to-strike
+                 event + the scripted intro). Sharp transient,
+                 full-bandwidth crack.
+         FAR   — used for background flashes + the welcome
+                 rumble. Long, hollow, distant boom.
+       Each triggerThunder() call picks the pool by distance,
+       then a sample from that pool (avoiding back-to-back
+       duplicates), pitches it ±15% for variety, applies a
+       distance-driven low-pass + amplitude envelope, and
+       schedules it sample-accurate from the AudioContext clock.
 
-   The whole module is gated behind an explicit unlock() call so we
-   comply with browser autoplay policies (no audio without a user
-   gesture). Master gain ramps smoothly to avoid pops on mute/unmute.
+   Distance modeling
+   -----------------
+   Air absorbs high frequencies over distance. Real distant
+   thunder loses its crackle and reads as bassy rumble. On top
+   of choosing the right SAMPLE, we apply a single biquad
+   low-pass whose cutoff sweeps from ~22kHz (close, untouched)
+   down to ~600Hz (very distant, muffled). Combined with a
+   power-law amplitude roll-off, the engine renders a wide
+   spectrum of strikes from just two source samples.
+
+   Files (drop into /public/audio/storm/):
+     rain.mp3            — long, seamlessly loopable rain ambient
+     thunder-near.mp3    — close strike (sharp crack)
+     thunder-far.mp3     — distant flash (hollow rumble)
+
+   See /public/audio/storm/README.md for sourcing notes.
+
+   The whole module is gated behind explicit unlock() to comply
+   with browser autoplay policies.
    ────────────────────────────────────────────────────────────── */
 
 type WindowWithWebkit = Window & { webkitAudioContext?: typeof AudioContext };
 
 interface ThunderOptions {
-  /** 0 = close strike (sharp + bright), 1 = distant rumble. Default 0. */
+  /** 0 = overhead strike (sharp + bright), 1 = distant rumble. Default 0. */
   distance?: number;
   /** Overall amplitude scaling 0..1. Default 1. */
   intensity?: number;
@@ -36,18 +51,39 @@ interface ThunderOptions {
   delay?: number;
 }
 
+/** Master output level — caps the entire scene at this fraction of unity. */
+const MASTER_VOLUME = 0.78;
+
+/** Steady rain ambient level relative to master. */
+const RAIN_LEVEL = 0.55;
+
+/** Thunder peak level (per trigger) before distance attenuation. */
+const THUNDER_LEVEL = 0.85;
+
+const RAIN_FILE = '/audio/storm/rain.mp3';
+/** Sharp, full-bandwidth thunder for close strikes (distance ≤ 0.5). */
+const THUNDER_NEAR_FILES = ['/audio/storm/thunder-near.mp3'];
+/** Hollow, distant boom for background flashes (distance > 0.5). */
+const THUNDER_FAR_FILES = ['/audio/storm/thunder-far.mp3'];
+
+/** Distance value at which we switch from the NEAR pool to the FAR pool. */
+const NEAR_FAR_THRESHOLD = 0.5;
+
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 export class StormAudio {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
-  private rainBuffer: AudioBuffer | null = null;
+  private rainGain: GainNode | null = null;
   private rainSource: AudioBufferSourceNode | null = null;
-  private rainGainNode: GainNode | null = null;
+  private rainBuffer: AudioBuffer | null = null;
+  private thunderNearBuffers: AudioBuffer[] = [];
+  private thunderFarBuffers: AudioBuffer[] = [];
   private muted = true;
-
-  /** Has the user gesture happened yet? (required for autoplay) */
   private unlocked = false;
+  /** Avoid playing the same sample twice in a row, per pool. */
+  private lastIdx = { near: -1, far: -1 };
 
   isUnlocked(): boolean {
     return this.unlocked;
@@ -58,253 +94,209 @@ export class StormAudio {
   }
 
   /**
-   * Initialize the audio context, resume it (requires a user gesture),
-   * and start the rain ambient bed. Idempotent — safe to call multiple
-   * times.
+   * Create the AudioContext, decode all samples, and start the
+   * rain loop. Must be called from a user gesture handler — the
+   * browser's autoplay policy refuses to start audio otherwise.
+   * Resolves once everything is playing (or has failed gracefully).
    */
   async unlock(): Promise<void> {
-    const ctx = this.ensureContext();
-    if (ctx.state === 'suspended') {
-      await ctx.resume();
-    }
-    this.unlocked = true;
-    this.muted = false;
+    if (this.unlocked) return;
+    const Ctx =
+      window.AudioContext ||
+      (window as WindowWithWebkit).webkitAudioContext;
+    if (!Ctx) throw new Error('Web Audio not supported');
 
-    if (this.master) {
-      const t = ctx.currentTime;
-      this.master.gain.cancelScheduledValues(t);
-      this.master.gain.setValueAtTime(this.master.gain.value, t);
-      this.master.gain.linearRampToValueAtTime(1, t + 0.6);
+    this.ctx = new Ctx();
+    if (this.ctx.state === 'suspended') {
+      await this.ctx.resume();
     }
-    this.startRainAmbient();
+
+    this.master = this.ctx.createGain();
+    this.master.gain.value = MASTER_VOLUME;
+    this.master.connect(this.ctx.destination);
+
+    // Decode rain + both thunder pools in parallel. Any individual
+    // failure (404, unsupported format, decode error) is swallowed
+    // — the missing voice just stays silent rather than tearing
+    // down the whole scene. Lets the storm "work" even with a
+    // partial install.
+    const nearStart = 1;
+    const farStart = nearStart + THUNDER_NEAR_FILES.length;
+    const buffers = await Promise.all([
+      this.loadSample(RAIN_FILE),
+      ...THUNDER_NEAR_FILES.map((f) => this.loadSample(f)),
+      ...THUNDER_FAR_FILES.map((f) => this.loadSample(f)),
+    ]);
+    const notNull = (b: AudioBuffer | null): b is AudioBuffer => b !== null;
+
+    this.rainBuffer = buffers[0];
+    this.thunderNearBuffers = buffers.slice(nearStart, farStart).filter(notNull);
+    this.thunderFarBuffers = buffers.slice(farStart).filter(notNull);
+
+    this.startRainLoop();
+
+    this.muted = false;
+    this.unlocked = true;
   }
 
-  setMuted(muted: boolean): void {
-    this.muted = muted;
-    const ctx = this.ctx;
-    const master = this.master;
-    if (!ctx || !master) return;
-    const target = muted ? 0 : 1;
-    const t = ctx.currentTime;
-    master.gain.cancelScheduledValues(t);
-    master.gain.setValueAtTime(master.gain.value, t);
-    master.gain.linearRampToValueAtTime(target, t + 0.35);
+  private async loadSample(url: string): Promise<AudioBuffer | null> {
+    if (!this.ctx) return null;
+    try {
+      const res = await fetch(url, { cache: 'force-cache' });
+      if (!res.ok) {
+        console.warn(`[stormAudio] ${url} → HTTP ${res.status}`);
+        return null;
+      }
+      const arr = await res.arrayBuffer();
+      return await this.ctx.decodeAudioData(arr);
+    } catch (e) {
+      console.warn(`[stormAudio] failed to load ${url}:`, e);
+      return null;
+    }
+  }
+
+  private startRainLoop() {
+    if (!this.ctx || !this.master || !this.rainBuffer) return;
+
+    this.rainGain = this.ctx.createGain();
+    this.rainGain.gain.value = 0;
+    this.rainGain.connect(this.master);
+
+    this.rainSource = this.ctx.createBufferSource();
+    this.rainSource.buffer = this.rainBuffer;
+    this.rainSource.loop = true;
+    this.rainSource.connect(this.rainGain);
+    this.rainSource.start();
+
+    // Fade in over 1.5s — instant rain start sounds harsh.
+    const t = this.ctx.currentTime;
+    this.rainGain.gain.setValueAtTime(0, t);
+    this.rainGain.gain.linearRampToValueAtTime(RAIN_LEVEL, t + 1.5);
   }
 
   /**
-   * Synthesize and schedule a thunder event. Safe to call before
-   * unlock() — it will be a no-op (silent until unlocked).
+   * Trigger a single thunder hit. Cheap (no allocations beyond
+   * one AudioBufferSourceNode + one filter + one gain), so it's
+   * safe to call dozens of times during a swell.
    */
-  triggerThunder(opts: ThunderOptions = {}): void {
-    const ctx = this.ctx;
-    const master = this.master;
-    if (!ctx || !master || !this.unlocked) return;
+  triggerThunder(opts: ThunderOptions = {}) {
+    if (!this.ctx || !this.master) return;
 
-    const distance = Math.max(0, Math.min(1, opts.distance ?? 0));
-    const intensity = Math.max(0, Math.min(1, opts.intensity ?? 1));
-    const startTime = ctx.currentTime + (opts.delay ?? 0);
+    const distance = clamp01(opts.distance ?? 0);
+    const intensity = clamp01(opts.intensity ?? 1);
+    const delay = Math.max(0, opts.delay ?? 0);
 
-    // Distance-driven shaping
-    const sharpness = lerp(0.005, 0.18, distance);   // crackle attack
-    const decay = lerp(2.2, 5.5, distance);          // rumble length
-    const lowCutoff = lerp(450, 110, distance);      // crackle filter freq
-    const rumbleVol = lerp(0.55, 0.95, distance);
-    const crackleVol = lerp(1.0, 0.35, distance);
-    const numCrackles = distance < 0.4 ? 5 : distance < 0.75 ? 3 : 2;
-
-    const sampleRate = ctx.sampleRate;
-
-    // ── Layer 1: Crackle bursts (the sharp claps + echoes off clouds)
-    for (let i = 0; i < numCrackles; i++) {
-      // First crackle is the main "boom"; subsequent are echoes.
-      const crackleDelay = i === 0 ? 0 : 0.04 + Math.random() * 0.18 + i * 0.05;
-      const crackleStart = startTime + crackleDelay;
-      const crackleDur = 0.55 + Math.random() * 0.9;
-
-      const buffer = ctx.createBuffer(
-        1,
-        Math.ceil(sampleRate * crackleDur),
-        sampleRate,
-      );
-      const data = buffer.getChannelData(0);
-      // Brown noise: integrated white noise with leakage to prevent drift.
-      let last = 0;
-      for (let j = 0; j < data.length; j++) {
-        last = (last + (Math.random() * 2 - 1) * 0.05) * 0.96;
-        data[j] = last;
-      }
-
-      const src = ctx.createBufferSource();
-      src.buffer = buffer;
-
-      // Lowpass that sweeps DOWN over the crackle duration — gives the
-      // characteristic "crack-to-rumble" tonal arc of real thunder.
-      const lp = ctx.createBiquadFilter();
-      lp.type = 'lowpass';
-      lp.frequency.setValueAtTime(lowCutoff * 2.8, crackleStart);
-      lp.frequency.exponentialRampToValueAtTime(
-        Math.max(40, lowCutoff * 0.7),
-        crackleStart + crackleDur,
-      );
-      lp.Q.value = 0.7;
-
-      const env = ctx.createGain();
-      const peak = intensity * crackleVol * (i === 0 ? 1 : 0.55 + Math.random() * 0.25);
-      env.gain.setValueAtTime(0, crackleStart);
-      env.gain.linearRampToValueAtTime(peak, crackleStart + sharpness);
-      env.gain.exponentialRampToValueAtTime(0.001, crackleStart + crackleDur);
-
-      src.connect(lp);
-      lp.connect(env);
-      env.connect(master);
-      src.start(crackleStart);
-      src.stop(crackleStart + crackleDur + 0.05);
+    // Pool selection by distance. A sharp click-strike sample
+    // stretched into a "distant rumble" via low-pass alone never
+    // sounds quite right — the transient still reads as close.
+    // Picking the right SOURCE first, then sculpting with the
+    // filter, gets us the full close→far spectrum cleanly.
+    const useNear = distance <= NEAR_FAR_THRESHOLD;
+    const pool = useNear ? this.thunderNearBuffers : this.thunderFarBuffers;
+    if (pool.length === 0) {
+      // Fall back to the other pool if the requested one is empty
+      // (e.g. user only installed one thunder file).
+      const fallback = useNear ? this.thunderFarBuffers : this.thunderNearBuffers;
+      if (fallback.length === 0) return;
+      this.playThunderFromPool(fallback, useNear ? 'far' : 'near', distance, intensity, delay);
+      return;
     }
-
-    // ── Layer 2: Long sub-bass rumble (the chest-felt rolling decay)
-    const rumbleBuffer = ctx.createBuffer(
-      1,
-      Math.ceil(sampleRate * decay),
-      sampleRate,
-    );
-    const rumbleData = rumbleBuffer.getChannelData(0);
-    let r = 0;
-    for (let j = 0; j < rumbleData.length; j++) {
-      r = (r + (Math.random() * 2 - 1) * 0.03) * 0.985;
-      rumbleData[j] = r;
-    }
-
-    const rumbleSrc = ctx.createBufferSource();
-    rumbleSrc.buffer = rumbleBuffer;
-
-    const rumbleLP = ctx.createBiquadFilter();
-    rumbleLP.type = 'lowpass';
-    rumbleLP.frequency.value = lerp(95, 65, distance);
-    rumbleLP.Q.value = 1.1;
-
-    const rumbleEnv = ctx.createGain();
-    rumbleEnv.gain.setValueAtTime(0, startTime);
-    rumbleEnv.gain.linearRampToValueAtTime(
-      intensity * rumbleVol * 0.8,
-      startTime + Math.max(0.08, sharpness * 1.5),
-    );
-    rumbleEnv.gain.exponentialRampToValueAtTime(0.0001, startTime + decay);
-
-    rumbleSrc.connect(rumbleLP);
-    rumbleLP.connect(rumbleEnv);
-    rumbleEnv.connect(master);
-    rumbleSrc.start(startTime);
-    rumbleSrc.stop(startTime + decay + 0.05);
+    this.playThunderFromPool(pool, useNear ? 'near' : 'far', distance, intensity, delay);
   }
 
-  dispose(): void {
-    const ctx = this.ctx;
-    if (ctx && ctx.state !== 'closed') {
-      ctx.close().catch(() => {});
+  private playThunderFromPool(
+    pool: AudioBuffer[],
+    poolKey: 'near' | 'far',
+    distance: number,
+    intensity: number,
+    delay: number,
+  ) {
+    if (!this.ctx || !this.master) return;
+
+    // Pick a sample, avoid back-to-back duplicates so thunder
+    // stays unpredictable when fired in rapid succession.
+    let idx = Math.floor(Math.random() * pool.length);
+    if (idx === this.lastIdx[poolKey] && pool.length > 1) {
+      idx = (idx + 1) % pool.length;
+    }
+    this.lastIdx[poolKey] = idx;
+
+    const buf = pool[idx];
+    const t = this.ctx.currentTime + delay;
+
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    // ±15% pitch shift — same sample never sounds identical twice.
+    src.playbackRate.value = 0.85 + Math.random() * 0.30;
+
+    // Distance-driven low-pass. Air absorbs HF; distant thunder
+    // is just sub-bass rumble. Cutoff sweeps logarithmically from
+    // 22kHz (close, full bandwidth) → 600Hz (far, muffled).
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    // Log-space lerp so the perceptual change feels linear.
+    const cutoffOctaves = lerp(0, Math.log2(22000 / 600), 1 - distance);
+    lp.frequency.value = 600 * Math.pow(2, cutoffOctaves);
+    lp.Q.value = 0.7;
+
+    // Distance attenuation — closer to inverse-square than linear.
+    // Close (0): full intensity. Far (1): ~28% — still audible but
+    // clearly "across the valley."
+    const distanceAtten = lerp(1.0, 0.28, distance * distance);
+
+    const g = this.ctx.createGain();
+    g.gain.value = intensity * distanceAtten * THUNDER_LEVEL;
+
+    src.connect(lp);
+    lp.connect(g);
+    g.connect(this.master);
+
+    src.start(t);
+
+    // ─ Subtle rain ducking ──────────────────────────────────
+    // Dip rain by up to 12% during a close thunder so the strike
+    // has audible presence. Distant thunder doesn't duck — it
+    // would feel artificial since real distant thunder sits
+    // alongside rain rather than replacing it.
+    if (this.rainGain && distance < 0.5 && intensity > 0.4) {
+      const duck = (1 - distance * 2) * intensity * 0.12;
+      const rg = this.rainGain.gain;
+      // Quick dip down, slow recovery — same envelope shape as a
+      // sidechain compressor on a kick + bass bus.
+      rg.cancelScheduledValues(t);
+      rg.setValueAtTime(rg.value, t);
+      rg.linearRampToValueAtTime(RAIN_LEVEL - duck, t + 0.06);
+      rg.linearRampToValueAtTime(RAIN_LEVEL, t + 1.6);
+    }
+  }
+
+  /** Smooth ramp so mute/unmute never pops. */
+  setMuted(muted: boolean) {
+    if (!this.ctx || !this.master) return;
+    this.muted = muted;
+    const t = this.ctx.currentTime;
+    const g = this.master.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(muted ? 0 : MASTER_VOLUME, t + 0.15);
+  }
+
+  dispose() {
+    if (this.rainSource) {
+      try { this.rainSource.stop(); } catch { /* already stopped */ }
+      this.rainSource.disconnect();
+    }
+    if (this.ctx && this.ctx.state !== 'closed') {
+      this.ctx.close().catch(() => { /* ignore */ });
     }
     this.ctx = null;
     this.master = null;
+    this.rainGain = null;
     this.rainSource = null;
-    this.rainGainNode = null;
     this.rainBuffer = null;
+    this.thunderNearBuffers = [];
+    this.thunderFarBuffers = [];
+    this.lastIdx = { near: -1, far: -1 };
     this.unlocked = false;
-  }
-
-  // ── Internals ────────────────────────────────────────────
-
-  private ensureContext(): AudioContext {
-    if (this.ctx) return this.ctx;
-    const w = window as WindowWithWebkit;
-    const Ctx = window.AudioContext ?? w.webkitAudioContext;
-    if (!Ctx) {
-      throw new Error('Web Audio API not supported in this browser');
-    }
-    const ctx = new Ctx();
-    const master = ctx.createGain();
-    master.gain.value = 0; // Start silent; ramps up on unlock
-    master.connect(ctx.destination);
-    this.ctx = ctx;
-    this.master = master;
-    return ctx;
-  }
-
-  /**
-   * Generate ~3 seconds of pink noise (1/f spectrum). Pink noise sounds
-   * far more like rain than white noise — white noise sounds like
-   * digital static, pink noise has the natural "swoosh" character of
-   * water droplets at varying scales.
-   *
-   * Uses the Voss-McCartney algorithm — six leaky integrators at
-   * different time constants, summed.
-   */
-  private generatePinkNoise(ctx: AudioContext, durationSec: number): AudioBuffer {
-    const sampleRate = ctx.sampleRate;
-    const length = Math.floor(sampleRate * durationSec);
-    const buffer = ctx.createBuffer(2, length, sampleRate);
-
-    for (let ch = 0; ch < 2; ch++) {
-      const data = buffer.getChannelData(ch);
-      let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
-      for (let i = 0; i < length; i++) {
-        const white = Math.random() * 2 - 1;
-        b0 = 0.99886 * b0 + white * 0.0555179;
-        b1 = 0.99332 * b1 + white * 0.0750759;
-        b2 = 0.96900 * b2 + white * 0.1538520;
-        b3 = 0.86650 * b3 + white * 0.3104856;
-        b4 = 0.55000 * b4 + white * 0.5329522;
-        b5 = -0.7616 * b5 - white * 0.0168980;
-        const pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
-        b6 = white * 0.115926;
-        data[i] = pink * 0.11;
-      }
-    }
-    return buffer;
-  }
-
-  private startRainAmbient(): void {
-    const ctx = this.ctx;
-    const master = this.master;
-    if (!ctx || !master) return;
-
-    if (!this.rainBuffer) {
-      this.rainBuffer = this.generatePinkNoise(ctx, 3.0);
-    }
-    if (this.rainSource) return; // already running
-
-    const source = ctx.createBufferSource();
-    source.buffer = this.rainBuffer;
-    source.loop = true;
-
-    // Bandpass through ~600-3500Hz to shape pink noise into "rain"
-    const bandpass = ctx.createBiquadFilter();
-    bandpass.type = 'bandpass';
-    bandpass.frequency.value = 1700;
-    bandpass.Q.value = 0.9;
-
-    // Highpass cuts the low rumble that would muddy the lightning.
-    const highpass = ctx.createBiquadFilter();
-    highpass.type = 'highpass';
-    highpass.frequency.value = 500;
-
-    const rainGain = ctx.createGain();
-    rainGain.gain.value = 0.16;
-
-    // Slow LFO on rain volume — natural ebb and flow.
-    const lfo = ctx.createOscillator();
-    const lfoDepth = ctx.createGain();
-    lfo.frequency.value = 0.11;
-    lfoDepth.gain.value = 0.035;
-    lfo.connect(lfoDepth);
-    lfoDepth.connect(rainGain.gain);
-    lfo.start();
-
-    source.connect(bandpass);
-    bandpass.connect(highpass);
-    highpass.connect(rainGain);
-    rainGain.connect(master);
-    source.start();
-
-    this.rainSource = source;
-    this.rainGainNode = rainGain;
   }
 }

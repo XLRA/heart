@@ -71,10 +71,11 @@
 
 /*
    Cloud layer drifting linearly at a constant pace — reads as wind
-   moving the storm across the sky rather than "breathing." Original
-   gradient alphas (0.16 / 0.13) preserved to keep the scene as dark
-   as the rest of the design; only the animation speed and amplitude
-   changed from the original implementation.
+   moving the storm across the sky rather than "breathing."
+
+   Cloud highlight alphas: 0.18 / 0.145 (≈ +10% from the previous
+   0.16 / 0.13). Bumps cloud-tops slightly above the base sky
+   without losing the dark stormy mood — barely a notch lighter.
 
    Larger inset (-15%) gives the clouds room to translate without
    exposing the screen edges as the drift carries them.
@@ -85,8 +86,8 @@
   z-index: 1;
   pointer-events: none;
   background:
-    radial-gradient(ellipse 42% 28% at 35% 30%, rgba(70, 70, 70, 0.16), transparent 70%),
-    radial-gradient(ellipse 52% 30% at 65% 60%, rgba(55, 55, 55, 0.13), transparent 72%);
+    radial-gradient(ellipse 42% 28% at 35% 30%, rgba(78, 78, 78, 0.18),  transparent 70%),
+    radial-gradient(ellipse 52% 30% at 65% 60%, rgba(62, 62, 62, 0.145), transparent 72%);
   animation: skyDrift 45s linear infinite alternate;
   will-change: transform;
 }
