@@ -8,18 +8,30 @@ import { StormAudio } from './stormAudio';
 import {
   STRIKES,
   PRIMARY_STRIKE_T,
+  LEADER_DURATION_MS,
   AD_HOC_STRIKE_LIFETIME_MS,
   CLICK_STRIKE_COOLDOWN_MS,
   strikeEnvelope,
+  branchIntensityFromTrunk,
   afterImage,
   ionizationLinger,
+  sweepProgress,
   type AdHocStrike,
 } from './strikes';
 import {
   VARIANT_COUNT,
+  VARIANT_PATHS,
+  VARIANT_JITTER,
   buildVariantRange,
   compositeBolt,
+  compositeBoltSweep,
   renderFlash,
+  renderCloudGlow,
+  renderCloudRim,
+  renderSkyWash,
+  renderDirectionalFlash,
+  renderAnchorExplosion,
+  renderIrisReflex,
 } from './boltRender';
 import {
   makeRaindrops,
@@ -119,7 +131,15 @@ export default function StormLanding() {
     const ctx = canvas.getContext('2d', { alpha: true });
     if (!ctx) return;
 
-    const offscreens: HTMLCanvasElement[] = Array.from(
+    // Two offscreen pools per variant: the trunk (main descending channel)
+    // and the branches (smaller forks). Composited separately so branches
+    // can decay faster than the trunk during the late strike phase —
+    // physically realistic, branches carry less current and cool sooner.
+    const trunkOffscreens: HTMLCanvasElement[] = Array.from(
+      { length: VARIANT_COUNT },
+      () => document.createElement('canvas'),
+    );
+    const branchOffscreens: HTMLCanvasElement[] = Array.from(
       { length: VARIANT_COUNT },
       () => document.createElement('canvas'),
     );
@@ -157,7 +177,8 @@ export default function StormLanding() {
       const build = () => {
         idleHandle = null;
         buildVariantRange(
-          offscreens, generateLightning, width, height, dpr,
+          trunkOffscreens, branchOffscreens, generateLightning,
+          width, height, dpr,
           INTRO_VARIANT_COUNT, VARIANT_COUNT,
         );
         for (let i = INTRO_VARIANT_COUNT; i < VARIANT_COUNT; i++) {
@@ -184,7 +205,8 @@ export default function StormLanding() {
         variantReady[i] = false;
       }
       buildVariantRange(
-        offscreens, generateLightning, width, height, dpr,
+        trunkOffscreens, branchOffscreens, generateLightning,
+        width, height, dpr,
         0, INTRO_VARIANT_COUNT,
       );
       for (let i = 0; i < INTRO_VARIANT_COUNT; i++) variantReady[i] = true;
@@ -334,14 +356,23 @@ export default function StormLanding() {
         variant = Math.floor(Math.random() * INTRO_VARIANT_COUNT);
       }
       const intensity = 0.7 + Math.random() * 0.3;
-      adHocStrikes.push({ startTime: now, variant, intensity });
-      pulseWordmark(intensity);
-
-      // Sync thunder to the bolt — close + immediate.
+      // Push the bright peak forward by LEADER_DURATION_MS so the
+      // stepped-leader pre-phase becomes visible immediately on click
+      // (faint dim trace) and the bright return-stroke flash fires
+      // ~80ms later. The wordmark + thunder are scheduled to fire AT
+      // the peak so they all stay in lock-step.
+      adHocStrikes.push({
+        startTime: now + LEADER_DURATION_MS,
+        variant,
+        intensity,
+        hasLeader: true,
+      });
+      window.setTimeout(() => pulseWordmark(intensity), LEADER_DURATION_MS);
       audioRef.current?.triggerThunder({
         distance: 0.05 + Math.random() * 0.15,
         intensity: 0.85 + Math.random() * 0.15,
-        delay: 0.04,
+        // Audio delay = leader duration + standard 40ms render-to-thunder gap.
+        delay: 0.04 + LEADER_DURATION_MS / 1000,
       });
     };
     sceneEl.addEventListener('click', handleSceneClick);
@@ -371,10 +402,37 @@ export default function StormLanding() {
       );
     }
 
-    /* Per-frame intensity buffer — reused across frames to skip a
+    /* Per-frame intensity buffers — reused across frames to skip a
        per-frame allocation. Float32Array is exactly the right shape
-       for this hot read/write pattern. */
+       for these hot read/write patterns.
+         • variantIntensity   — trunk brightness 0..1 (drives main composite)
+         • variantSweep       — return-stroke sweep progress 0..1 (1 = done)
+         • variantSourceX     — px-x of the brightest active strike's source
+                                (drives cloud-source glow position)
+         • variantAnchorX     — px-x of the brightest active strike's destination
+                                (drives anchor-point explosion position)
+       Source/anchor X are tracked from the YOUNGEST active strike on
+       each variant — that's the strike currently driving the visible
+       brightness, so its source/anchor are the right glow centers. */
     const variantIntensity = new Float32Array(VARIANT_COUNT);
+    const variantSweep = new Float32Array(VARIANT_COUNT);
+    const variantSourceX = new Float32Array(VARIANT_COUNT);
+    const variantAnchorX = new Float32Array(VARIANT_COUNT);
+
+    /* ── Iris reflex state ─────────────────────────────────────
+       The iris reflex (Tier C #4) dims the whole scene briefly
+       60-260ms AFTER each bright peak — the eye/camera adjusting
+       to the burst. We trigger on the rising edge of `flashIntensity`
+       crossing the IRIS_TRIGGER_THRESHOLD: only the brightest peaks
+       (intensity >= 0.85) fire the reflex, so dim ribbon strikes and
+       distant bg flashes don't spam the dim. `prevFlashIntensity`
+       is the across-frame edge detector. */
+    const IRIS_TRIGGER_THRESHOLD = 0.85;
+    const IRIS_DELAY_MS = 60;
+    const IRIS_DURATION_MS = 200;
+    const IRIS_PEAK_ALPHA = 0.08;
+    let lastPeakTime = -Infinity;
+    let prevFlashIntensity = 0;
 
     const tick = (now: number) => {
       rafId = requestAnimationFrame(tick);
@@ -418,25 +476,74 @@ export default function StormLanding() {
         ctx.restore();
       }
 
-      // Per-variant intensity so each strike uses its own bolt geometry.
+      // Per-variant accumulators — reset each frame.
       variantIntensity.fill(0);
+      variantSweep.fill(2);            // 2 = sentinel "no sweep / past sweep"
+      variantSourceX.fill(0);
+      variantAnchorX.fill(0);
+      // Track per-variant "youngest age" so source/anchor X follow the
+      // currently-driving strike (matters when ribbon strikes overlap).
+      // Use a small stack-like array — VARIANT_COUNT is fixed at 8.
+      const variantYoungestAge = [
+        Infinity, Infinity, Infinity, Infinity,
+        Infinity, Infinity, Infinity, Infinity,
+      ];
       let flashIntensity = 0;
+
+      // Helper: feed a single strike's contribution into all the
+      // per-variant accumulators. Inlined twice (scripted + ad-hoc).
+      const accumulateStrike = (
+        local: number,
+        intensity: number,
+        variant: number,
+        hasLeader: boolean,
+      ) => {
+        const env = strikeEnvelope(local, hasLeader) * intensity;
+        const after = afterImage(local) * intensity;
+        const total = env + after;
+        if (total > variantIntensity[variant]) {
+          variantIntensity[variant] = total;
+        }
+        // Decoupled flashIntensity — drives the scene flash + rain
+        // brightening signal. Computed WITHOUT the leader phase so
+        // rain only reacts to the bright return stroke (identical to
+        // pre-Tier-A behavior). The bolt itself still uses the
+        // leader-inclusive envelope above for its own dim pre-trace.
+        const flashEnv = local >= 0 ? strikeEnvelope(local, false) * intensity : 0;
+        if (flashEnv > flashIntensity) flashIntensity = flashEnv;
+        // Track youngest active strike on this variant — its source/anchor
+        // X feed the cloud glow + anchor explosion. "Youngest" defined as
+        // smallest absolute |local| (closest to peak) among contributors.
+        if (env > 0.01) {
+          const age = Math.abs(local);
+          if (age < variantYoungestAge[variant]) {
+            variantYoungestAge[variant] = age;
+            const path = VARIANT_PATHS[variant];
+            variantSourceX[variant] = width * path.srcX;
+            variantAnchorX[variant] = width * path.dstX;
+          }
+        }
+        // Track sweep — only when a strike is in its return-stroke window
+        // (0..RETURN_STROKE_SWEEP_MS). Take the LOWEST progress (most
+        // recent strike) as the dominant sweep state for the variant.
+        if (local >= 0) {
+          const p = sweepProgress(local);
+          if (p < variantSweep[variant]) variantSweep[variant] = p;
+        }
+      };
+
       for (const s of STRIKES) {
-        const local = elapsed - s.t;
-        const env = strikeEnvelope(local) * s.intensity;
-        const after = afterImage(local) * s.intensity;
-        variantIntensity[s.variant] = Math.max(
-          variantIntensity[s.variant],
-          env + after,
-        );
-        flashIntensity = Math.max(flashIntensity, env);
+        accumulateStrike(elapsed - s.t, s.intensity, s.variant, !!s.hasLeader);
       }
 
-      // Persistent ionization linger from primary bolt.
+      // Persistent ionization linger from primary bolt — small extra
+      // glow on variant 0's trunk only.
       const linger = ionizationLinger(elapsed - PRIMARY_STRIKE_T);
-      variantIntensity[0] = Math.max(variantIntensity[0], linger);
+      if (linger > variantIntensity[0]) variantIntensity[0] = linger;
 
-      // Ad-hoc strikes — same envelope math, pruned in place when decayed.
+      // Ad-hoc strikes — pruned in place when decayed (note: leader
+      // pre-phase makes `local` negative for ~80ms; pruning is still
+      // gated on the upper bound so future-strikes are kept alive).
       for (let i = adHocStrikes.length - 1; i >= 0; i--) {
         const s = adHocStrikes[i];
         const local = now - s.startTime;
@@ -444,13 +551,16 @@ export default function StormLanding() {
           adHocStrikes.splice(i, 1);
           continue;
         }
-        const env = strikeEnvelope(local) * s.intensity;
-        const after = afterImage(local) * s.intensity;
-        variantIntensity[s.variant] = Math.max(
-          variantIntensity[s.variant],
-          env + after,
-        );
-        flashIntensity = Math.max(flashIntensity, env);
+        accumulateStrike(local, s.intensity, s.variant, !!s.hasLeader);
+      }
+
+      // ── Sky-wide tonal wash (Tier C #2) ─────────────────────
+      // Uniform thin cool-white additive across the whole canvas
+      // during peak. Foundation for the more localized effects below.
+      // Threshold-gated to flashIntensity > 0.40 so it only fires
+      // during the bright peak — never bleeds into rain via afterimage.
+      if (flashIntensity > 0.40) {
+        renderSkyWash(ctx, width, height, flashIntensity);
       }
 
       // Flash centered at the wordmark so illumination radiates from
@@ -464,9 +574,111 @@ export default function StormLanding() {
         Math.min(1, flashIntensity),
       );
 
+      // Cloud-source glow + cloud rim — drawn BEFORE the bolts so the
+      // bolts read as emerging from a lit cloud field. Per-variant,
+      // anchored at each variant's source X, scaled by trunk intensity.
+      //
+      // Both threshold gated at 0.30 so they only fire during the
+      // bright peak / fast-decay phase (~80ms per strike), NOT during
+      // the long ~900ms afterimage tail. Without the threshold,
+      // afterimage glow leaks into the rain via additive compositing
+      // (see the 'lighter' blend in tickRain) and rain looks
+      // perpetually brighter than the hosted version.
       for (let i = 0; i < VARIANT_COUNT; i++) {
-        compositeBolt(ctx, offscreens[i], width, height, variantIntensity[i]);
+        const intensity = variantIntensity[i];
+        if (intensity > 0.30) {
+          renderCloudGlow(ctx, width, height, variantSourceX[i], intensity);
+          // Tier C #1: cloud rim — secondary cloud illumination at
+          // the upper-mid sky level on the same source side.
+          renderCloudRim(ctx, width, height, variantSourceX[i], intensity);
+        }
       }
+
+      // Bolt composite — trunk + branches separately, with per-variant
+      // jitter and (when active) return-stroke sweep.
+      //   • trunk uses full envelope intensity (peak + slow late decay)
+      //   • branches use branchIntensityFromTrunk (faster late decay)
+      //   • jitter (VARIANT_JITTER) shifts the composite by ±a few px
+      //     per variant — sub-strokes through the channel appear at
+      //     slightly different positions, like real plasma re-routing
+      //     on each re-flash
+      //   • sweep (variantSweep) renders the bolt as bottom-bright /
+      //     top-dim during the first ~11ms of the return stroke
+      for (let i = 0; i < VARIANT_COUNT; i++) {
+        const trunkI = variantIntensity[i];
+        if (trunkI <= 0) continue;
+        const branchI = branchIntensityFromTrunk(trunkI);
+        const j = VARIANT_JITTER[i];
+        const sweep = variantSweep[i];
+        if (sweep < 1) {
+          // Return-stroke sweep is active — apply to both trunk + branches
+          // so the upward brightness sweep reads as a unified flash.
+          compositeBoltSweep(ctx, trunkOffscreens[i], width, height,
+                             trunkI, sweep, j.dx, j.dy);
+          if (branchI > 0) {
+            compositeBoltSweep(ctx, branchOffscreens[i], width, height,
+                               branchI, sweep, j.dx, j.dy);
+          }
+        } else {
+          compositeBolt(ctx, trunkOffscreens[i], width, height, trunkI, j.dx, j.dy);
+          if (branchI > 0) {
+            compositeBolt(ctx, branchOffscreens[i], width, height, branchI, j.dx, j.dy);
+          }
+        }
+      }
+
+      // Anchor-point explosion — small white-hot glow at the
+      // destination point of each bright-peak strike. Drawn AFTER the
+      // bolts so the explosion sits visually "in front of" the channel
+      // contact (which matches strike photography).
+      for (let i = 0; i < VARIANT_COUNT; i++) {
+        const intensity = variantIntensity[i];
+        if (intensity > 0.45) {
+          renderAnchorExplosion(ctx, width, height, variantAnchorX[i], intensity);
+        }
+      }
+
+      // ── Directional flash (Tier C #3) ───────────────────────
+      // Brightens the lower-mid portion of the canvas with a strong
+      // source-side bias. Rain composites additively over it (rain
+      // is rendered next), so drops on the source half of the screen
+      // visually pop brighter than drops on the far side — exactly
+      // matches "drops closer to the strike catch more light." Uses
+      // the brightest currently-active variant's source X as the
+      // gradient center.
+      if (flashIntensity > 0.30) {
+        // Pick the highest-intensity variant — that's the visual
+        // dominant strike whose source the directional bias should track.
+        let dominantI = 0;
+        let dominantMax = variantIntensity[0];
+        for (let i = 1; i < VARIANT_COUNT; i++) {
+          if (variantIntensity[i] > dominantMax) {
+            dominantMax = variantIntensity[i];
+            dominantI = i;
+          }
+        }
+        renderDirectionalFlash(
+          ctx,
+          width,
+          height,
+          variantSourceX[dominantI],
+          flashIntensity,
+        );
+      }
+
+      // ── Iris reflex edge detection (Tier C #4) ──────────────
+      // Trigger the reflex on the rising edge of flashIntensity
+      // crossing the trigger threshold. Only the brightest peaks
+      // fire it — ribbon strikes (intensity 0.65, 0.35) and most bg
+      // flashes don't reach 0.85. Click strikes with intensity >= 0.85
+      // do trigger; weaker clicks don't, which adds variation.
+      if (
+        flashIntensity > IRIS_TRIGGER_THRESHOLD &&
+        prevFlashIntensity <= IRIS_TRIGGER_THRESHOLD
+      ) {
+        lastPeakTime = now;
+      }
+      prevFlashIntensity = flashIntensity;
 
       // Background lightning + thunder swells.
       if (!reduceMotion) {
@@ -508,6 +720,27 @@ export default function StormLanding() {
           flashIntensity,
           windSheet,
         });
+      }
+
+      // ── Iris reflex apply (Tier C #4) ────────────────────────
+      // Drawn LAST so it dims rain, bolts, glows, and the sky CSS
+      // layer beneath the canvas (visible through canvas alpha). The
+      // wordmark sits in the DOM stack ABOVE the canvas and stays
+      // bright — exactly mirrors how a viewer's eye reacts to a
+      // bright flash: the focal point you were looking at stays
+      // sharp while peripheral vision dims for ~200ms.
+      //
+      // Envelope shape: 60ms hold-out after peak, then 60ms ramp up,
+      // 80ms hold at 0.08 alpha, 60ms decay. Total reflex window
+      // 60-260ms post-peak.
+      const sincePeak = now - lastPeakTime;
+      if (sincePeak >= IRIS_DELAY_MS && sincePeak < IRIS_DELAY_MS + IRIS_DURATION_MS) {
+        const t = (sincePeak - IRIS_DELAY_MS) / IRIS_DURATION_MS;
+        let irisAlpha: number;
+        if (t < 0.30)      irisAlpha = IRIS_PEAK_ALPHA * (t / 0.30);            // ramp up
+        else if (t < 0.70) irisAlpha = IRIS_PEAK_ALPHA;                          // hold
+        else               irisAlpha = IRIS_PEAK_ALPHA * (1 - (t - 0.70) / 0.30); // decay
+        renderIrisReflex(ctx, width, height, irisAlpha);
       }
 
       // Mouse parallax.
