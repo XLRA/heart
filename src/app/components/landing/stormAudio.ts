@@ -51,8 +51,41 @@ interface ThunderOptions {
   delay?: number;
 }
 
-/** Master output level — caps the entire scene at this fraction of unity. */
+/** Master output level — caps the entire scene at this fraction of
+ *  unity. The actual output is `MASTER_VOLUME * userVolume`, where
+ *  userVolume is a 0..1 slider value persisted across reloads. */
 const MASTER_VOLUME = 0.78;
+
+/** Default user volume on first visit (no localStorage value yet). */
+export const DEFAULT_USER_VOLUME = 0.40;
+
+/** localStorage key for persisting user volume across reloads/pages. */
+const VOLUME_STORAGE_KEY = 'stormVolume';
+
+/** Read persisted user volume, falling back to DEFAULT_USER_VOLUME.
+ *  Safe to call from SSR / before mount — returns the default in
+ *  any environment without `window`/`localStorage`. */
+export function readPersistedVolume(): number {
+  if (typeof window === 'undefined') return DEFAULT_USER_VOLUME;
+  try {
+    const raw = window.localStorage.getItem(VOLUME_STORAGE_KEY);
+    if (raw === null) return DEFAULT_USER_VOLUME;
+    const v = Number.parseFloat(raw);
+    if (!Number.isFinite(v)) return DEFAULT_USER_VOLUME;
+    return Math.min(1, Math.max(0, v));
+  } catch {
+    return DEFAULT_USER_VOLUME;
+  }
+}
+
+function writePersistedVolume(v: number) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(VOLUME_STORAGE_KEY, String(v));
+  } catch {
+    /* quota / private mode — silently ignored */
+  }
+}
 
 /** Steady rain ambient level relative to master. */
 const RAIN_LEVEL = 0.55;
@@ -84,6 +117,8 @@ export class StormAudio {
   private unlocked = false;
   /** Avoid playing the same sample twice in a row, per pool. */
   private lastIdx = { near: -1, far: -1 };
+  /** User-controlled volume in 0..1; multiplies MASTER_VOLUME. */
+  private userVolume = readPersistedVolume();
 
   isUnlocked(): boolean {
     return this.unlocked;
@@ -91,6 +126,35 @@ export class StormAudio {
 
   isMuted(): boolean {
     return this.muted;
+  }
+
+  /** Current user-volume slider value in 0..1. */
+  getVolume(): number {
+    return this.userVolume;
+  }
+
+  /** Effective master gain (after applying user volume + mute). */
+  private effectiveGain(): number {
+    return this.muted ? 0 : MASTER_VOLUME * this.userVolume;
+  }
+
+  /**
+   * Set the user-controlled volume (0..1). Persists to localStorage
+   * so the value survives reloads / navigation. Smoothly ramps the
+   * master gain over 80ms to avoid clicks. Setting volume > 0 while
+   * muted leaves the mute state unchanged — the caller is expected
+   * to drive the mute toggle separately (slider doesn't unmute).
+   */
+  setVolume(v: number) {
+    const clamped = Math.min(1, Math.max(0, v));
+    this.userVolume = clamped;
+    writePersistedVolume(clamped);
+    if (!this.ctx || !this.master) return;
+    const t = this.ctx.currentTime;
+    const g = this.master.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(this.effectiveGain(), t + 0.08);
   }
 
   /**
@@ -112,7 +176,9 @@ export class StormAudio {
     }
 
     this.master = this.ctx.createGain();
-    this.master.gain.value = MASTER_VOLUME;
+    // Apply persisted user volume immediately on unlock — first
+    // playback already respects the slider value, no audible jump.
+    this.master.gain.value = MASTER_VOLUME * this.userVolume;
     this.master.connect(this.ctx.destination);
 
     // Decode rain + both thunder pools in parallel. Any individual
@@ -295,7 +361,8 @@ export class StormAudio {
     const g = this.master.gain;
     g.cancelScheduledValues(t);
     g.setValueAtTime(g.value, t);
-    g.linearRampToValueAtTime(muted ? 0 : MASTER_VOLUME, t + 0.15);
+    // Ramps to the user-volume-aware target gain.
+    g.linearRampToValueAtTime(this.effectiveGain(), t + 0.15);
   }
 
   dispose() {

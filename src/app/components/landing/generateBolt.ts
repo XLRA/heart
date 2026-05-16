@@ -76,6 +76,60 @@ function generateBolt(
   return { points };
 }
 
+/**
+ * Spawn one branch from a parent polyline. Picks an origin index in
+ * the middle 70% of the parent (avoiding endpoints), then projects a
+ * destination by rotating the local tangent by ±(0.3..0.95) rad and
+ * extending some random length. Returns both the branch polyline and
+ * the local tangent at origin so callers (recursive sub-branchers)
+ * can keep coherent branching geometry.
+ */
+function spawnBranch(
+  parent: Pt[],
+  rng: () => number,
+  sway: number,
+  density: number,
+  lengthRange: [number, number],
+  angleRange: [number, number] = [0.3, 0.95],
+): Pt[] {
+  const minIdx = Math.floor(parent.length * 0.15);
+  const maxIdx = Math.floor(parent.length * 0.85);
+  const idx = minIdx + Math.floor(rng() * Math.max(1, maxIdx - minIdx));
+  const origin = parent[idx];
+
+  const next = parent[Math.min(idx + 4, parent.length - 1)];
+  const dx = next[0] - origin[0];
+  const dy = next[1] - origin[1];
+  const mag = Math.hypot(dx, dy) || 1;
+  const ux = dx / mag;
+  const uy = dy / mag;
+
+  const sign = rng() < 0.5 ? -1 : 1;
+  const angle = sign * (angleRange[0] + rng() * (angleRange[1] - angleRange[0]));
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const rx = ux * c - uy * s;
+  const ry = ux * s + uy * c;
+
+  const [lo, hi] = lengthRange;
+  const branchLen = lo + rng() * (hi - lo);
+  const dest: Pt = [origin[0] + rx * branchLen, origin[1] + ry * branchLen];
+
+  return generateBolt(origin, dest, sway, rng, density).points;
+}
+
+/**
+ * Generate trunk branches plus an extra fractal layer of sub-branches
+ * (children that themselves spawn off the larger branches). Real
+ * lightning is fractal-ish — each major fork has its own little
+ * forks. The two-level structure reads as significantly more
+ * "natural" than a flat single-level fan, especially during the
+ * bright peak when every channel is visible.
+ *
+ * Sub-branches are MUCH shorter (28..95px vs 90..310px for primary
+ * branches) and only spawn off branches longer than a minimum
+ * threshold — short stubs don't get their own children.
+ */
 function generateBranches(
   mainPoints: Pt[],
   count: number,
@@ -83,35 +137,28 @@ function generateBranches(
   sway = 30,
 ): Pt[][] {
   const branches: Pt[][] = [];
-  const minIdx = Math.floor(mainPoints.length * 0.15);
-  const maxIdx = Math.floor(mainPoints.length * 0.85);
 
+  // Tier 1 — primary branches off the trunk.
   for (let i = 0; i < count; i++) {
-    const idx = minIdx + Math.floor(rng() * Math.max(1, maxIdx - minIdx));
-    const origin = mainPoints[idx];
-
-    const next = mainPoints[Math.min(idx + 4, mainPoints.length - 1)];
-    const dx = next[0] - origin[0];
-    const dy = next[1] - origin[1];
-    const mag = Math.hypot(dx, dy) || 1;
-    const ux = dx / mag;
-    const uy = dy / mag;
-
-    const sign = rng() < 0.5 ? -1 : 1;
-    const angle = sign * (0.35 + rng() * 0.6);
-    const c = Math.cos(angle);
-    const s = Math.sin(angle);
-    const rx = ux * c - uy * s;
-    const ry = ux * s + uy * c;
-
-    const branchLen = 90 + rng() * 220;
-    const dest: Pt = [origin[0] + rx * branchLen, origin[1] + ry * branchLen];
-
-    const { points } = generateBolt(origin, dest, sway, rng, 5);
-    branches.push(points);
+    const branch = spawnBranch(mainPoints, rng, sway, 5, [90, 310]);
+    branches.push(branch);
   }
 
-  return branches;
+  // Tier 2 — sub-branches off the larger primary branches.
+  // We only consider branches with >= 8 sample points; very short
+  // branches are skipped because tiny forks-off-stubs read as noise.
+  const subBranches: Pt[][] = [];
+  for (const parent of branches) {
+    if (parent.length < 8) continue;
+    // 0..2 children per qualifying primary branch.
+    const childCount = rng() < 0.65 ? (rng() < 0.35 ? 2 : 1) : 0;
+    for (let j = 0; j < childCount; j++) {
+      const child = spawnBranch(parent, rng, sway * 0.6, 4, [28, 95], [0.4, 1.05]);
+      subBranches.push(child);
+    }
+  }
+
+  return branches.concat(subBranches);
 }
 
 export interface Lightning {

@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './StormLanding.module.css';
 import { generateLightning } from './generateBolt';
-import { StormAudio } from './stormAudio';
+import { StormAudio, readPersistedVolume } from './stormAudio';
 import {
   STRIKES,
   PRIMARY_STRIKE_T,
@@ -94,6 +94,13 @@ export default function StormLanding() {
   // 'locked' = never unlocked, 'on' = playing, 'off' = unlocked but muted.
   const [audioState, setAudioState] = useState<'locked' | 'on' | 'off'>('locked');
   const audioRef = useRef<StormAudio | null>(null);
+  // User-controlled volume slider (0..1). Hydrated from localStorage
+  // on mount so navigation between pages preserves the user's choice.
+  // SSR returns the default; the effect below upgrades to persisted.
+  const [volume, setVolumeState] = useState<number>(0.40);
+  useEffect(() => {
+    setVolumeState(readPersistedVolume());
+  }, []);
 
   // Debug overlay — opt-in via `?debug` query param. The metrics object
   // is allocated once and mutated in place by the rAF loop; the overlay
@@ -108,6 +115,8 @@ export default function StormLanding() {
       if (!audio.isUnlocked()) {
         await audio.unlock();
         setAudioState('on');
+        // Sync state with whatever volume the slider was showing pre-unlock.
+        setVolumeState(audio.getVolume());
         // Welcome rumble so the user gets immediate confirmation
         // that audio is alive — distant, soft, builds atmosphere.
         audio.triggerThunder({ distance: 0.85, intensity: 0.55, delay: 0.3 });
@@ -122,6 +131,31 @@ export default function StormLanding() {
       // Audio failure shouldn't crash the scene — just stay 'locked'.
     }
   }, []);
+
+  /**
+   * Volume slider handler. Persists immediately (via setVolume) so
+   * the value survives reloads even if the user never interacts with
+   * the icon. If the user drags the slider above 0 while currently
+   * muted, auto-unmute as a one-shot convenience — mirrors how
+   * basically every native OS volume slider behaves.
+   */
+  const handleVolumeChange = useCallback((next: number) => {
+    setVolumeState(next);
+    const audio = audioRef.current;
+    if (audio) {
+      audio.setVolume(next);
+      if (next > 0 && audioState === 'off') {
+        audio.setMuted(false);
+        setAudioState('on');
+      }
+    } else {
+      // Audio not yet unlocked — still persist so the value is applied
+      // when the user next clicks the speaker icon to unlock.
+      try {
+        window.localStorage.setItem('stormVolume', String(next));
+      } catch { /* ignore */ }
+    }
+  }, [audioState]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -339,37 +373,109 @@ export default function StormLanding() {
       );
     };
 
+    /**
+     * Pick the prerendered variant whose destination X best matches a
+     * given click X (in CSS pixels). Anchors the visible strike to
+     * the user's cursor — clicks on the left side fire variants that
+     * land on the left, clicks on the right fire ones that land on
+     * the right. Falls back to ANY ready variant if the closest one
+     * hasn't been prerendered yet (idle build still pending).
+     */
+    const pickVariantForClickX = (clickX: number): number => {
+      const targetFrac = clickX / Math.max(1, width);
+      let bestIdx = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < VARIANT_COUNT; i++) {
+        if (!variantReady[i]) continue;
+        const d = Math.abs(VARIANT_PATHS[i].dstX - targetFrac);
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = i;
+        }
+      }
+      // If somehow nothing is ready (shouldn't happen — intro
+      // variants are always rendered synchronously on init), fall
+      // back to the canonical primary variant 0.
+      if (bestDist === Infinity) bestIdx = 0;
+      return bestIdx;
+    };
+
     const handleSceneClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
-      if (target?.closest('a, button')) return;
+      if (target?.closest('a, button, input, [role="slider"]')) return;
       const now = performance.now();
       if (now - lastClickStrikeTime < CLICK_STRIKE_COOLDOWN_MS) return;
       lastClickStrikeTime = now;
 
-      // Click strikes draw from the full 8-variant pool so each click
-      // can come from a different angle. If the chosen variant hasn't
-      // been prerendered yet (idle build still pending), fall back to
-      // a guaranteed-ready intro variant so the click never produces
-      // an empty bolt.
-      let variant = Math.floor(Math.random() * VARIANT_COUNT);
-      if (!variantReady[variant]) {
-        variant = Math.floor(Math.random() * INTRO_VARIANT_COUNT);
-      }
-      const intensity = 0.7 + Math.random() * 0.3;
-      // Push the bright peak forward by LEADER_DURATION_MS so the
-      // stepped-leader pre-phase becomes visible immediately on click
-      // (faint dim trace) and the bright return-stroke flash fires
-      // ~80ms later. The wordmark + thunder are scheduled to fire AT
-      // the peak so they all stay in lock-step.
+      // Anchor the strike to the cursor — the chosen variant lands
+      // closest to the click position.
+      const variant = pickVariantForClickX(e.clientX);
+      const intensity = 0.78 + Math.random() * 0.22;
+
+      // Primary return stroke. Push the bright peak forward by
+      // LEADER_DURATION_MS so the stepped-leader pre-phase is visible
+      // immediately on click (faint dim trace) and the bright return
+      // stroke fires ~80ms later. Wordmark + thunder fire AT peak so
+      // all subsystems stay in lock-step.
+      const peakTime = now + LEADER_DURATION_MS;
       adHocStrikes.push({
-        startTime: now + LEADER_DURATION_MS,
+        startTime: peakTime,
         variant,
         intensity,
         hasLeader: true,
       });
+
+      /* ── Multi-stroke flicker ────────────────────────────────
+         Real natural cloud-to-ground strikes have on average 3-4
+         RETURN STROKES through the same ionized channel, ~40-100ms
+         apart. The first is the brightest; subsequent strokes are
+         dimmer because the channel cools between flashes. This is
+         THE iconic, instantly-recognizable visual signature of real
+         lightning — a single flash reads as cartoon lightning, the
+         flicker reads as a photograph.
+
+         We spawn 1-3 sub-strokes through the SAME variant (same
+         channel), with NO leader (channel is already ionized — the
+         sub-stroke is instantaneous), each at progressively lower
+         intensity. Inter-stroke spacing is 45-110ms, randomized
+         per stroke for natural variation. */
+      const subStrokeCount = 1 + Math.floor(Math.random() * 3); // 1..3
+      let strokeOffset = 0;
+      for (let i = 0; i < subStrokeCount; i++) {
+        strokeOffset += 45 + Math.random() * 65;
+        // Each sub-stroke is dimmer than the previous: 0.62, 0.42, 0.28.
+        const decay = Math.pow(0.68, i + 1);
+        const subIntensity = Math.max(0.18, intensity * decay);
+        adHocStrikes.push({
+          startTime: peakTime + strokeOffset,
+          variant,
+          intensity: subIntensity,
+          hasLeader: false,
+        });
+        // Tiny extra wordmark twitch on the brightest sub-stroke
+        // (the first one) so the wordmark flickers WITH the channel,
+        // not just on the primary peak.
+        if (i === 0) {
+          window.setTimeout(
+            () => pulseWordmark(subIntensity * 0.7),
+            LEADER_DURATION_MS + strokeOffset,
+          );
+        }
+        // Soft thunder crackle after the brightest sub-stroke — sells
+        // the rolling/cracking quality real strikes have. Quieter and
+        // slightly more distant than the main bolt.
+        if (i === 0 && audioRef.current) {
+          audioRef.current.triggerThunder({
+            distance: 0.18 + Math.random() * 0.18,
+            intensity: 0.32 + subIntensity * 0.35,
+            delay: (LEADER_DURATION_MS + strokeOffset) / 1000 + 0.06,
+          });
+        }
+      }
+
       window.setTimeout(() => pulseWordmark(intensity), LEADER_DURATION_MS);
       audioRef.current?.triggerThunder({
-        distance: 0.05 + Math.random() * 0.15,
+        distance: 0.04 + Math.random() * 0.12,
         intensity: 0.85 + Math.random() * 0.15,
         // Audio delay = leader duration + standard 40ms render-to-thunder gap.
         delay: 0.04 + LEADER_DURATION_MS / 1000,
@@ -837,16 +943,39 @@ export default function StormLanding() {
         mmxxvi
       </div>
 
-      <button
-        type="button"
-        className={styles.audioToggle}
-        aria-label={
-          audioState === 'on' ? 'Mute storm audio' : 'Enable storm audio'
-        }
-        onClick={handleToggleAudio}
-      >
-        <SoundIcon state={audioState} />
-      </button>
+      <div className={styles.audioControl}>
+        <div className={styles.volumePopover} aria-hidden={audioState === 'locked'}>
+          <span className={styles.volumeLabel}>{Math.round(volume * 100)}%</span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={Math.round(volume * 100)}
+            onChange={(e) => handleVolumeChange(Number(e.target.value) / 100)}
+            className={styles.volumeSlider}
+            aria-label="Site volume"
+            aria-valuetext={`${Math.round(volume * 100)} percent`}
+            // Block the slider's value-change clicks from also
+            // triggering a scene click → lightning strike.
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            // CSS-side rendering uses a CSS variable so the filled
+            // portion of the track tracks the value with no JS work.
+            style={{ ['--volPct' as string]: `${Math.round(volume * 100)}%` }}
+          />
+        </div>
+        <button
+          type="button"
+          className={styles.audioToggle}
+          aria-label={
+            audioState === 'on' ? 'Mute storm audio' : 'Enable storm audio'
+          }
+          onClick={handleToggleAudio}
+        >
+          <SoundIcon state={audioState} />
+        </button>
+      </div>
 
       <Link href="/music" className={styles.musicLink}>
         music

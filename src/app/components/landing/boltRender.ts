@@ -79,18 +79,15 @@ export const VARIANT_JITTER: readonly { dx: number; dy: number }[] = [
 ];
 
 /* ── Color palette ──────────────────────────────────────────────
-   Real lightning has a temperature gradient — the channel core is
-   ~25,000K (overexposed white), but the surrounding corona has a
-   slight cool blue-violet tint from nitrogen emission lines. Pure-
-   white halos read as "drawn"; cool-tinted halos read as "real
-   storm photography."
-
-   The cool tint is strongest in the OUTER halo (broadest, dimmest
-   bloom) and progressively neutral toward the WHITE-HOT core. */
-const HALO_OUTER_COLOR  = 'rgba(208, 220, 245, 1)';   // cool blue-white
-const HALO_OUTER_STROKE = 'rgba(220, 232, 250, 0.85)';
-const HALO_INNER_COLOR  = 'rgba(238, 244, 252, 1)';   // very faint cool tint
-const HALO_INNER_STROKE = 'rgba(248, 251, 254, 0.95)';
+   Pure-white temperature gradient — broad outer bloom is a soft
+   neutral white, progressively brightening to the overexposed
+   #ffffff channel core. Intentionally devoid of any cool/warm
+   tint so the bolt reads as a clean, monochrome white discharge
+   (no purple/orange/blue color cast anywhere in the stack). */
+const HALO_OUTER_COLOR  = 'rgba(232, 232, 232, 1)';   // soft neutral white
+const HALO_OUTER_STROKE = 'rgba(240, 240, 240, 0.85)';
+const HALO_INNER_COLOR  = 'rgba(248, 248, 248, 1)';   // brighter neutral white
+const HALO_INNER_STROKE = 'rgba(252, 252, 252, 0.95)';
 /* Pass 3 + 4 stay pure white — the channel core is overexposed. */
 
 const TAPER = [1.0, 0.6, 0.3];
@@ -336,11 +333,11 @@ export function renderCloudGlow(
   const cy = -height * 0.05;
   const radius = Math.max(width, height) * 0.42;
   const grad = ctx.createRadialGradient(sourceX, cy, 0, sourceX, cy, radius);
-  // Cool blue-white at center matches the bolt's outer halo color
-  // — visually couples the cloud illumination to the bolt itself.
-  grad.addColorStop(0,    `rgba(210, 225, 248, ${0.55 * intensity})`);
-  grad.addColorStop(0.35, `rgba(170, 188, 220, ${0.28 * intensity})`);
-  grad.addColorStop(0.7,  `rgba(110, 130, 165, ${0.10 * intensity})`);
+  // Pure neutral white at center — visually couples the cloud
+  // illumination to the bolt's own neutral-white halo (no color cast).
+  grad.addColorStop(0,    `rgba(235, 235, 235, ${0.55 * intensity})`);
+  grad.addColorStop(0.35, `rgba(185, 185, 185, ${0.28 * intensity})`);
+  grad.addColorStop(0.7,  `rgba(125, 125, 125, ${0.10 * intensity})`);
   grad.addColorStop(1,    'rgba(0, 0, 0, 0)');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, width, height);
@@ -375,8 +372,8 @@ export function renderAnchorExplosion(
   const radius = Math.max(width, height) * 0.28;
   const grad = ctx.createRadialGradient(anchorX, cy, 0, anchorX, cy, radius);
   grad.addColorStop(0,    `rgba(255, 255, 255, ${0.72 * punch})`);
-  grad.addColorStop(0.18, `rgba(228, 238, 255, ${0.50 * punch})`);
-  grad.addColorStop(0.45, `rgba(170, 195, 230, ${0.22 * punch})`);
+  grad.addColorStop(0.18, `rgba(238, 238, 238, ${0.50 * punch})`);
+  grad.addColorStop(0.45, `rgba(190, 190, 190, ${0.22 * punch})`);
   grad.addColorStop(1,    'rgba(0, 0, 0, 0)');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, width, height);
@@ -408,9 +405,9 @@ export function renderCloudRim(
   const cy = height * 0.32;
   const radius = Math.max(width, height) * 0.55;
   const grad = ctx.createRadialGradient(sourceX, cy, 0, sourceX, cy, radius);
-  grad.addColorStop(0,    `rgba(215, 228, 248, ${0.20 * intensity})`);
-  grad.addColorStop(0.40, `rgba(170, 188, 220, ${0.10 * intensity})`);
-  grad.addColorStop(0.85, `rgba(90, 110, 145, ${0.03 * intensity})`);
+  grad.addColorStop(0,    `rgba(232, 232, 232, ${0.20 * intensity})`);
+  grad.addColorStop(0.40, `rgba(185, 185, 185, ${0.10 * intensity})`);
+  grad.addColorStop(0.85, `rgba(110, 110, 110, ${0.03 * intensity})`);
   grad.addColorStop(1,    'rgba(0, 0, 0, 0)');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, width, height);
@@ -418,10 +415,10 @@ export function renderCloudRim(
 }
 
 /**
- * Sky-wide tonal wash — uniform thin cool-tinted additive across the
- * entire canvas during peak. Like the entire atmosphere catches the
- * flash for a fraction of a second. Subtle (~6% peak alpha); meant to
- * be a foundation other strike effects sit on top of.
+ * Sky-wide tonal wash — uniform thin neutral-white additive across
+ * the entire canvas during peak. Like the entire atmosphere catches
+ * the flash for a fraction of a second. Subtle (~6% peak alpha);
+ * meant to be a foundation other strike effects sit on top of.
  *
  * No source position — uniform fill, since the wash is the whole sky
  * being lit, not a directional source.
@@ -435,7 +432,7 @@ export function renderSkyWash(
   if (intensity <= 0) return;
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  ctx.fillStyle = `rgba(195, 212, 235, ${0.06 * intensity})`;
+  ctx.fillStyle = `rgba(220, 220, 220, ${0.06 * intensity})`;
   ctx.fillRect(0, 0, width, height);
   ctx.restore();
 }
@@ -467,8 +464,8 @@ export function renderDirectionalFlash(
   const cy = height * 0.60;
   const radius = Math.max(width, height) * 0.85;
   const grad = ctx.createRadialGradient(sourceX, cy, 0, sourceX, cy, radius);
-  grad.addColorStop(0,    `rgba(220, 232, 250, ${0.10 * intensity})`);
-  grad.addColorStop(0.40, `rgba(160, 180, 215, ${0.05 * intensity})`);
+  grad.addColorStop(0,    `rgba(238, 238, 238, ${0.10 * intensity})`);
+  grad.addColorStop(0.40, `rgba(180, 180, 180, ${0.05 * intensity})`);
   grad.addColorStop(1,    'rgba(0, 0, 0, 0)');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, width, height);
