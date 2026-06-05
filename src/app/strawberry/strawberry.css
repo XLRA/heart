@@ -10,6 +10,20 @@
   font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
 }
 
+/* Background depth: a deep maroon glow at center fading to black at the edges,
+   so content emerges from depth instead of a flat void.
+   (Removable: delete this rule and swap the .strawberry-bg class back to bg-[#050505].) */
+.strawberry-bg {
+  background: radial-gradient(ellipse at center, #1a0610 0%, #0c0307 45%, #050505 100%);
+}
+
+/* Vignette: darkens the corners to frame the centered heart and pull the eye
+   inward. Sits above the background/embers but below the content + scanline.
+   (Removable: delete this rule and the <div className="strawberry-vignette" /> in page.tsx.) */
+.strawberry-vignette {
+  background: radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.55) 100%);
+}
+
 .strawberry-root .font-mono {
   font-family: "Fira Code", monospace;
 }

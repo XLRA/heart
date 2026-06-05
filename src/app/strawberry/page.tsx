@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Lock } from "lucide-react";
 import TextHeart from "./components/TextHeart";
+import Embers from "./components/Embers";
 
 const Typewriter = ({
   text,
@@ -84,10 +85,12 @@ export default function StrawberryPage() {
   return (
     <div
       onClick={handleReveal}
-      className={`relative min-h-screen w-full flex items-center justify-center bg-[#050505] overflow-hidden selection:bg-[#ff4d6d]/30 ${
+      className={`strawberry-bg isolate relative min-h-screen w-full flex items-center justify-center overflow-hidden selection:bg-[#ff4d6d]/30 ${
         stage === "console" && consoleFinished ? "cursor-pointer" : ""
       }`}
     >
+      <Embers />
+      <div className="strawberry-vignette pointer-events-none fixed inset-0 z-[5]" />
       <div className="scanline" />
 
       <AnimatePresence mode="wait">

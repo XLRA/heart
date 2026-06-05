@@ -3,8 +3,10 @@
 import { useEffect, useRef } from "react";
 
 interface Point {
-  x: number;
-  y: number;
+  // Offset from the heart's center; the actual draw position is derived
+  // each frame so the whole shape can pulse (heartbeat) around its middle.
+  offsetX: number;
+  offsetY: number;
   alpha: number;
   targetAlpha: number;
   delay: number;
@@ -22,32 +24,35 @@ interface Point {
 // Outer outline always uses the same phrase so the silhouette stays clean.
 const OUTLINE_WORD = "i love you";
 
-// Inner-fill word pool, weighted so the main message dominates and the
-// other words sprinkle in as accents.
-const INNER_WORDS = [
-  "i love you",
+// The main message stays dominant; everything in NICKNAMES splits the
+// remaining probability evenly, so names can be added/removed freely
+// without ever re-tuning weights by hand.
+const MAIN_WORD = "i love you";
+const MAIN_WEIGHT = 0.35;
+const NICKNAMES = [
   "baby",
   "beautiful",
   "gorgeous",
   "strawberry",
   "princess",
+  "my love",
+  "sweetheart",
+  "angel",
+  "cutie",
+  "sunshine",
+  "honey",
+  "pretty girl",
 ];
-const INNER_WEIGHTS = [0.35, 0.13, 0.13, 0.13, 0.13, 0.13];
 
 const pickInnerWord = () => {
-  const r = Math.random();
-  let acc = 0;
-  for (let i = 0; i < INNER_WORDS.length; i++) {
-    acc += INNER_WEIGHTS[i];
-    if (r < acc) return INNER_WORDS[i];
-  }
-  return INNER_WORDS[0];
+  if (Math.random() < MAIN_WEIGHT) return MAIN_WORD;
+  return NICKNAMES[Math.floor(Math.random() * NICKNAMES.length)];
 };
 
 // Only the main "i love you" message is pink; the rest render white.
 const PINK = "255, 77, 109";
 const WHITE = "255, 255, 255";
-const colorFor = (word: string) => (word === "i love you" ? PINK : WHITE);
+const colorFor = (word: string) => (word === MAIN_WORD ? PINK : WHITE);
 
 // Glitch-decode helpers — scramble each letter through random hex chars
 // and resolve them left-to-right while the point fades in.
@@ -55,6 +60,13 @@ const HEX = "0123456789ABCDEF";
 const randHex = () => HEX[Math.floor(Math.random() * HEX.length)];
 const scrambleChar = (c: string) => (/[a-zA-Z]/.test(c) ? randHex() : c);
 const SCRAMBLE_SHUFFLE_MS = 70;
+
+// Slow "breathing" envelope: a smooth 0..1 swell over BREATHE_PERIOD seconds.
+// Drives the glow/backglow intensity so the heart feels warm and alive
+// without any visible motion. tSeconds is wall-clock time in seconds.
+const BREATHE_PERIOD = 5.5; // seconds per full swell-and-dim cycle
+const breathing = (tSeconds: number) =>
+  0.5 + 0.5 * Math.sin((tSeconds / BREATHE_PERIOD) * Math.PI * 2);
 
 const heartXY = (t: number) => {
   // Heart equation:
@@ -87,17 +99,15 @@ export default function TextHeart() {
 
     const initPoints = () => {
       points = [];
-      const centerX = cssWidth / 2;
-      const centerY = cssHeight / 2;
       const scale = Math.min(cssWidth, cssHeight) / 45;
 
-      // Outline: "i love you, rin" only — keeps a crisp heart silhouette.
+      // Outline: "i love you" only — keeps a crisp heart silhouette.
       for (let t = 0; t < Math.PI * 2; t += 0.05) {
         const { x, y } = heartXY(t);
         const delay = Math.random() * 2000;
         points.push({
-          x: centerX + x * scale,
-          y: centerY + y * scale,
+          offsetX: x * scale,
+          offsetY: y * scale,
           alpha: 0,
           targetAlpha: 0.85 + Math.random() * 0.15,
           delay,
@@ -119,8 +129,8 @@ export default function TextHeart() {
           const word = pickInnerWord();
           const delay = Math.random() * 3000;
           points.push({
-            x: centerX + x * scale * s,
-            y: centerY + y * scale * s,
+            offsetX: x * scale * s,
+            offsetY: y * scale * s,
             alpha: 0,
             targetAlpha: 0.4 + Math.random() * 0.4,
             delay,
@@ -155,6 +165,32 @@ export default function TextHeart() {
 
       ctx.clearRect(0, 0, cssWidth, cssHeight);
       ctx.font = `${fontSize}px "Fira Code", monospace`;
+
+      const centerX = cssWidth / 2;
+      const centerY = cssHeight / 2;
+      const scale = Math.min(cssWidth, cssHeight) / 45;
+
+      // Slow breathing drives the glow + backglow intensity (0..1).
+      const breathe = breathing(elapsed / 1000);
+
+      // Ambient backglow: a soft radial pool of pink light behind the heart so
+      // it sits in warmth instead of floating on pure black. Breathes too.
+      const glowRadius = scale * 22;
+      const gradient = ctx.createRadialGradient(
+        centerX,
+        centerY,
+        0,
+        centerX,
+        centerY,
+        glowRadius,
+      );
+      const glowAlpha = 0.07 + 0.05 * breathe;
+      gradient.addColorStop(0, `rgba(${PINK}, ${glowAlpha})`);
+      gradient.addColorStop(0.5, `rgba(${PINK}, ${glowAlpha * 0.4})`);
+      gradient.addColorStop(1, `rgba(${PINK}, 0)`);
+      ctx.shadowBlur = 0; // the gradient pool shouldn't cast its own shadow
+      ctx.fillStyle = gradient;
+      ctx.fillRect(centerX - glowRadius, centerY - glowRadius, glowRadius * 2, glowRadius * 2);
 
       // Particle birth/death: occasionally retire an inner point and respawn
       // it with a new word/color (and a fresh decode).
@@ -211,8 +247,15 @@ export default function TextHeart() {
           display = p.text;
         }
 
+        const drawX = centerX + p.offsetX;
+        const drawY = centerY + p.offsetY;
+
+        // Soft bloom so the heart feels lit; the pink outline glows strongest
+        // and the whole bloom swells/dims slowly with the breathing cycle.
+        ctx.shadowColor = `rgba(${p.color}, ${Math.min(1, p.alpha + 0.2)})`;
+        ctx.shadowBlur = (p.outline ? 12 : 6) + breathe * 5;
         ctx.fillStyle = `rgba(${p.color}, ${p.alpha})`;
-        ctx.fillText(display, p.x - ctx.measureText(display).width / 2, p.y);
+        ctx.fillText(display, drawX - ctx.measureText(display).width / 2, drawY);
       }
 
       animationFrameId = requestAnimationFrame(draw);
