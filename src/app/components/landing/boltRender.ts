@@ -12,12 +12,12 @@
    less current and cool sooner). Both layers use additive 3-stack
    compositing for white-hot bloom.
 
-   Variant 0 is the canonical "primary" bolt. Variants 1 and 2 are
-   tightly-clustered RIBBON offsets — they share roughly the same
-   path as variant 0 with a small lateral wind drift, so the
-   scripted 3-strike intro reads as "one storm channel flickering
-   three times" rather than three separate bolts. Variants 3-7
-   are click-only fresh-channel pool with totally different angles.
+   Variant 0 is the canonical "primary" bolt — the center channel
+   the scripted intro fires through the wordmark. Variants 1 and 2
+   are tightly-clustered RIBBON offsets sharing roughly the same
+   path with a small lateral wind drift. Variants 3-7 are a
+   fresh-channel pool with totally different angles; clicks and
+   ambient auto-strikes draw randomly from all six channels.
 
    Each variant also carries a small JITTER offset baked at build
    time — applied at composite time so subsequent strokes through
@@ -28,7 +28,7 @@
    ~2MB on a 1080p display ≈ 32MB. Re-render cost on resize: ~80ms.
    ────────────────────────────────────────────────────────────── */
 
-import { strokePoints, type Lightning, type Pt } from './generateBolt';
+import { strokePoints, mulberry32, type Lightning, type Pt } from './generateBolt';
 
 export const VARIANT_COUNT = 8;
 
@@ -37,14 +37,17 @@ export const VARIANT_COUNT = 8;
  * applied as -60 above viewport for sources and +60 below for
  * destinations so the bolt enters/exits cleanly off-screen.
  *
- * Variants 0-2 are RIBBON-spaced — same approximate channel with
- * minor lateral drift, so the 3-strike intro feels like a single
- * multi-stroke flash through one storm channel.
+ * Variant 0 is the canonical top-right → bottom-left diagonal.
+ * Its straight-line path crosses x≈0.5 at mid-height — exactly
+ * where the wordmark sits — so the scripted intro strike reads as
+ * the bolt slashing down through the word on its way to ground.
+ * Variants 1-2 are RIBBON offsets of that channel — minor lateral
+ * drift, used by the click pool and the intro's re-flashes.
  */
 export const VARIANT_PATHS: readonly { srcX: number; dstX: number }[] = [
-  { srcX: 0.92, dstX: 0.08 },   // 0 — primary: canonical top-right → bottom-left
-  { srcX: 0.915, dstX: 0.092 }, // 1 — ribbon: ~0.5% drift toward viewer-left at top, +1.2% at bottom
-  { srcX: 0.928, dstX: 0.075 }, // 2 — ribbon: ~0.8% drift the other way
+  { srcX: 0.92, dstX: 0.08 },   // 0 — primary: top-right → bottom-left through the wordmark
+  { srcX: 0.915, dstX: 0.092 }, // 1 — ribbon: small drift viewer-left
+  { srcX: 0.928, dstX: 0.075 }, // 2 — ribbon: small drift the other way
   { srcX: 0.55, dstX: 0.12 },   // 3 — top-center → bottom-left
   { srcX: 0.48, dstX: 0.85 },   // 4 — top-center → bottom-right
   { srcX: 0.15, dstX: 0.88 },   // 5 — top-left → bottom-right
@@ -104,6 +107,27 @@ function strokeBranches(
   }
 }
 
+/**
+ * Stroke a polyline in short chunks with per-chunk width variation.
+ * Real plasma channels have hot spots — segments where the discharge
+ * is locally brighter/thicker. A constant-width hairline core reads
+ * as vector art; the ±35% chunked variation reads as a photograph.
+ * Chunks overlap by one point and use round caps so joints blend.
+ */
+function strokeVariedCore(
+  ctx: CanvasRenderingContext2D,
+  pts: Pt[],
+  baseWidth: number,
+  rng: () => number,
+) {
+  const CHUNK = 7;
+  for (let i = 0; i < pts.length - 1; i += CHUNK) {
+    const seg = pts.slice(i, Math.min(pts.length, i + CHUNK + 1));
+    ctx.lineWidth = baseWidth * (0.72 + rng() * 0.66);
+    strokePoints(ctx, seg);
+  }
+}
+
 function clearOffscreen(off: HTMLCanvasElement, width: number, height: number, dpr: number) {
   off.width = Math.floor(width * dpr);
   off.height = Math.floor(height * dpr);
@@ -153,11 +177,11 @@ export function prerenderTrunk(
   ctx.lineWidth = 1.0;
   strokePoints(ctx, bolt.trunk);
 
-  // Pass 4 — pure-white hairline core (overexposed channel).
+  // Pass 4 — pure-white hairline core (overexposed channel) with
+  // per-chunk hot-spot width variation along the channel.
   ctx.shadowBlur = 0;
   ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 0.5;
-  strokePoints(ctx, bolt.trunk);
+  strokeVariedCore(ctx, bolt.trunk, 0.55, mulberry32(7919 + bolt.trunk.length));
 }
 
 /**
@@ -197,11 +221,12 @@ export function prerenderBranches(
   ctx.lineWidth = 0.6;
   strokeBranches(ctx, bolt.branches);
 
-  // Pass 4 — pure-white hairline core (no shadow).
+  // Pass 4 — pure-white hairline core (no shadow), with the same
+  // hot-spot width variation as the trunk core.
   ctx.shadowBlur = 0;
   ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 0.35;
-  for (const br of bolt.branches) strokePoints(ctx, br);
+  const coreRng = mulberry32(1543 + bolt.branches.length);
+  for (const br of bolt.branches) strokeVariedCore(ctx, br, 0.38, coreRng);
 }
 
 /**
@@ -272,6 +297,63 @@ export function compositeBoltSweep(
   ctx.rect(0, cutoffY, width, height - cutoffY);
   ctx.clip();
   compositeBolt(ctx, off, width, height, intensity * 0.85, jitterX, jitterY);
+  ctx.restore();
+}
+
+/**
+ * Composite with a stepped-leader descent — the bolt is revealed
+ * top-down, clipped to a top-anchored rectangle that grows downward
+ * as the leader propagates from cloud toward ground. Branches pass
+ * through the same clip, so forks pop into view as the descent
+ * passes their junctions — exactly how stepped leaders branch in
+ * high-speed footage.
+ */
+export function compositeBoltLeader(
+  ctx: CanvasRenderingContext2D,
+  off: HTMLCanvasElement,
+  width: number,
+  height: number,
+  intensity: number,
+  progress: number,
+  jitterX = 0,
+  jitterY = 0,
+) {
+  if (intensity <= 0 || progress <= 0) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, width, height * progress);
+  ctx.clip();
+  compositeBolt(ctx, off, width, height, intensity, jitterX, jitterY);
+  ctx.restore();
+}
+
+/**
+ * Bright spot at the descending leader's tip. The tip is where new
+ * air is being ionized, so it glows hotter than the channel behind
+ * it — the single detail that makes the descent read as "something
+ * alive crawling down" rather than a wipe reveal.
+ *
+ * Tip coordinates are the caller's straight-line approximation of
+ * the channel (lerp of the variant's src/dst); the glow is soft
+ * enough that the few-px mismatch with the jagged path is invisible.
+ */
+export function renderLeaderTip(
+  ctx: CanvasRenderingContext2D,
+  tipX: number,
+  tipY: number,
+  intensity: number,
+) {
+  if (intensity <= 0) return;
+  const a = Math.min(1, intensity * 2.4);
+  const r = 28;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const grad = ctx.createRadialGradient(tipX, tipY, 0, tipX, tipY, r);
+  grad.addColorStop(0,   `rgba(255, 255, 255, ${0.55 * a})`);
+  grad.addColorStop(0.4, `rgba(240, 240, 240, ${0.22 * a})`);
+  grad.addColorStop(1,   'rgba(0, 0, 0, 0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(tipX - r, tipY - r, r * 2, r * 2);
   ctx.restore();
 }
 

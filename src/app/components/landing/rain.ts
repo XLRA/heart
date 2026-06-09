@@ -24,8 +24,24 @@
    - Each drop drifts sideways on a personal sine wave — micro
      air-currents pushing each drop independently.
    - WIND SHEETS: every ~18-26s, a 4s gust event briefly steepens
-     the lean, brightens, and elongates one layer — a visible
-     curtain of rain crossing the scene.
+     the lean, brightens, and elongates one layer — plus a soft
+     sheen band that physically SWEEPS across the screen in the
+     lean direction, so the gust reads as a curtain crossing the
+     scene rather than a global parameter change.
+   - DEPTH PARALLAX: each layer carries a depth factor on the same
+     axis as the CSS sky (+4, far) / stage (-7, near) parallax.
+     Mist barely moves with the sky; near streaks swing past the
+     camera. This is what makes the rain read as a volume instead
+     of a flat overlay.
+   - LIGHTNING GLINTS: during flash peaks a rotating sparse subset
+     of mid/near drop heads flares bright — individual drops
+     catching the bolt's light, the photographic "backlit rain"
+     signature.
+   - GROUND HAZE: a faint neutral haze pools in the bottom third,
+     breathing with the gust envelope and catching every flash.
+   - Streak length stretches with gust speed (longer exposure
+     streaks when the air accelerates the drops), and flashes add
+     a small downdraft speed kick.
 
    Drops that exit the bottom edge are silently rerolled to the
    top — no ground splashes are drawn, deliberately. The scene
@@ -99,6 +115,16 @@ export const LAYERS: readonly RainLayer[] = [
   // Near — sharp foreground accent at terminal-velocity (~9 m/s scaled)
   { speedMin: 2750, speedMax: 4000, lengthMin: 36, lengthMax: 70, tailAlpha: 0.10,  headAlpha: 0.32, width: 1.20, proportion: 0.10 },
 ];
+
+/**
+ * Per-layer parallax depth, on the SAME axis the CSS layers use:
+ * the sky (farthest) translates at +4 × parallax, the stage at -7.
+ * Mist sits just in front of the sky; near streaks sit closer to
+ * the camera than the wordmark, so they move hardest against the
+ * cursor. Applied as a whole-layer translate — free, since each
+ * layer is already a single batched path.
+ */
+const PARALLAX_DEPTH: readonly number[] = [3, 0.5, -3, -9];
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
@@ -252,6 +278,8 @@ function updateWindSheet(state: WindSheetState, now: number): {
   intensity: number;
   targetLayer: number;
   leanDir: number;
+  /** Lifetime fraction 0..1 — drives the sweeping curtain position. */
+  progress: number;
 } {
   if (state.active) {
     const e = now - state.active.startTime;
@@ -277,13 +305,14 @@ function updateWindSheet(state: WindSheetState, now: number): {
         intensity: env * a.peak,
         targetLayer: a.targetLayer,
         leanDir: a.leanDir,
+        progress: e / a.duration,
       };
     }
   }
   if (now >= state.nextAt) {
     state.active = spawnSheet(now);
   }
-  return { intensity: 0, targetLayer: -1, leanDir: 0 };
+  return { intensity: 0, targetLayer: -1, leanDir: 0, progress: 0 };
 }
 
 /* ── Per-frame rain rendering ───────────────────────────────── */
@@ -301,6 +330,10 @@ export interface TickRainOpts {
   /** Lightning flash signal, 0..1. Brightens rain at strike peaks. */
   flashIntensity: number;
   windSheet: WindSheetState;
+  /** Smoothed mouse parallax, -1..1 (0 when parallax is inactive).
+   *  Drives per-layer depth offsets so the rain reads as a volume. */
+  parallaxX?: number;
+  parallaxY?: number;
 }
 
 /* ── Head-segment scratch buffer ──────────────────────────────
@@ -325,6 +358,8 @@ const HEAD_SCRATCH = new Float32Array(4096);
  */
 export function tickRain(opts: TickRainOpts): { totalDrops: number } {
   const { ctx, layers, dt, width, height, elapsed, now, flashIntensity, windSheet } = opts;
+  const parX = opts.parallaxX ?? 0;
+  const parY = opts.parallaxY ?? 0;
 
   // ─ Multi-octave wind. Three non-harmonic frequencies so the
   //   pattern never re-aligns into a recognizable cycle.
@@ -350,6 +385,9 @@ export function tickRain(opts: TickRainOpts): { totalDrops: number } {
     Math.sin(elapsed * 0.00091) * 0.4;
   let gust = 1 + Math.max(0, gustRaw) * 0.22;
   if (sheet.intensity > 0) gust *= 1 + 0.18 * sheet.intensity;
+  // Flash downdraft kick — a nearby strike's pressure wave briefly
+  // accelerates the rain. Small (≤10%), peak-gated like flashBoost.
+  gust *= 1 + flashIntensity * 0.10;
 
   const swayT = elapsed * 0.0014;
 
@@ -372,6 +410,48 @@ export function tickRain(opts: TickRainOpts): { totalDrops: number } {
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
 
+  /* ── Ground haze ──────────────────────────────────────────
+     Faint neutral haze pooling in the bottom third — the spray /
+     suspended water the storm kicks up. Breathes with the gust
+     envelope; flashes light it up hard (haze scatters light far
+     more than individual drops do, so it responds ~3× stronger
+     than the streak flashBoost). Drawn BEFORE the streaks so the
+     rain falls through it, not behind it. */
+  const hazeK = 0.7 + Math.max(0, gustRaw) * 0.3 + flashIntensity * 2.2;
+  const hazeAlpha = Math.min(0.12, 0.030 * hazeK);
+  const hazeTop = H * 0.62;
+  const hazeGrad = ctx.createLinearGradient(0, hazeTop, 0, H);
+  hazeGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+  hazeGrad.addColorStop(1, `rgba(205, 205, 205, ${hazeAlpha})`);
+  ctx.fillStyle = hazeGrad;
+  ctx.fillRect(0, hazeTop, W, H - hazeTop);
+
+  /* ── Gust curtain ─────────────────────────────────────────
+     While a wind sheet is active, a soft vertical sheen band
+     sweeps across the screen in the lean direction — the visible
+     "curtain of rain" the sheet's parameter changes imply. Starts
+     off-screen on the windward side and exits the other side over
+     the sheet's lifetime. Very low alpha; it should be felt as a
+     passing brightness, not seen as a band. */
+  if (sheet.intensity > 0.02) {
+    const sweep = sheet.progress * 1.5 - 0.25;   // -0.25 → 1.25
+    const cx = sheet.leanDir > 0 ? W * sweep : W * (1 - sweep);
+    const half = W * 0.20;
+    const curtainGrad = ctx.createLinearGradient(cx - half, 0, cx + half, 0);
+    const ca = 0.035 * sheet.intensity;
+    curtainGrad.addColorStop(0,   'rgba(0, 0, 0, 0)');
+    curtainGrad.addColorStop(0.5, `rgba(215, 215, 215, ${ca})`);
+    curtainGrad.addColorStop(1,   'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = curtainGrad;
+    ctx.fillRect(cx - half, 0, half * 2, H);
+  }
+
+  // Rotating glint window — which seventh of each layer's drops
+  // sparkles this frame. Advances every 50ms so successive frames
+  // of one flash light DIFFERENT drops (shimmer, not a static
+  // bright subset).
+  const glintPhase = (((now / 50) | 0) % 7) * 4;
+
   for (let li = 0; li < LAYERS.length; li++) {
     const layer = LAYERS[li];
     const soa = layers[li];
@@ -380,9 +460,21 @@ export function tickRain(opts: TickRainOpts): { totalDrops: number } {
     totalDrops += n;
 
     // Per-layer sheet boost — applied to the targeted layer only.
+    // Streak length also stretches with the gust envelope: faster
+    // air = longer apparent exposure streaks (G=1 → ×1.0 exactly).
     const layerSheetBoost = li === sheet.targetLayer ? sheet.intensity : 0;
     const layerBrightBoost = 1 + layerSheetBoost * 0.55;
-    const layerLengthBoost = 1 + layerSheetBoost * 0.30;
+    const layerLengthBoost = (1 + layerSheetBoost * 0.30) * (0.6 + 0.4 * G);
+
+    // Depth parallax — whole-layer translate against the cursor,
+    // matching the CSS sky/stage parallax axis. Vertical damped
+    // like the CSS layers (sky 4/3, stage 7/5).
+    const pf = PARALLAX_DEPTH[li];
+    const hasParallax = pf !== 0 && (parX !== 0 || parY !== 0);
+    if (hasParallax) {
+      ctx.save();
+      ctx.translate(parX * pf, parY * pf * 0.7);
+    }
 
     // ── Hoist field arrays into locals ────────────────────────
     // V8 keeps these in registers through the inner loop. Indexed
@@ -463,14 +555,35 @@ export function tickRain(opts: TickRainOpts): { totalDrops: number } {
     ctx.stroke();
 
     // ── Head pass — pure scratch-buffer iteration, no math ────
+    // Heads stroke slightly wider than tails: photographed rain
+    // streaks have a fatter bright leading edge tapering into a
+    // thin tail, and the width step is what sells that read.
     ctx.beginPath();
     for (let j = 0; j < headIdx; j += 4) {
       ctx.moveTo(HEAD_SCRATCH[j],     HEAD_SCRATCH[j + 1]);
       ctx.lineTo(HEAD_SCRATCH[j + 2], HEAD_SCRATCH[j + 3]);
     }
-    ctx.lineWidth = layer.width;
+    ctx.lineWidth = layer.width * 1.25;
     ctx.strokeStyle = `rgba(245, 245, 245, ${Math.min(1, layer.headAlpha * flashBoost * layerBrightBoost)})`;
     ctx.stroke();
+
+    // ── Lightning glints ──────────────────────────────────────
+    // During flash peaks, every 7th drop head (rotating window)
+    // in the mid/near layers flares white — individual drops
+    // catching the bolt. Reuses HEAD_SCRATCH; costs one extra
+    // stroke per foreground layer, and only while a flash is lit.
+    if (flashIntensity > 0.25 && li >= 2) {
+      ctx.beginPath();
+      for (let j = glintPhase; j < headIdx; j += 28) {
+        ctx.moveTo(HEAD_SCRATCH[j],     HEAD_SCRATCH[j + 1]);
+        ctx.lineTo(HEAD_SCRATCH[j + 2], HEAD_SCRATCH[j + 3]);
+      }
+      ctx.lineWidth = layer.width * 1.7;
+      ctx.strokeStyle = `rgba(255, 255, 255, ${Math.min(0.9, layer.headAlpha * 3.2 * flashIntensity)})`;
+      ctx.stroke();
+    }
+
+    if (hasParallax) ctx.restore();
   }
 
   ctx.restore();

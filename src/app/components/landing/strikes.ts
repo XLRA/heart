@@ -24,9 +24,31 @@
    ────────────────────────────────────────────────────────────── */
 
 /** Stepped leader duration — how long the dim leader-trace is
- *  visible before the bright return stroke. ~80ms is the lower
- *  bound of typical natural leader propagation visible to a camera. */
-export const LEADER_DURATION_MS = 80;
+ *  visible before the bright return stroke. Real camera-visible
+ *  leaders run ~20-100ms; we sit slightly above that so the
+ *  descent animation is perceptible at 60fps (~8-9 frames). */
+export const LEADER_DURATION_MS = 140;
+
+/** Number of discrete propagation steps in the leader descent.
+ *  Real stepped leaders advance in ~50m bursts with micro-pauses —
+ *  quantizing the descent reproduces that stutter. */
+export const LEADER_STEPS = 6;
+
+/**
+ * Spatial progress (0..1) of the stepped-leader descent for a strike
+ * at the given local elapsed time (negative during the leader phase).
+ * The descent ACCELERATES toward the ground (pow ease-in) and is
+ * quantized into LEADER_STEPS discrete jumps. `ceil` (not floor) so
+ * the first channel segment is visible the instant the leader spawns.
+ * Returns 1 once the return stroke has fired (elapsed >= 0).
+ */
+export function leaderProgress(elapsed: number): number {
+  if (elapsed >= 0) return 1;
+  if (elapsed < -LEADER_DURATION_MS) return 0;
+  const t = (elapsed + LEADER_DURATION_MS) / LEADER_DURATION_MS;
+  const eased = Math.pow(t, 1.35);
+  return Math.min(1, Math.ceil(eased * LEADER_STEPS) / LEADER_STEPS);
+}
 
 /** Return-stroke spatial-sweep duration — how long the brightness
  *  takes to climb from destination → source. Real return stroke is
@@ -46,16 +68,25 @@ export interface ScriptedStrike {
   /** Show the stepped-leader pre-phase. Reserved for the
    *  primary strike of a fresh channel. */
   hasLeader?: boolean;
+  /** Channel re-route offset (CSS px) — gives re-flashes through
+   *  the same variant a visible plasma shift. */
+  jx?: number;
+  jy?: number;
 }
 
-/** Fixed three-strike intro sequence — primary, then two ribbon
- *  re-flashes through nearby channels. Only the primary gets a
- *  stepped leader; the re-flashes are channel reuses and start
- *  bright instantly. */
+/** Scripted intro — ONE cloud-to-ground strike from the top right
+ *  down to the bottom left (variant 0 crosses mid-screen right
+ *  behind the wordmark, so the bolt visually HITS the word),
+ *  followed by two fast, dim re-flashes through the SAME ionized
+ *  channel. Reads as a single natural multi-stroke flash
+ *  electrifying the word, then dissipating — not a barrage.
+ *  Only the primary descends with a stepped leader; the re-flashes
+ *  reuse the channel and fire instantly, each with a small
+ *  re-route offset so the plasma visibly shifts between pulses. */
 export const STRIKES: readonly ScriptedStrike[] = [
   { t: 1000, intensity: 1.0,  variant: 0, hasLeader: true },
-  { t: 1180, intensity: 0.65, variant: 1 },
-  { t: 1340, intensity: 0.35, variant: 2 },
+  { t: 1095, intensity: 0.50, variant: 0, jx:  2.6, jy: -0.8 },
+  { t: 1190, intensity: 0.24, variant: 0, jx: -2.2, jy:  0.6 },
 ];
 
 /** When (relative to scene start) the brightest strike fires. */
@@ -68,6 +99,12 @@ export interface AdHocStrike {
   intensity: number;
   variant: number;
   hasLeader?: boolean;
+  /** Per-stroke channel re-route offset (CSS px). Real plasma
+   *  channels physically move a few px between re-strikes — each
+   *  sub-stroke gets its own random offset on top of the variant's
+   *  baked jitter so the flicker visibly re-routes. */
+  jx?: number;
+  jy?: number;
 }
 
 /** Strike fully decayed after this — adHocStrikes can be pruned. */
@@ -80,25 +117,28 @@ export const CLICK_STRIKE_COOLDOWN_MS = 500;
  * Strike envelope. Three phases:
  *   • Leader (only when hasLeader): -LEADER_DURATION_MS..0
  *     Faint, slowly building dim trace — the stepped leader feeling
- *     its way down from the cloud. Builds 0.02 → 0.08 over 70ms,
- *     then a fast pre-stroke ramp 0.08 → 0.30 in the final 10ms.
+ *     its way down from the cloud. Builds 0.05 → 0.15 over the
+ *     descent, then a fast pre-stroke ramp 0.15 → 0.35 in the final
+ *     12ms. (Slightly brighter than the pre-descent version: only
+ *     the swept-out portion of the channel is visible now, so the
+ *     trace needs a touch more punch to read.)
  *   • Peak: 0..25ms — full brightness (clamped 1.0).
  *   • Decay: fast 25..80ms (1.0 → 0.3), slow 80..280ms (0.3 → 0).
  *
- * Total visible window is 280ms (or 360ms with leader).
+ * Total visible window is 280ms (or 420ms with leader).
  */
 export function strikeEnvelope(elapsed: number, hasLeader = false): number {
   if (hasLeader) {
     if (elapsed < -LEADER_DURATION_MS) return 0;
     // Stepped-leader build-up phase — slow.
-    if (elapsed < -10) {
-      const t = (elapsed + LEADER_DURATION_MS) / (LEADER_DURATION_MS - 10);
-      return 0.02 + t * 0.06;
+    if (elapsed < -12) {
+      const t = (elapsed + LEADER_DURATION_MS) / (LEADER_DURATION_MS - 12);
+      return 0.05 + t * 0.10;
     }
     // Pre-stroke ramp — fast.
     if (elapsed < 0) {
-      const t = (elapsed + 10) / 10;
-      return 0.08 + t * 0.22;
+      const t = (elapsed + 12) / 12;
+      return 0.15 + t * 0.20;
     }
   } else if (elapsed < 0) {
     return 0;

@@ -165,25 +165,26 @@
 }
 
 /*
-  The wordmark FLICKERS WITH the lightning. Both opacity AND glow
-  follow the three-strike envelope: visible at each strike peak,
-  almost invisible in the dark gaps between strikes, then resolving
-  into permanent visibility as the storm calms.
+  The wordmark is ELECTRIFIED by the single center strike. The bolt
+  passes right behind the word; at the return-stroke instant the
+  word blows out white-hot, then flickers twice with the channel's
+  fast re-flashes before the charge dissipates and the word settles
+  into its permanent ambient glow.
 
   This is a single keyframe animation — opacity, text-shadow, and
   the post-storm settle all live in wordPulse. The element's default
   opacity is 0 (used during the 1s delay before the animation starts)
-  so the word stays invisible until the primary strike fires.
+  so the word stays invisible until the strike fires.
 
   Strike timeline alignment (animation starts at t=1000ms, runs 1.4s):
     0%    →  1000ms  ⚡ PRIMARY STRIKE peak  → opacity 1, full glow
-    6%    →  1084ms     primary fading       → opacity 0.35, dim glow
-    12%   →  1168ms     dark gap             → opacity 0.05, glow gone
-    13%   →  1182ms  ⚡ SECONDARY peak       → opacity 1, full glow
-    18%   →  1252ms     secondary fading     → opacity 0.30
-    23%   →  1322ms     dark gap             → opacity 0.08
-    24%   →  1336ms  ⚡ TERTIARY peak        → opacity 0.95
-    30%   →  1420ms     post-strike calm     → opacity 0.55
+    3%    →  1042ms     fast decay           → opacity 0.6
+    6%    →  1084ms     dim gap              → opacity 0.25
+    7%    →  1098ms  ⚡ RE-FLASH 1 (0.50)    → opacity 0.85, bright glow
+    11%   →  1154ms     decay                → opacity 0.35
+    13%   →  1182ms     dim gap              → opacity 0.15
+    14%   →  1196ms  ⚡ RE-FLASH 2 (0.24)    → opacity 0.6, soft glow
+    20%   →  1280ms     charge dissipating   → opacity 0.45
     50%   →  1700ms     settling             → opacity 0.85
    100%   →  2400ms     fully settled        → opacity 1, ambient glow
 
@@ -221,14 +222,14 @@
 }
 
 /*
-  Each strike peak is a "blown out" frame: the text color flips to
+  The strike peak is a "blown out" frame: the text color flips to
   pure #fff, gets briefly boosted by a brightness filter, scales up
   ~2.5%, and stacks a SEVEN-LAYER text-shadow halo extending out to
   ~380px past the letterforms. The eye reads this as the word
-  absorbing the lightning's light — you can almost see it
-  electrifying. The peaks last ~25-40ms (matching the canvas strike
-  envelope) before snapping back to a near-dead dim gap; that
-  contrast is what sells "struck" rather than "lit."
+  absorbing the bolt's charge — you can almost see it electrifying.
+  The peak lasts ~25-40ms (matching the canvas strike envelope),
+  then the word flickers with the channel's two fast re-flashes
+  before the charge bleeds away into the permanent ambient glow.
 
   All animated properties are paint-cheap or compositor-only:
     - opacity, transform     → composited (GPU)
@@ -238,7 +239,7 @@
     - color                  → cheap repaint, only on keyframe ticks
 */
 @keyframes wordPulse {
-  /* ── Primary strike — word is BLOWN OUT, full white-hot. */
+  /* ── Return stroke — word is BLOWN OUT, full white-hot. */
   0% {
     opacity: 1;
     color: #ffffff;
@@ -255,7 +256,7 @@
   }
   /* Sharp drop-off (matches the canvas strike envelope's 25ms peak). */
   3% {
-    opacity: 0.65;
+    opacity: 0.6;
     color: #f5f5f5;
     transform: scale(1.01);
     filter: brightness(1.15);
@@ -264,92 +265,72 @@
       0 0 40px  rgba(245, 245, 245, 0.32),
       0 0 90px  rgba(220, 220, 220, 0.16);
   }
-  /* Continued decay. */
-  7% {
-    opacity: 0.32;
+  /* Dim gap before the first re-flash. */
+  6% {
+    opacity: 0.25;
     color: #f0f0f0;
+    transform: scale(1.0);
+    filter: brightness(0.95);
+    text-shadow:
+      0 0 16px rgba(252, 252, 252, 0.18),
+      0 0 48px rgba(232, 232, 232, 0.08);
+  }
+
+  /* ── Re-flash 1 — the channel pulses again at half intensity. */
+  7% {
+    opacity: 0.85;
+    color: #ffffff;
+    transform: scale(1.015);
+    filter: brightness(1.25);
+    text-shadow:
+      0 0 3px   rgba(255, 255, 255, 0.9),
+      0 0 10px  rgba(255, 255, 255, 0.75),
+      0 0 26px  rgba(255, 255, 255, 0.6),
+      0 0 60px  rgba(255, 255, 255, 0.42),
+      0 0 130px rgba(245, 245, 245, 0.26),
+      0 0 240px rgba(220, 220, 220, 0.14);
+  }
+  11% {
+    opacity: 0.35;
+    color: #f2f2f2;
     transform: scale(1.0);
     filter: brightness(1.02);
     text-shadow:
-      0 0 16px rgba(252, 252, 252, 0.28),
-      0 0 48px rgba(232, 232, 232, 0.15);
+      0 0 14px rgba(252, 252, 252, 0.24),
+      0 0 44px rgba(232, 232, 232, 0.12);
   }
-  /* Dark gap before secondary — word nearly gone. */
-  12% {
-    opacity: 0.04;
-    color: #f0f0f0;
-    transform: scale(1.0);
-    filter: brightness(0.85);
-    text-shadow: 0 0 0 rgba(0, 0, 0, 0);
-  }
-
-  /* ── Secondary strike — flashes back, slightly less intense. */
+  /* Dim gap before the second, weaker re-flash. */
   13% {
-    opacity: 1;
-    color: #ffffff;
-    transform: scale(1.02);
-    filter: brightness(1.32);
-    text-shadow:
-      0 0 3px   rgba(255, 255, 255, 0.95),
-      0 0 10px  rgba(255, 255, 255, 0.85),
-      0 0 26px  rgba(255, 255, 255, 0.7),
-      0 0 60px  rgba(255, 255, 255, 0.5),
-      0 0 130px rgba(245, 245, 245, 0.32),
-      0 0 240px rgba(220, 220, 220, 0.18),
-      0 0 380px rgba(180, 180, 180, 0.10);
-  }
-  16% {
-    opacity: 0.55;
-    color: #f5f5f5;
-    transform: scale(1.008);
-    filter: brightness(1.1);
-    text-shadow:
-      0 0 12px rgba(255, 255, 255, 0.4),
-      0 0 40px rgba(245, 245, 245, 0.24),
-      0 0 90px rgba(220, 220, 220, 0.12);
-  }
-  19% {
-    opacity: 0.28;
+    opacity: 0.15;
     color: #f0f0f0;
     transform: scale(1.0);
-    filter: brightness(1.0);
-    text-shadow:
-      0 0 16px rgba(252, 252, 252, 0.22),
-      0 0 48px rgba(232, 232, 232, 0.12);
-  }
-  /* Dark gap before tertiary. */
-  23% {
-    opacity: 0.06;
-    color: #f0f0f0;
-    transform: scale(1.0);
-    filter: brightness(0.88);
+    filter: brightness(0.92);
     text-shadow: 0 0 0 rgba(0, 0, 0, 0);
   }
 
-  /* ── Tertiary strike — softer flash. */
-  24% {
-    opacity: 0.95;
-    color: #ffffff;
-    transform: scale(1.015);
-    filter: brightness(1.22);
+  /* ── Re-flash 2 — last dying pulse of the channel. */
+  14% {
+    opacity: 0.6;
+    color: #fafafa;
+    transform: scale(1.008);
+    filter: brightness(1.12);
     text-shadow:
-      0 0 3px   rgba(255, 255, 255, 0.85),
-      0 0 10px  rgba(255, 255, 255, 0.7),
-      0 0 26px  rgba(255, 255, 255, 0.55),
-      0 0 60px  rgba(255, 255, 255, 0.38),
-      0 0 130px rgba(245, 245, 245, 0.24),
-      0 0 240px rgba(220, 220, 220, 0.13);
+      0 0 3px   rgba(255, 255, 255, 0.7),
+      0 0 10px  rgba(255, 255, 255, 0.55),
+      0 0 26px  rgba(255, 255, 255, 0.4),
+      0 0 60px  rgba(245, 245, 245, 0.26),
+      0 0 130px rgba(220, 220, 220, 0.14);
   }
-  /* Tertiary decay. */
-  30% {
-    opacity: 0.55;
+  /* Charge dissipating — the absorbed light bleeds away slowly. */
+  20% {
+    opacity: 0.45;
     color: #f2f2f2;
     transform: scale(1.0);
-    filter: brightness(1.05);
+    filter: brightness(1.04);
     text-shadow:
-      0 0 16px rgba(248, 248, 248, 0.28),
-      0 0 50px rgba(220, 220, 220, 0.15),
-      0 0 100px rgba(200, 200, 200, 0.08);
+      0 0 16px rgba(248, 248, 248, 0.26),
+      0 0 50px rgba(220, 220, 220, 0.14),
+      0 0 100px rgba(200, 200, 200, 0.07);
   }
   /* Post-storm — word is now permanent, dialing back to ambient. */
   50% {

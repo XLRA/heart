@@ -16,6 +16,7 @@ import {
   afterImage,
   ionizationLinger,
   sweepProgress,
+  leaderProgress,
   type AdHocStrike,
 } from './strikes';
 import {
@@ -25,6 +26,8 @@ import {
   buildVariantRange,
   compositeBolt,
   compositeBoltSweep,
+  compositeBoltLeader,
+  renderLeaderTip,
   renderFlash,
   renderCloudGlow,
   renderCloudRim,
@@ -47,6 +50,7 @@ import {
   bgFlashIntensity,
   type BgFlash,
 } from './bgFlash';
+import { spawnSparkBurst, renderSparks, type Spark } from './sparks';
 import DebugOverlay, {
   createDebugMetrics,
   isDebugEnabled,
@@ -69,19 +73,24 @@ import DebugOverlay, {
      - The single rAF loop wiring all the subsystems together
      - JSX layout
 
-   Intro timeline (unchanged from the inline version):
+   Intro timeline:
        0    ms  scene fades in from black (~700ms)
      420    ms  pre-flash (faint horizon brightening)
-    1000    ms  PRIMARY STRIKE (variant A, intensity 1.0, scene shake)
-    1180    ms  secondary       (variant B, intensity 0.65)
-    1340    ms  tertiary        (variant C, intensity 0.35)
-    1100–2700 ms  ionization linger (variant A at ~3% fading out)
-    1000–1340 ms  wordmark FLICKERS in sync with the 3 lightning strikes
-    1340–2400 ms  wordmark resolves into permanent ambient visibility
-    1000/1180/1340 ms  thunder triggered alongside each strike
+     860    ms  stepped leader begins crawling down from the top right
+    1000    ms  PRIMARY STRIKE — top-right → bottom-left diagonal that
+                crosses the wordmark at mid-screen (intensity 1.0,
+                scene shake). The word blows out white-hot and throws
+                off a burst of sparks — electrified by the hit
+    1095/1190 ms  two fast dim re-flashes through the same channel
+    1100–2700 ms  ionization linger (center channel at ~3% fading out)
+    1000–1190 ms  wordmark FLICKERS in sync with the strike + re-flashes
+    1190–2400 ms  wordmark resolves into permanent ambient visibility
+    1000/1095/1190 ms  thunder triggered alongside each pulse
     2700+ ms  rAF loop continues forever (rain + parallax + bg flashes
               + wind sheets + thunder swells; click anywhere for an
               ad-hoc strike + thunder)
+   16-30  s  first ambient auto-strike (then every ~20-42s) — the
+              storm keeps producing real bolts without user input
    ────────────────────────────────────────────────────────────── */
 
 export default function StormLanding() {
@@ -295,9 +304,17 @@ export default function StormLanding() {
     // Wind-sheet scheduler — starts the first sheet 8–15s in.
     const windSheet = createWindSheetState(start);
 
+    // Ambient auto-strike scheduler — the storm keeps producing real
+    // visible bolts after the intro, no clicks required. First one
+    // 16-30s in, then every ~20-42s.
+    let nextAutoStrikeAt = start + 16000 + Math.random() * 14000;
+
     // User-triggered strikes from clicks.
     const adHocStrikes: AdHocStrike[] = [];
     let lastClickStrikeTime = 0;
+
+    // Sparks thrown off the wordmark when the intro bolt hits it.
+    const wordSparks: Spark[] = [];
 
     // FPS measurement (rolling 30-frame window for the debug overlay).
     const fpsBuf: number[] = [];
@@ -373,31 +390,47 @@ export default function StormLanding() {
       );
     };
 
-    /**
-     * Pick the prerendered variant whose destination X best matches a
-     * given click X (in CSS pixels). Anchors the visible strike to
-     * the user's cursor — clicks on the left side fire variants that
-     * land on the left, clicks on the right fire ones that land on
-     * the right. Falls back to ANY ready variant if the closest one
-     * hasn't been prerendered yet (idle build still pending).
-     */
-    const pickVariantForClickX = (clickX: number): number => {
-      const targetFrac = clickX / Math.max(1, width);
-      let bestIdx = 0;
-      let bestDist = Infinity;
+    /* ── Random variant selection ──────────────────────────────
+       Strikes are NOT anchored to the click position — every click
+       (and ambient auto-strike) fires a random channel, with a
+       short memory of the last two channels so repeated clicks
+       never replay the bolt the user just watched.
+
+       Variants 1-2 are ribbon offsets of variant 0's channel (near-
+       identical paths), so the whole 0-2 group counts as ONE channel
+       for both the candidate list and the no-repeat memory. When
+       channel 0 wins, a random ribbon member is substituted so even
+       that channel doesn't render pixel-identically twice. */
+    const recentStrikeChannels: number[] = [];
+
+    const recordStrikeChannel = (variant: number) => {
+      recentStrikeChannels.push(variant <= 2 ? 0 : variant);
+      if (recentStrikeChannels.length > 2) recentStrikeChannels.shift();
+    };
+
+    const pickRandomVariant = (): number => {
+      // Candidate channels: 0 (the ribbon group) + ready variants 3-7,
+      // minus whatever fired in the last two strikes.
+      let candidates: number[] = [];
       for (let i = 0; i < VARIANT_COUNT; i++) {
         if (!variantReady[i]) continue;
-        const d = Math.abs(VARIANT_PATHS[i].dstX - targetFrac);
-        if (d < bestDist) {
-          bestDist = d;
-          bestIdx = i;
+        if (i >= 1 && i <= 2) continue;  // ribbon dupes of channel 0
+        if (recentStrikeChannels.includes(i)) continue;
+        candidates.push(i);
+      }
+      // History excluded everything (early clicks while the idle
+      // build is pending) — fall back to all ready channels.
+      if (candidates.length === 0) {
+        for (let i = 0; i < VARIANT_COUNT; i++) {
+          if (variantReady[i] && (i === 0 || i >= 3)) candidates.push(i);
         }
       }
-      // If somehow nothing is ready (shouldn't happen — intro
-      // variants are always rendered synchronously on init), fall
-      // back to the canonical primary variant 0.
-      if (bestDist === Infinity) bestIdx = 0;
-      return bestIdx;
+      if (candidates.length === 0) candidates = [0];
+      let variant = candidates[Math.floor(Math.random() * candidates.length)];
+      // Channel 0 → random ribbon member for intra-channel variety.
+      if (variant === 0) variant = Math.floor(Math.random() * 3);
+      recordStrikeChannel(variant);
+      return variant;
     };
 
     const handleSceneClick = (e: MouseEvent) => {
@@ -407,9 +440,9 @@ export default function StormLanding() {
       if (now - lastClickStrikeTime < CLICK_STRIKE_COOLDOWN_MS) return;
       lastClickStrikeTime = now;
 
-      // Anchor the strike to the cursor — the chosen variant lands
-      // closest to the click position.
-      const variant = pickVariantForClickX(e.clientX);
+      // Random channel — deliberately NOT anchored to the click
+      // position, and guaranteed different from the last two strikes.
+      const variant = pickRandomVariant();
       const intensity = 0.78 + Math.random() * 0.22;
 
       // Primary return stroke. Push the bright peak forward by
@@ -423,6 +456,8 @@ export default function StormLanding() {
         variant,
         intensity,
         hasLeader: true,
+        jx: (Math.random() * 2 - 1) * 1.2,
+        jy: (Math.random() * 2 - 1) * 0.6,
       });
 
       /* ── Multi-stroke flicker ────────────────────────────────
@@ -438,7 +473,10 @@ export default function StormLanding() {
          channel), with NO leader (channel is already ionized — the
          sub-stroke is instantaneous), each at progressively lower
          intensity. Inter-stroke spacing is 45-110ms, randomized
-         per stroke for natural variation. */
+         per stroke for natural variation. Each sub-stroke carries
+         its own few-px channel offset (jx/jy) — the plasma channel
+         physically re-routes between re-strikes, so the flicker
+         visibly shifts instead of redrawing pixel-identical. */
       const subStrokeCount = 1 + Math.floor(Math.random() * 3); // 1..3
       let strokeOffset = 0;
       for (let i = 0; i < subStrokeCount; i++) {
@@ -451,6 +489,8 @@ export default function StormLanding() {
           variant,
           intensity: subIntensity,
           hasLeader: false,
+          jx: (Math.random() * 2 - 1) * 3.2,
+          jy: (Math.random() * 2 - 1) * 1.2,
         });
         // Tiny extra wordmark twitch on the brightest sub-stroke
         // (the first one) so the wordmark flickers WITH the channel,
@@ -494,6 +534,19 @@ export default function StormLanding() {
       window.setTimeout(() => sceneEl.classList.remove(styles.shake!), 240);
     }, PRIMARY_STRIKE_T);
 
+    // Spark bursts off the wordmark — full burst at the impact
+    // instant, a smaller one with the first channel re-flash.
+    const sparkTimers = [
+      window.setTimeout(
+        () => spawnSparkBurst(wordSparks, performance.now(), 14, 1),
+        PRIMARY_STRIKE_T,
+      ),
+      window.setTimeout(
+        () => spawnSparkBurst(wordSparks, performance.now(), 6, 0.5),
+        STRIKES[1].t,
+      ),
+    ];
+
     // Schedule thunder for the scripted strike sequence.
     const thunderTimers: number[] = [];
     for (const s of STRIKES) {
@@ -524,6 +577,11 @@ export default function StormLanding() {
     const variantSweep = new Float32Array(VARIANT_COUNT);
     const variantSourceX = new Float32Array(VARIANT_COUNT);
     const variantAnchorX = new Float32Array(VARIANT_COUNT);
+    // Leader descent progress 0..1 per variant (2 = no leader active)
+    // and the youngest strike's per-stroke channel re-route offset.
+    const variantLeader = new Float32Array(VARIANT_COUNT);
+    const variantStrokeJX = new Float32Array(VARIANT_COUNT);
+    const variantStrokeJY = new Float32Array(VARIANT_COUNT);
 
     /* ── Iris reflex state ─────────────────────────────────────
        The iris reflex (Tier C #4) dims the whole scene briefly
@@ -587,6 +645,9 @@ export default function StormLanding() {
       variantSweep.fill(2);            // 2 = sentinel "no sweep / past sweep"
       variantSourceX.fill(0);
       variantAnchorX.fill(0);
+      variantLeader.fill(2);           // 2 = sentinel "no leader descending"
+      variantStrokeJX.fill(0);
+      variantStrokeJY.fill(0);
       // Track per-variant "youngest age" so source/anchor X follow the
       // currently-driving strike (matters when ribbon strikes overlap).
       // Use a small stack-like array — VARIANT_COUNT is fixed at 8.
@@ -603,12 +664,21 @@ export default function StormLanding() {
         intensity: number,
         variant: number,
         hasLeader: boolean,
+        strokeJX = 0,
+        strokeJY = 0,
       ) => {
         const env = strikeEnvelope(local, hasLeader) * intensity;
         const after = afterImage(local) * intensity;
         const total = env + after;
         if (total > variantIntensity[variant]) {
           variantIntensity[variant] = total;
+        }
+        // Leader descent — while the stepped leader is propagating
+        // (negative local), record its spatial progress so the
+        // composite pass can clip-reveal the channel top-down.
+        if (hasLeader && local < 0) {
+          const p = leaderProgress(local);
+          if (p > 0 && p < variantLeader[variant]) variantLeader[variant] = p;
         }
         // Decoupled flashIntensity — drives the scene flash + rain
         // brightening signal. Computed WITHOUT the leader phase so
@@ -627,6 +697,10 @@ export default function StormLanding() {
             const path = VARIANT_PATHS[variant];
             variantSourceX[variant] = width * path.srcX;
             variantAnchorX[variant] = width * path.dstX;
+            // The youngest strike's channel re-route offset wins —
+            // it's the stroke currently driving the visible channel.
+            variantStrokeJX[variant] = strokeJX;
+            variantStrokeJY[variant] = strokeJY;
           }
         }
         // Track sweep — only when a strike is in its return-stroke window
@@ -639,7 +713,8 @@ export default function StormLanding() {
       };
 
       for (const s of STRIKES) {
-        accumulateStrike(elapsed - s.t, s.intensity, s.variant, !!s.hasLeader);
+        accumulateStrike(elapsed - s.t, s.intensity, s.variant, !!s.hasLeader,
+                         s.jx ?? 0, s.jy ?? 0);
       }
 
       // Persistent ionization linger from primary bolt — small extra
@@ -657,7 +732,76 @@ export default function StormLanding() {
           adHocStrikes.splice(i, 1);
           continue;
         }
-        accumulateStrike(local, s.intensity, s.variant, !!s.hasLeader);
+        accumulateStrike(local, s.intensity, s.variant, !!s.hasLeader,
+                         s.jx ?? 0, s.jy ?? 0);
+      }
+
+      /* ── Plasma flicker ──────────────────────────────────────
+         High-frequency brightness shimmer during the decay phase.
+         Real lightning channels don't fade smoothly — the plasma
+         flickers as the current fluctuates. Two incommensurate
+         sine products give cheap pseudo-noise; amplitude is scaled
+         by (1 - v) so the bright peak and the near-zero tail are
+         untouched and only the visible mid-decay shimmers. Skipped
+         while a leader is descending (the dim trace should creep,
+         not sparkle). */
+      for (let i = 0; i < VARIANT_COUNT; i++) {
+        const v = variantIntensity[i];
+        if (v > 0.05 && v < 0.92 && variantLeader[i] >= 1) {
+          const n = Math.sin(now * 0.041 + i * 11.3) *
+                    Math.sin(now * 0.127 + i * 5.1);
+          variantIntensity[i] = Math.max(0, v * (1 + n * 0.10 * (1 - v)));
+        }
+      }
+
+      /* ── Ambient auto-strikes ────────────────────────────────
+         The storm stays alive without user input: every ~20-42s a
+         real bolt fires from the click-only variant pool at low-mid
+         intensity, complete with stepped leader, multi-stroke
+         flicker, wordmark pulse, and thunder. Deferred briefly if
+         the user just clicked (their strike owns the moment). */
+      if (!reduceMotion && now >= nextAutoStrikeAt) {
+        if (now - lastClickStrikeTime < 4000) {
+          nextAutoStrikeAt = now + 6000;
+        } else {
+          nextAutoStrikeAt = now + 20000 + Math.random() * 22000;
+          // Shares the click picker's two-strike no-repeat memory, so
+          // an auto-strike never replays the channel the user just
+          // fired (and vice versa).
+          const variant = pickRandomVariant();
+          const intensity = 0.42 + Math.random() * 0.30;
+          const peakTime = now + LEADER_DURATION_MS;
+          adHocStrikes.push({
+            startTime: peakTime,
+            variant,
+            intensity,
+            hasLeader: true,
+            jx: (Math.random() * 2 - 1) * 1.2,
+            jy: (Math.random() * 2 - 1) * 0.6,
+          });
+          const subCount = 1 + Math.floor(Math.random() * 2);
+          let subOffset = 0;
+          for (let i = 0; i < subCount; i++) {
+            subOffset += 50 + Math.random() * 70;
+            adHocStrikes.push({
+              startTime: peakTime + subOffset,
+              variant,
+              intensity: Math.max(0.14, intensity * Math.pow(0.62, i + 1)),
+              hasLeader: false,
+              jx: (Math.random() * 2 - 1) * 3.2,
+              jy: (Math.random() * 2 - 1) * 1.2,
+            });
+          }
+          window.setTimeout(
+            () => pulseWordmark(intensity * 0.8),
+            LEADER_DURATION_MS,
+          );
+          audioRef.current?.triggerThunder({
+            distance: 0.30 + Math.random() * 0.35,
+            intensity: 0.45 + intensity * 0.40,
+            delay: LEADER_DURATION_MS / 1000 + 0.15 + Math.random() * 0.25,
+          });
+        }
       }
 
       // ── Sky-wide tonal wash (Tier C #2) ─────────────────────
@@ -715,20 +859,36 @@ export default function StormLanding() {
         if (trunkI <= 0) continue;
         const branchI = branchIntensityFromTrunk(trunkI);
         const j = VARIANT_JITTER[i];
+        // Baked variant jitter + the youngest stroke's re-route offset.
+        const jx = j.dx + variantStrokeJX[i];
+        const jy = j.dy + variantStrokeJY[i];
+        const leaderP = variantLeader[i];
         const sweep = variantSweep[i];
-        if (sweep < 1) {
+        if (leaderP < 1) {
+          // Stepped leader descending — reveal the channel top-down,
+          // branches included, with a hot glow at the advancing tip.
+          compositeBoltLeader(ctx, trunkOffscreens[i], width, height,
+                              trunkI, leaderP, jx, jy);
+          if (branchI > 0) {
+            compositeBoltLeader(ctx, branchOffscreens[i], width, height,
+                                branchI, leaderP, jx, jy);
+          }
+          const path = VARIANT_PATHS[i];
+          const tipX = width * (path.srcX + (path.dstX - path.srcX) * leaderP);
+          renderLeaderTip(ctx, tipX + jx, height * leaderP + jy, trunkI);
+        } else if (sweep < 1) {
           // Return-stroke sweep is active — apply to both trunk + branches
           // so the upward brightness sweep reads as a unified flash.
           compositeBoltSweep(ctx, trunkOffscreens[i], width, height,
-                             trunkI, sweep, j.dx, j.dy);
+                             trunkI, sweep, jx, jy);
           if (branchI > 0) {
             compositeBoltSweep(ctx, branchOffscreens[i], width, height,
-                               branchI, sweep, j.dx, j.dy);
+                               branchI, sweep, jx, jy);
           }
         } else {
-          compositeBolt(ctx, trunkOffscreens[i], width, height, trunkI, j.dx, j.dy);
+          compositeBolt(ctx, trunkOffscreens[i], width, height, trunkI, jx, jy);
           if (branchI > 0) {
-            compositeBolt(ctx, branchOffscreens[i], width, height, branchI, j.dx, j.dy);
+            compositeBolt(ctx, branchOffscreens[i], width, height, branchI, jx, jy);
           }
         }
       }
@@ -743,6 +903,16 @@ export default function StormLanding() {
           renderAnchorExplosion(ctx, width, height, variantAnchorX[i], intensity);
         }
       }
+
+      // Wordmark sparks — drawn at the stage's parallax-shifted
+      // center so the burst stays glued to the word as it moves.
+      renderSparks(
+        ctx,
+        wordSparks,
+        width * 0.5 - parallaxX * 7,
+        height * 0.5 - parallaxY * 5,
+        now,
+      );
 
       // ── Directional flash (Tier C #3) ───────────────────────
       // Brightens the lower-mid portion of the canvas with a strong
@@ -825,6 +995,10 @@ export default function StormLanding() {
           now,
           flashIntensity,
           windSheet,
+          // Smoothed values from the previous frame's parallax pass —
+          // one frame of lag is invisible at the 0.06 smoothing rate.
+          parallaxX,
+          parallaxY,
         });
       }
 
@@ -911,6 +1085,7 @@ export default function StormLanding() {
       if (heavyResizeTimer !== null) window.clearTimeout(heavyResizeTimer);
       window.clearTimeout(shakeTimer);
       window.clearTimeout(flickerTimer);
+      for (const id of sparkTimers) window.clearTimeout(id);
       for (const id of thunderTimers) window.clearTimeout(id);
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('mousemove', handleMouseMove);
