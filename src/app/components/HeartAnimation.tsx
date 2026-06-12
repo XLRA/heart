@@ -51,18 +51,17 @@ const SECTION_BURST_STRENGTH = 8.0;
 //                           displaced particles snap home in a fraction of
 //                           the old time -- between beats the silhouette
 //                           fully re-forms instead of staying a cloud.
-// Spiked particles (per-particle u.spike = 1 at launch, decaying at
-// SPIKE_FADE_60, ~0.35 s lifetime) glow for the flight and get a MILD recall
-// boost that ramps in as the spike fades (1 -> 1 + SPIKE_RETURN_GAIN).
+// Burst particles (per-particle u.spike = 1 when the A5 section burst fires,
+// decaying at SPIKE_FADE_60, ~0.35 s lifetime) glow for the flight and get a
+// MILD recall boost that ramps in as the spike fades (1 -> 1 +
+// SPIKE_RETURN_GAIN).
 //
 // Two failure modes are deliberately designed out here -- both shipped
 // briefly and sent particles flying across the whole screen:
-//   * Damping relief ("glide") on fresh spikes: coast distance scales as
-//     1/(1 - retention), so relieving damping is EXPONENTIALLY stronger for
-//     high-retention particles -- u.force=0.9 particles became near-
-//     frictionless and crossed the screen. Launches are instead ballistic-
-//     normalized at the source (see the needle-launch code), and damping is
-//     never modified.
+//   * Damping relief ("glide") for displaced particles: coast distance
+//     scales as 1/(1 - retention), so relieving damping is EXPONENTIALLY
+//     stronger for high-retention particles -- u.force=0.9 particles became
+//     near-frictionless and crossed the screen. Damping is never modified.
 //   * A strong recall (gain 3.0): falling home from 200+ px under 4x pull
 //     builds ~100 px/frame and SLINGSHOTS the particle through the heart and
 //     out the far side, repeatedly. Gain 0.8 caps return pull at 1.8x; the
@@ -95,38 +94,39 @@ const SNARE_FLARE_DECAY_60 = 0.78;  // fast outer-ring flare on snares, ~50 ms h
 // (dtFrames = 2.4 with SPEED_MULTIPLIER) so normal frames are unaffected.
 const MAX_INTEGRATION_DT = 2.5;
 
-// Music-reactive spike effect: SHARP NEEDLES on the beat. On each detected
-// kick, a handful of "spike sites" -- stratified random angles around the
-// silhouette -- fire simultaneously: every particle inside a site's narrow
-// angular slice launches together along a tightly collimated outward ray
-// (±3.5 deg jitter), with force peaking at the site center so each spike is
-// pointed, not box-shaped. A few neighboring 50-dot trails overlapping on
-// one ray render as a single bright needle sticking ~150-250 px out of the
-// rim, holding for ~200 ms, then snapping back (see the SPIKE_* two-phase
-// flight constants above).
+// Music-reactive spikes: STRUCTURAL, not ballistic. The heart owns a small
+// fixed set of spike ANCHORS -- angles on the silhouette chosen once per
+// mount. On each kick, a strength-scaled subset of anchors fires: the outer-
+// ring TARGET points near an anchor get displaced outward along their radial
+// with a quadratic falloff (sharp thorn profile, ~SPIKE_TARGET_LEN px at the
+// tip), then the displacement retracts over ~300 ms. Particles simply track
+// their targets through the normal spring -- so the spikes grow and retract
+// as part of the SHAPE, and the particles' trails paint them as bright rays.
 //
-// History: v1 scattered ~55% of ALL particles ±22 deg on every kick -- the
-// whole heart dissolved into a cloud ("blob"). v2 cut that to ~30% with a
-// fast recall, which fixed the blob but made the effect nearly invisible:
-// the same energy spread over scattered singletons with ~70 ms flights reads
-// as faint mist. v3 (this) concentrates the energy: FEW locations x MANY
-// coherent neighbors x LONG flight = unmistakable spikes, while >85% of the
-// silhouette never moves -- the heart stays a heart.
+// Why not launch particles instead? Three generations of that approach all
+// failed the same way:
+//   v1 scattered ~55% of particles per kick -> the heart dissolved (blob).
+//   v2 launched fewer with a strong recall  -> invisible mist.
+//   v3 launched coherent needles at random angles -> every beat painted
+//      rays at NEW angles while old trail-ghosts (~0.5 s) still showed; at
+//      2-4 kicks/sec the steady state was 10-20 rays in all directions --
+//      "particles flying all over the screen".
+// Fixed anchors + target displacement solve all of it structurally: spike
+// positions are stable frame-to-frame (reads as the heart's anatomy, with
+// anchors re-lighting in place each beat), displacement is bounded by
+// construction, and zero particles are ever ejected.
 //
 // Spike events are edge-triggered with a refractory (see spikeEvent in the
 // loop): legacy audio paths (Meyda, Spotify simulation) hold `kick` high for
-// many consecutive frames, and a level-triggered roll would re-launch
-// particles every frame -- the continuous-fountain failure mode.
-const KICK_SPIKE_MIN_STRENGTH = 0.12;        // permissive floor; weak kicks still spike a little
-const KICK_SPIKE_LEN_BASE = 200;             // commanded needle drift in px (pre-braking)
-const KICK_SPIKE_LEN_RANDOM = 120;           // + random extra commanded drift
-const KICK_SPIKE_ANGLE_JITTER = 0.12;        // ±0.06 rad (~±3.5 deg): collimated, needle-like
-const KICK_SPIKE_REFRACTORY_MS = 250;        // min gap between spike events
-const SPIKE_SITE_BASE = 2;                   // sites on the weakest qualifying kick
-const SPIKE_SITE_PER_STRENGTH = 3;           // + up to this many at full kick strength
-const SPIKE_SITE_HALF_WIDTH = 0.11;          // rad; widened at lower particle densities
-const SPIKE_SITE_PROB = 0.92;                // launch prob for particles inside a site
-const KICK_SPIKE_SCATTER_PROB = 0.05;        // soft all-over sparkle outside the sites
+// many consecutive frames and would otherwise re-trigger every frame.
+const KICK_SPIKE_MIN_STRENGTH = 0.12;       // permissive floor; weak kicks still spike a little
+const KICK_SPIKE_REFRACTORY_MS = 250;       // min gap between spike events
+const SPIKE_ANCHOR_COUNT = 6;               // fixed anchors around the silhouette
+const SPIKE_ANCHORS_PER_KICK_BASE = 2;      // anchors lit on the weakest qualifying kick
+const SPIKE_ANCHORS_PER_KICK_RANGE = 2;     // + up to this many at full kick strength
+const SPIKE_ANGULAR_WIDTH = 0.25;           // rad half-width of a thorn base; widened at low density
+const SPIKE_TARGET_LEN = 130;               // px of outward target displacement at full envelope
+const SPIKE_ENV_DECAY_60 = 0.93;            // thorn retract rate (~300 ms visible)
 // Manual test trigger: press 'B' to fire a maximum-strength burst on demand,
 // independent of the audio. Useful for visually calibrating the effect when
 // the music isn't producing strong kicks. Sets manualBurstFlag for one frame.
@@ -791,18 +791,73 @@ const HeartAnimation = ({
     const heartPointsCount = pointsOrigin.length;
     const targetPoints: [number, number][] = [];
 
+    // Per-point geometry for the spike anchors: each origin point's angle
+    // around the heart center and its outward unit radial (in origin space,
+    // which pulse() translates to screen space).
+    const pointAngle = new Float32Array(heartPointsCount);
+    const pointUnit = new Float32Array(heartPointsCount * 2);
+    for (let i = 0; i < heartPointsCount; i++) {
+      const px = pointsOrigin[i][0];
+      const py = pointsOrigin[i][1];
+      const m = Math.sqrt(px * px + py * py) || 1;
+      pointAngle[i] = Math.atan2(py, px);
+      pointUnit[i * 2] = px / m;
+      pointUnit[i * 2 + 1] = py / m;
+    }
+
+    // Fixed spike anchors: evenly distributed with per-mount jitter, stable
+    // for the whole session so spikes always erupt from the same places on
+    // the silhouette. env is the per-anchor thorn envelope (1 = fully
+    // extended), attacked on kicks and decayed every frame.
+    const spikeAnchors = Array.from({ length: SPIKE_ANCHOR_COUNT }, (_, a) => ({
+      angle: ((a + 0.15 + Math.random() * 0.7) / SPIKE_ANCHOR_COUNT) * Math.PI * 2 - Math.PI,
+      env: 0,
+    }));
+    // Lower particle densities have wider angular gaps between silhouette
+    // points; widen the thorns so they always catch a few points.
+    const spikeWidth = SPIKE_ANGULAR_WIDTH / Math.sqrt(particleMultiplier);
+    // Per-point thorn intensity this frame (outer ring only; mid/inner stay
+    // 0). Written by pulse(), read by the color pass so particles forming a
+    // spike glow while it's extended.
+    const pointSpike = new Float32Array(heartPointsCount);
+
     // Per-ring scaling: each of the three silhouette rings gets its own scale
     // factor so the kick pump wave can travel core -> rim and each ring can
     // carry its own frequency band. Scaling targets (rather than shoving
     // particles) is what keeps every audio response shape-preserving.
+    // Outer-ring points additionally get the spike-anchor displacement: an
+    // outward radial offset with quadratic falloff from the anchor center --
+    // a sharp thorn IN the target shape itself.
     const pulse = (kOuter: number, kMid: number, kInner: number) => {
       const cx = window.innerWidth / 2;
       const cy = window.innerHeight / 2;
       for (let i = 0; i < pointsOrigin.length; i++) {
         const k = i < outerRingCount ? kOuter : i < midRingEnd ? kMid : kInner;
+        let sx = 0;
+        let sy = 0;
+        if (i < outerRingCount) {
+          let disp = 0;
+          for (let a = 0; a < spikeAnchors.length; a++) {
+            const an = spikeAnchors[a];
+            if (an.env < 0.02) continue;
+            let d = Math.abs(pointAngle[i] - an.angle);
+            if (d > Math.PI) d = Math.PI * 2 - d;
+            if (d < spikeWidth) {
+              const t = 1 - d / spikeWidth;
+              const v = an.env * t * t;
+              if (v > disp) disp = v;
+            }
+          }
+          pointSpike[i] = disp;
+          if (disp > 0) {
+            const len = disp * SPIKE_TARGET_LEN;
+            sx = pointUnit[i * 2] * len;
+            sy = pointUnit[i * 2 + 1] * len;
+          }
+        }
         targetPoints[i] = [
-          k * pointsOrigin[i][0] + cx,
-          k * pointsOrigin[i][1] + cy
+          k * pointsOrigin[i][0] + sx + cx,
+          k * pointsOrigin[i][1] + sy + cy
         ];
       }
     };
@@ -1059,6 +1114,7 @@ const HeartAnimation = ({
       const kickPulseDecay = Math.pow(KICK_PULSE_DECAY_60, dtFrames);
       const snareFlareDecay = Math.pow(SNARE_FLARE_DECAY_60, dtFrames);
       const spikeFade = Math.pow(SPIKE_FADE_60, dtFrames);
+      const spikeEnvDecay = Math.pow(SPIKE_ENV_DECAY_60, dtFrames);
       const ringChase = 1 - Math.pow(1 - RING_CHASE_60, dtFrames);
 
       // Get current values from refs
@@ -1141,6 +1197,35 @@ const HeartAnimation = ({
         if (snareFlare < 0.005) snareFlare = 0;
       }
 
+      // Spike anchors: on a qualifying kick (edge + refractory), light a
+      // strength-scaled random subset of the fixed anchors; the manual 'B'
+      // burst lights all of them at full strength as a preview. Envelopes
+      // decay every frame, retracting the thorns. Must run BEFORE pulse()
+      // below, which bakes the thorn displacement into the target points.
+      const spikeEvent = kickEdge &&
+        currentIsPlaying &&
+        currentKickStrength > KICK_SPIKE_MIN_STRENGTH &&
+        now - lastSpikeLaunchTime > KICK_SPIKE_REFRACTORY_MS;
+      if (spikeEvent) lastSpikeLaunchTime = now;
+      if (manualBurstFlag) {
+        for (const an of spikeAnchors) an.env = 1;
+      } else if (spikeEvent) {
+        const lit = SPIKE_ANCHORS_PER_KICK_BASE +
+          Math.round(currentKickStrength * SPIKE_ANCHORS_PER_KICK_RANGE);
+        // Random distinct subset via a partial shuffle of anchor indices.
+        const idx = spikeAnchors.map((_, a) => a);
+        for (let a = 0; a < lit && a < idx.length; a++) {
+          const pick = a + Math.floor(Math.random() * (idx.length - a));
+          const tmp = idx[a]; idx[a] = idx[pick]; idx[pick] = tmp;
+          const an = spikeAnchors[idx[a]];
+          an.env = Math.max(an.env, 0.55 + 0.45 * currentKickStrength);
+        }
+      }
+      for (const an of spikeAnchors) {
+        an.env *= spikeEnvDecay;
+        if (an.env < 0.01) an.env = 0;
+      }
+
       // --- Base pulse (shared by all rings) -------------------------------------
       // Energy bed + anticipation + tempo breathing. The per-beat spike lives
       // in the ring envelopes above, so the base stays a slow, smooth bed.
@@ -1217,35 +1302,6 @@ const HeartAnimation = ({
 
       const cX = window.innerWidth / 2;
       const cY = window.innerHeight / 2;
-
-      // One spark EVENT per detected kick: edge-triggered + refractory. The
-      // per-particle probability roll happens inside the loop; this gate just
-      // guarantees a "kick" that stays high for several frames (legacy paths)
-      // or arrives in a rapid burst can't re-launch particles continuously.
-      const spikeEvent = kickEdge &&
-        currentIsPlaying &&
-        currentKickStrength > KICK_SPIKE_MIN_STRENGTH &&
-        now - lastSpikeLaunchTime > KICK_SPIKE_REFRACTORY_MS;
-      if (spikeEvent) lastSpikeLaunchTime = now;
-
-      // Build this kick's spike sites: stratified random angles (one per arc
-      // segment, jittered within it) so the needles spread around the heart
-      // instead of clumping on one side. Site count scales with kick strength.
-      // The manual 'B' burst fires the same path at full strength so it
-      // previews the real effect.
-      let spikeSites: number[] | null = null;
-      let spikeStrength = 0;
-      if (spikeEvent || manualBurstFlag) {
-        spikeStrength = manualBurstFlag ? 1 : currentKickStrength;
-        const siteCount = SPIKE_SITE_BASE + Math.round(spikeStrength * SPIKE_SITE_PER_STRENGTH);
-        spikeSites = [];
-        for (let s = 0; s < siteCount; s++) {
-          spikeSites.push(((s + Math.random()) / siteCount) * Math.PI * 2);
-        }
-      }
-      // Lower particle densities have wider gaps between silhouette points;
-      // widen each site so a needle always catches a few particles.
-      const siteHalfWidth = SPIKE_SITE_HALF_WIDTH / Math.sqrt(particleMultiplier);
 
       // --- Flatness-driven scene parameters (computed once per frame, applied per-particle) ---
       // Flatness ~ 0 (tonal: vocals, melody) -> heart silhouette stays crisp + vivid.
@@ -1388,70 +1444,10 @@ const HeartAnimation = ({
           }
         }
 
-        // Music-reactive spike needles. On a spike event (or manual 'B' press)
-        // each particle checks its angular position from screen center against
-        // this kick's spike sites:
-        //   IN a site  -> launch (92%) along its own radial with tiny jitter,
-        //                 commanded drift peaking at the site center
-        //                 (quadratic falloff) so the spike is pointed.
-        //                 Neighbors in the same slice fly together: their
-        //                 trails overlap into one needle. Outer + mid rings
-        //                 only -- inner-ring particles crossing the whole
-        //                 body read as chaos, not spikes.
-        //   OUTSIDE    -> small chance of a soft scatter at 40% length for
-        //                 all-over sparkle texture (u.spike = 0.55 -> dimmer
-        //                 glow).
-        // Particles already in flight (u.spike >= 0.2) are skipped: re-hits
-        // stack velocity on top of existing velocity and ratchet particles
-        // off-screen over consecutive beats.
-        // No dt scaling on the rolls: spikeEvent fires once per detected kick
-        // (edge + refractory above); selection is per-event, not per-second.
-        if (spikeSites && u.spike < 0.2) {
-          const pdx = u.trace[0].x - cX;
-          const pdy = u.trace[0].y - cY;
-          const pdist = Math.sqrt(pdx * pdx + pdy * pdy);
-          if (pdist > 1) {
-            const pAngle = Math.atan2(pdy, pdx);
-            let nearest = Infinity;
-            for (let s = 0; s < spikeSites.length; s++) {
-              let d = Math.abs(pAngle - spikeSites[s]);
-              if (d > Math.PI) d = Math.PI * 2 - d;
-              if (d < nearest) nearest = d;
-            }
-            // Ballistic normalization: launch velocity is sized so the
-            // particle's total coast distance equals the commanded length,
-            // compensating per-particle damping. u.force spans 0.7..0.9,
-            // which is a ~4x spread in coast distance per unit velocity --
-            // uniform launch forces send low-friction particles flying
-            // across the screen while high-friction ones barely move.
-            const damp = Math.pow(u.force, SPEED_MULTIPLIER);
-            const ballistic = (1 - damp) / SPEED_MULTIPLIER;
-            if (nearest < siteHalfWidth && u.q < midRingEnd && Math.random() < SPIKE_SITE_PROB) {
-              const tip = 1 - (nearest / siteHalfWidth) * (nearest / siteHalfWidth) * 0.5;
-              const angle = pAngle + (Math.random() - 0.5) * KICK_SPIKE_ANGLE_JITTER;
-              // Needle length scales with kick strength AND overall loudness,
-              // so a hard kick in a loud chorus throws ~2x the length of a
-              // kick in a quiet verse.
-              const loudnessFactor = manualBurstFlag ? 1.2 : (0.75 + currentAudioData.overall * 0.5);
-              const lengthPx = (KICK_SPIKE_LEN_BASE + Math.random() * KICK_SPIKE_LEN_RANDOM)
-                * (0.7 + spikeStrength * 0.4)
-                * loudnessFactor
-                * tip;
-              u.vx += Math.cos(angle) * lengthPx * ballistic;
-              u.vy += Math.sin(angle) * lengthPx * ballistic;
-              // Light the spark: drives the glow in the color pass and the
-              // fade-in recall.
-              u.spike = 1;
-            } else if (nearest >= siteHalfWidth && Math.random() < spikeStrength * KICK_SPIKE_SCATTER_PROB) {
-              const angle = pAngle + (Math.random() - 0.5) * (Math.PI / 4);
-              const lengthPx = (KICK_SPIKE_LEN_BASE + Math.random() * KICK_SPIKE_LEN_RANDOM)
-                * 0.4 * (0.7 + spikeStrength * 0.4);
-              u.vx += Math.cos(angle) * lengthPx * ballistic;
-              u.vy += Math.sin(angle) * lengthPx * ballistic;
-              u.spike = 0.55;
-            }
-          }
-        }
+        // Kick spikes no longer touch particle velocities at all -- the
+        // thorns live in the TARGET shape (see pulse() and the spike-anchor
+        // block above), and the regular radial pull carries particles into
+        // and out of them.
 
         // Position integration. dt is capped at MAX_INTEGRATION_DT so a single
         // huge-dt frame (tab returning from background) can't teleport
@@ -1525,14 +1521,13 @@ const HeartAnimation = ({
         // Brightness flash on either kick OR snare so any beat brightens the scene.
         const glowIntensity = combinedGlow * 0.35;
         const trebleSparkle = currentIsPlaying ? currentAudioData.treble * 0.1 : 0;
-        // Spiked particles burn brighter (alpha + lightness) for the duration
-        // of their flight. This is what lets the spark effect read STRONGER
-        // than the old tuning despite launching far fewer particles: a few
-        // luminous streamers against an intact heart beat dozens of dim dots
-        // inside a cloud.
+        // Particles forming an extended thorn (pointSpike, written by pulse())
+        // or flying in a section burst (u.spike) burn brighter -- alpha +
+        // lightness -- so spikes read as luminous rays against the rim.
+        const sparkGlow = Math.max(u.spike, pointSpike[u.q]);
         const colorIntensity = Math.min(1.0,
-          baseIntensity + bassIntensity + glowIntensity + trebleSparkle + u.spike * 0.35);
-        const lightnessBoost = combinedGlow * 15 + u.spike * 22;
+          baseIntensity + bassIntensity + glowIntensity + trebleSparkle + sparkGlow * 0.35);
+        const lightnessBoost = combinedGlow * 15 + sparkGlow * 22;
         // Spectral centroid -> hue shift. Centroid is in [0, 1] (perceptual log-Hz).
         // Map [0, 1] to [-12, +12] degrees: bass-heavy passages cool the palette,
         // bright passages (cymbals, vocals, leads) warm it up. Subtle on purpose --
