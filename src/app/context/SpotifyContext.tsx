@@ -65,6 +65,51 @@ interface SpotifyContextType {
 
 const SpotifyContext = createContext<SpotifyContextType | undefined>(undefined);
 
+// Exchange the stored refresh token for a fresh access token via our API
+// route. Persists the new token (and rotated refresh token / expiry) to
+// localStorage so every consumer that reads the token at call time picks it
+// up. Returns the new access token, or null when refresh isn't possible.
+async function refreshStoredToken(): Promise<string | null> {
+  const refreshToken = localStorage.getItem('spotify_refresh_token');
+  if (!refreshToken) return null;
+
+  try {
+    const response = await fetch('/api/spotify/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!response.ok) {
+      console.error('Spotify token refresh failed:', response.status);
+      return null;
+    }
+    const data = await response.json();
+    if (!data.access_token) return null;
+
+    localStorage.setItem('spotify_access_token', data.access_token);
+    if (data.refresh_token) localStorage.setItem('spotify_refresh_token', data.refresh_token);
+    if (data.expires_in) {
+      localStorage.setItem(
+        'spotify_token_expires_at',
+        String(Date.now() + Number(data.expires_in) * 1000)
+      );
+    }
+    return data.access_token;
+  } catch (error) {
+    console.error('Error refreshing Spotify token:', error);
+    return null;
+  }
+}
+
+// True when the stored token expires within `ms` (or already has). Unknown
+// expiry (older sessions that never stored it) counts as NOT expiring -- the
+// 401-retry path covers those.
+function tokenExpiresWithin(ms: number): boolean {
+  const expiresAt = Number(localStorage.getItem('spotify_token_expires_at'));
+  if (!expiresAt) return false;
+  return Date.now() > expiresAt - ms;
+}
+
 const CLIENT_ID = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID || '';
 const REDIRECT_URI = process.env.NEXT_PUBLIC_SPOTIFY_REDIRECT_URI || 'http://localhost:3000/music/callback';
 const SCOPES = [
@@ -89,11 +134,16 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
   const [isLoadingUserData, setIsLoadingUserData] = useState(false);
   const [hasInitialized, setHasInitialized] = useState(false);
   const eventListenersSetup = useRef(false);
+  // Guards the 401 -> refresh -> retry path against looping when the API
+  // keeps rejecting a freshly refreshed token.
+  const hasRetriedAuthRef = useRef(false);
 
   const logout = useCallback(() => {
     localStorage.removeItem('spotify_access_token');
     localStorage.removeItem('spotify_token_type');
-    localStorage.removeItem('spotify_expires_in');
+    localStorage.removeItem('spotify_expires_in'); // legacy key
+    localStorage.removeItem('spotify_refresh_token');
+    localStorage.removeItem('spotify_token_expires_at');
     setSpotifyApi(null);
     setIsAuthenticated(false);
     setUser(null);
@@ -149,7 +199,8 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
     try {
       const userData = await api.getMe();
       setUser(userData);
-      
+      hasRetriedAuthRef.current = false;
+
       // Add a small delay before loading playlists to avoid rate limiting
       setTimeout(async () => {
         try {
@@ -185,8 +236,20 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
           setIsLoadingUserData(false);
           return;
         } else if (status === 401) {
-          // Unauthorized - token expired or invalid
-          console.error('Spotify token expired or invalid (401). Logging out.');
+          // Unauthorized - token expired or invalid. Try a one-shot refresh
+          // before giving up; only logout when refresh isn't possible.
+          if (!hasRetriedAuthRef.current) {
+            hasRetriedAuthRef.current = true;
+            const newToken = await refreshStoredToken();
+            if (newToken) {
+              console.log('Spotify token refreshed after 401, retrying...');
+              api.setAccessToken(newToken);
+              setIsLoadingUserData(false);
+              loadUserData(api);
+              return;
+            }
+          }
+          console.error('Spotify token expired and refresh failed (401). Logging out.');
           logout();
           return;
         }
@@ -200,22 +263,36 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [logout, loadUserPlaylists, isLoadingUserData]);
 
-  const checkAuthState = useCallback(() => {
+  const checkAuthState = useCallback(async () => {
     if (hasInitialized) {
       console.log('Already initialized, skipping auth check');
       return;
     }
-    
-    const token = localStorage.getItem('spotify_access_token');
+    setHasInitialized(true);
+
+    let token = localStorage.getItem('spotify_access_token');
     console.log('Checking for existing token:', token ? 'Token found' : 'No token');
-    
+
+    // Refresh up-front when the stored token is expired or about to expire,
+    // so returning visitors don't start their session with a guaranteed 401.
+    if (token && tokenExpiresWithin(60_000)) {
+      console.log('Stored Spotify token expired/expiring, refreshing...');
+      const refreshed = await refreshStoredToken();
+      if (refreshed) {
+        token = refreshed;
+      } else if (tokenExpiresWithin(0)) {
+        // Definitely expired and unrefreshable -- treat as logged out.
+        token = null;
+      }
+    }
+
     if (token) {
       console.log('Setting up Spotify API with existing token');
       const api = new SpotifyWebApi();
       api.setAccessToken(token);
       setSpotifyApi(api);
       setIsAuthenticated(true);
-      
+
       // Add a small delay to prevent rapid-fire API calls
       setTimeout(() => {
         if (!isLoadingUserData) {
@@ -223,13 +300,11 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
         }
       }, 500);
     } else {
-      console.log('No existing token found, user not authenticated');
+      console.log('No valid token found, user not authenticated');
       setIsAuthenticated(false);
       setSpotifyApi(null);
       setUser(null);
     }
-    
-    setHasInitialized(true);
   }, [hasInitialized, isLoadingUserData, loadUserData]); // Include loadUserData dependency
 
   useEffect(() => {
@@ -265,6 +340,39 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
       };
     }
   }, [checkAuthState]); // Include checkAuthState dependency
+
+  // Proactive token refresh: schedule a refresh ~2 minutes before the stored
+  // expiry so long listening sessions never hit a mid-playback 401. The Web
+  // Playback SDK and all Web API calls read the token from localStorage at
+  // call time, so they pick the new token up automatically.
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const schedule = () => {
+      const expiresAt = Number(localStorage.getItem('spotify_token_expires_at'));
+      if (!expiresAt) return; // no expiry info (legacy session) -- rely on 401 retry
+      const delay = Math.max(10_000, expiresAt - Date.now() - 120_000);
+      timer = setTimeout(async () => {
+        const newToken = await refreshStoredToken();
+        if (cancelled) return;
+        if (newToken) {
+          spotifyApi?.setAccessToken(newToken);
+          schedule();
+        } else {
+          console.warn('Proactive Spotify token refresh failed; session will expire at', new Date(expiresAt).toISOString());
+        }
+      }, delay);
+    };
+
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [isAuthenticated, spotifyApi]);
 
   const login = () => {
     const authUrl = `https://accounts.spotify.com/authorize?client_id=${CLIENT_ID}&response_type=code&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${encodeURIComponent(SCOPES)}&show_dialog=true`;

@@ -1,4 +1,5 @@
 import { ReactNode } from 'react';
+import Icon from '../Icon';
 import { SpotifyPlaylistData } from '@/types/spotify';
 
 interface TrackInfoProps {
@@ -39,14 +40,14 @@ const TrackInfo = ({
               className={`bg-transparent border-none p-1 rounded cursor-pointer text-xs transition-all duration-200 hover:bg-[#252529] hover:text-[#1db954] ${showPlaylistSongs ? 'text-[#1db954]' : 'text-[#8f8f9d]'}`}
               title={showPlaylistSongs ? "Hide playlist" : "Show playlist"}
             >
-              <i className={`fas ${showPlaylistSongs ? 'fa-chevron-down' : 'fa-chevron-up'}`}></i>
+              <Icon name={showPlaylistSongs ? 'chevron-down' : 'chevron-up'} />
             </button>
             <button
               onClick={onBackToDefault}
               className="bg-transparent border-none text-[#8f8f9d] p-1 rounded cursor-pointer text-xs transition-all duration-200 hover:bg-[#252529] hover:text-white"
               title="Back to default playlist"
             >
-              <i className="fas fa-times"></i>
+              <Icon name="times" />
             </button>
           </>
         )}

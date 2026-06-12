@@ -20,8 +20,6 @@ export default function Callback() {
 
       if (code) {
         try {
-          console.log('Authorization code received:', code);
-
           const response = await fetch('/api/spotify/token', {
             method: 'POST',
             headers: {
@@ -30,22 +28,26 @@ export default function Callback() {
             body: JSON.stringify({ code }),
           });
 
-          console.log('Token exchange response status:', response.status);
-
           if (!response.ok) {
             const errorText = await response.text();
-            console.error('Token exchange failed:', errorText);
-            throw new Error(`Failed to exchange code for token: ${errorText}`);
+            console.error('Token exchange failed:', response.status, errorText);
+            throw new Error('Failed to exchange code for token');
           }
 
+          // NOTE: never log the token payload -- it contains the access and
+          // refresh tokens.
           const data = await response.json();
-          console.log('Token exchange successful:', data);
 
           localStorage.setItem('spotify_access_token', data.access_token);
           if (data.token_type) localStorage.setItem('spotify_token_type', data.token_type);
-          if (data.expires_in) localStorage.setItem('spotify_expires_in', data.expires_in);
-
-          console.log('Tokens stored in localStorage');
+          if (data.refresh_token) localStorage.setItem('spotify_refresh_token', data.refresh_token);
+          if (data.expires_in) {
+            // Store the absolute expiry so SpotifyContext can refresh proactively.
+            localStorage.setItem(
+              'spotify_token_expires_at',
+              String(Date.now() + Number(data.expires_in) * 1000)
+            );
+          }
 
           window.dispatchEvent(new CustomEvent('spotifyTokenUpdated'));
 

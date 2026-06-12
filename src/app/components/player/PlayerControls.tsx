@@ -1,3 +1,5 @@
+import Icon from '../Icon';
+
 interface PlayerControlsProps {
   isAuthenticated: boolean;
   isPaused: boolean;
@@ -27,10 +29,11 @@ const PlayerControls = ({
           onClick={isAuthenticated ? onPlaylistToggle : undefined}
           title={isAuthenticated ? (currentPlaylistId ? 'Switch Playlist' : 'Select Playlist') : 'Connect to Spotify to access playlists'}
         >
-          <i 
-            className={`fab fa-spotify text-[26px] transition-colors duration-200 ease-[cubic-bezier(0.4,0,0.2,1)] group-hover:text-white
+          <Icon
+            name="spotify"
+            className={`text-[26px] transition-colors duration-200 ease-[cubic-bezier(0.4,0,0.2,1)] group-hover:text-white
               ${currentPlaylistId ? 'text-[#1db954]' : 'text-[#b0b3c6]'}`}
-          ></i>
+          />
         </div>
       </div>
 
@@ -40,7 +43,7 @@ const PlayerControls = ({
           className="w-[76px] h-[76px] bg-transparent rounded-2xl cursor-pointer flex items-center justify-center transition-all duration-200 ease-[cubic-bezier(0.4,0,0.2,1)] hover:bg-[#252529] group"
           onClick={onPrevious}
         >
-          <i className="fas fa-backward text-[#b0b3c6] text-[26px] transition-colors duration-200 ease-[cubic-bezier(0.4,0,0.2,1)] group-hover:text-white"></i>
+          <Icon name="backward" className="text-[#b0b3c6] text-[26px] transition-colors duration-200 ease-[cubic-bezier(0.4,0,0.2,1)] group-hover:text-white" />
         </div>
       </div>
 
@@ -50,7 +53,7 @@ const PlayerControls = ({
           className="w-[76px] h-[76px] bg-transparent rounded-2xl cursor-pointer flex items-center justify-center transition-all duration-200 ease-[cubic-bezier(0.4,0,0.2,1)] hover:bg-[#252529] group"
           onClick={onTogglePlay}
         >
-          <i className={`${isPaused ? "fas fa-play" : "fas fa-pause"} text-[#b0b3c6] text-[26px] transition-colors duration-200 ease-[cubic-bezier(0.4,0,0.2,1)] group-hover:text-white`}></i>
+          <Icon name={isPaused ? 'play' : 'pause'} className="text-[#b0b3c6] text-[26px] transition-colors duration-200 ease-[cubic-bezier(0.4,0,0.2,1)] group-hover:text-white" />
         </div>
       </div>
 
@@ -60,7 +63,7 @@ const PlayerControls = ({
           className="w-[76px] h-[76px] bg-transparent rounded-2xl cursor-pointer flex items-center justify-center transition-all duration-200 ease-[cubic-bezier(0.4,0,0.2,1)] hover:bg-[#252529] group"
           onClick={onNext}
         >
-          <i className="fas fa-forward text-[#b0b3c6] text-[26px] transition-colors duration-200 ease-[cubic-bezier(0.4,0,0.2,1)] group-hover:text-white"></i>
+          <Icon name="forward" className="text-[#b0b3c6] text-[26px] transition-colors duration-200 ease-[cubic-bezier(0.4,0,0.2,1)] group-hover:text-white" />
         </div>
       </div>
     </div>

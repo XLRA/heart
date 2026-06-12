@@ -5,49 +5,28 @@ import type { AlbumColors } from '../../services/colorExtractor';
 
 export type { AlbumColors };
 
+// Shared state between the music player and the heart visualizer.
+//
+// Audio-reactive data reaches the heart through exactly three paths, in
+// priority order (see HeartAnimation):
+//   1. tabAudioStream -- real analysis of tab-captured audio (live audio).
+//   2. audioElement   -- real analysis of local-file playback via Web Audio.
+//   3. Simulation     -- position-seeded synthetic motion for Spotify
+//      playback without capture (Spotify's SDK audio is DRM-protected and
+//      cannot be tapped; their audio-features/analysis endpoints are
+//      deprecated for new apps).
+// The previous Meyda subsystem -- which "analyzed" a synthetic sine loop and
+// reported constants -- was removed along with the deprecated-endpoint
+// plumbing (spotifyTrackData).
 interface AudioVisualizerContextType {
   audioElement: HTMLAudioElement | null;
   isPlaying: boolean;
   isSpotifyMode: boolean;
-  spotifyTrackData: {
-    tempo?: number;
-    energy?: number;
-    danceability?: number;
-    valence?: number;
-  } | null;
-  meydaData: {
-    rms: number;
-    spectralCentroid: number;
-    spectralRolloff: number;
-    spectralFlux: number;
-    spectralSpread: number;
-    spectralKurtosis: number;
-    loudness: number;
-    mfcc: number[];
-    chroma: number[];
-  } | null;
   albumColors: AlbumColors | null;
   tabAudioStream: MediaStream | null;
   setAudioElement: (element: HTMLAudioElement | null) => void;
   setIsPlaying: (playing: boolean) => void;
   setSpotifyMode: (isSpotify: boolean) => void;
-  setSpotifyTrackData: (data: {
-    tempo?: number;
-    energy?: number;
-    danceability?: number;
-    valence?: number;
-  } | null) => void;
-  setMeydaData: (data: {
-    rms: number;
-    spectralCentroid: number;
-    spectralRolloff: number;
-    spectralFlux: number;
-    spectralSpread: number;
-    spectralKurtosis: number;
-    loudness: number;
-    mfcc: number[];
-    chroma: number[];
-  } | null) => void;
   setAlbumColors: (colors: AlbumColors | null) => void;
   setTabAudioStream: (stream: MediaStream | null) => void;
 }
@@ -70,23 +49,6 @@ export const AudioVisualizerProvider = ({ children }: AudioVisualizerProviderPro
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isSpotifyMode, setSpotifyMode] = useState(false);
-  const [spotifyTrackData, setSpotifyTrackData] = useState<{
-    tempo?: number;
-    energy?: number;
-    danceability?: number;
-    valence?: number;
-  } | null>(null);
-  const [meydaData, setMeydaData] = useState<{
-    rms: number;
-    spectralCentroid: number;
-    spectralRolloff: number;
-    spectralFlux: number;
-    spectralSpread: number;
-    spectralKurtosis: number;
-    loudness: number;
-    mfcc: number[];
-    chroma: number[];
-  } | null>(null);
   const [albumColors, setAlbumColors] = useState<AlbumColors | null>(null);
   const [tabAudioStream, setTabAudioStream] = useState<MediaStream | null>(null);
 
@@ -96,15 +58,11 @@ export const AudioVisualizerProvider = ({ children }: AudioVisualizerProviderPro
         audioElement,
         isPlaying,
         isSpotifyMode,
-        spotifyTrackData,
-        meydaData,
         albumColors,
         tabAudioStream,
         setAudioElement,
         setIsPlaying,
         setSpotifyMode,
-        setSpotifyTrackData,
-        setMeydaData,
         setAlbumColors,
         setTabAudioStream,
       }}

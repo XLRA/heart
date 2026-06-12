@@ -156,16 +156,17 @@ export async function GET(request: NextRequest) {
   
   if (result) {
     console.log(`[API] ✅ Successfully fetched lyrics (${result.lyrics.length} lines, source: ${result.source})`);
+    // Only cache real lyrics. Caching the demo fallback used to pin a track
+    // to "no lyrics" for an hour even when the upstream API only had a
+    // transient hiccup.
+    lyricsCache.set(cacheKey, {
+      data: result,
+      timestamp: Date.now()
+    });
   } else {
-    console.log('[API] ❌ Custom API failed, using demo lyrics');
+    console.log('[API] ❌ Custom API failed, using demo lyrics (not cached)');
     result = generateDemoLyrics(track || 'Unknown Track', artist || 'Unknown Artist');
   }
-
-  // Cache the result
-  lyricsCache.set(cacheKey, {
-    data: result,
-    timestamp: Date.now()
-  });
 
   console.log(`[API] Returning lyrics: source="${result.source}", lines=${result.lyrics.length}`);
 

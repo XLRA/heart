@@ -10,6 +10,11 @@ interface SettingsContextType {
   setParticleLevel: (level: ParticleLevel) => void;
   lyricsMode: LyricsMode;
   setLyricsMode: (mode: LyricsMode) => void;
+  /** Clean mode: hides all UI chrome so only the heart (and lyrics) remain.
+   *  Deliberately NOT persisted -- a reload always starts with the UI
+   *  visible so nobody gets stranded on a blank screen. */
+  uiHidden: boolean;
+  setUiHidden: (hidden: boolean) => void;
 }
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
@@ -31,6 +36,7 @@ export const TRACE_COUNTS: Record<ParticleLevel, number> = {
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [particleLevel, setParticleLevelState] = useState<ParticleLevel>('high');
   const [lyricsMode, setLyricsModeState] = useState<LyricsMode>('center');
+  const [uiHidden, setUiHidden] = useState(false);
 
   // Load settings from localStorage on mount
   useEffect(() => {
@@ -56,7 +62,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <SettingsContext.Provider value={{ particleLevel, setParticleLevel, lyricsMode, setLyricsMode }}>
+    <SettingsContext.Provider value={{ particleLevel, setParticleLevel, lyricsMode, setLyricsMode, uiHidden, setUiHidden }}>
       {children}
     </SettingsContext.Provider>
   );

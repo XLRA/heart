@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Image from 'next/image';
+import Icon from './Icon';
 import { useSpotify } from '../context/SpotifyContext';
 import { useWebPlayer } from '../context/WebPlayerContext';
 
@@ -135,7 +136,7 @@ const SpotifyLogin = () => {
                 }}
                 title="Retry connection"
               >
-                <i className="fas fa-redo" style={{ fontSize: '12px' }}></i>
+                <Icon name="redo" style={{ fontSize: '12px' }} />
               </button>
             )}
             <button
@@ -159,7 +160,7 @@ const SpotifyLogin = () => {
               }}
               title="Disconnect from Spotify"
             >
-              <i className="fas fa-sign-out-alt" style={{ fontSize: '14px' }}></i>
+              <Icon name="sign-out" style={{ fontSize: '14px' }} />
             </button>
           </div>
         </div>
@@ -211,7 +212,7 @@ const SpotifyLogin = () => {
             e.currentTarget.style.boxShadow = '0 4px 12px rgba(29, 185, 84, 0.3)';
           }}
         >
-          <i className="fab fa-spotify" style={{ fontSize: '16px' }}></i>
+          <Icon name="spotify" style={{ fontSize: '16px' }} />
           Connect Spotify
         </button>
       </div>

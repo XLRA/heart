@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo, ReactNode } from 'react';
 
 interface WebPlayerTrack {
   id: string;
@@ -107,24 +107,34 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
   const stateCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const positionIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastPositionUpdateRef = useRef<number>(Date.now());
+  // Ref mirrors of isReady/deviceId. The SDK listeners and the polling
+  // interval are closures created once inside initializePlayer; reading the
+  // STATE values there reads the render they were created in (isReady was
+  // still false when the `ready` listener registered, which left the old
+  // polling permanently dead, and deviceId was still null). Refs always read
+  // current.
+  const isReadyRef = useRef(false);
+  const deviceIdRef = useRef<string | null>(null);
 
-  // Function to periodically check current state for UI updates
-  const startStatePolling = () => {
+  // Safety-net polling. player_state_changed events carry the real updates;
+  // this only catches drift (e.g. a missed event after a network blip), so a
+  // slow cadence is plenty and keeps SDK traffic low.
+  const startStatePolling = useCallback(() => {
     if (stateCheckIntervalRef.current) {
       clearInterval(stateCheckIntervalRef.current);
     }
-    
+
     stateCheckIntervalRef.current = setInterval(async () => {
-      if (playerRef.current && isReady) {
+      if (playerRef.current && isReadyRef.current) {
         try {
           const state = await playerRef.current.getCurrentState();
           if (state) {
             const stateObj = state as Record<string, unknown>;
             const currentTrack = (stateObj.track_window as Record<string, unknown>)?.current_track as Record<string, unknown> | undefined;
-            
+
             // Update position timestamp when we get new position from API
             lastPositionUpdateRef.current = Date.now();
-            
+
             setPlayerState(prev => ({
               is_paused: Boolean(stateObj.paused),
               is_active: true,
@@ -139,7 +149,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
               position: Number(stateObj.position) || 0,
               duration: Number(currentTrack?.duration_ms) || 0,
               volume: prev.volume, // Keep current volume
-              device_id: deviceId
+              device_id: deviceIdRef.current
             }));
           } else {
             // If no state, set as inactive
@@ -156,22 +166,22 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
           console.error('Error getting current state:', error);
         }
       }
-    }, 1000); // Back to 1000ms to reduce API calls and improve performance
-  };
+    }, 5000);
+  }, []);
 
-  const stopStatePolling = () => {
+  const stopStatePolling = useCallback(() => {
     if (stateCheckIntervalRef.current) {
       clearInterval(stateCheckIntervalRef.current);
       stateCheckIntervalRef.current = null;
     }
-  };
+  }, []);
 
   // Smooth position interpolation for better UI responsiveness
-  const startPositionInterpolation = () => {
+  const startPositionInterpolation = useCallback(() => {
     if (positionIntervalRef.current) {
       clearInterval(positionIntervalRef.current);
     }
-    
+
     positionIntervalRef.current = setInterval(() => {
       setPlayerState(prev => {
         // Only interpolate if music is playing and active
@@ -198,21 +208,21 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         };
       });
     }, 100); // Update every 100ms for smooth progress
-  };
+  }, []);
 
-  const stopPositionInterpolation = () => {
+  const stopPositionInterpolation = useCallback(() => {
     if (positionIntervalRef.current) {
       clearInterval(positionIntervalRef.current);
       positionIntervalRef.current = null;
     }
-  };
+  }, []);
 
-  const checkAvailableDevices = (targetDeviceId?: string, verbose: boolean = false): Promise<boolean> => {
+  const checkAvailableDevices = useCallback((targetDeviceId?: string, verbose: boolean = false): Promise<boolean> => {
     const token = localStorage.getItem('spotify_access_token');
     if (!token) return Promise.resolve(false);
 
-    // Use the provided device ID or fall back to the state device ID
-    const checkDeviceId = targetDeviceId || deviceId;
+    // Use the provided device ID or fall back to the current device ID
+    const checkDeviceId = targetDeviceId || deviceIdRef.current;
     if (!checkDeviceId) {
       if (verbose) console.log('No device ID available for verification');
       return Promise.resolve(false);
@@ -250,16 +260,16 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       console.error('Error checking available devices:', error);
       return false;
     });
-  };
+  }, []);
 
-  const initializePlayer = (token: string) => {
+  const initializePlayer = useCallback((token: string) => {
     if (typeof window === 'undefined' || !window.Spotify) {
       console.error('Spotify Web Playback SDK not loaded');
       return;
     }
 
     // Prevent multiple initializations - check if already initializing or ready
-    if (isInitializingRef.current || isReady || playerRef.current) {
+    if (isInitializingRef.current || isReadyRef.current || playerRef.current) {
       console.log('Web Player already initialized or initializing, skipping...');
       return;
     }
@@ -283,7 +293,10 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     const newPlayer = new window.Spotify.Player({
       name: 'Heart Music Player',
       getOAuthToken: (cb: (token: string) => void) => {
-        cb(token);
+        // Read at call time: the SDK invokes this whenever it needs a token,
+        // so tokens refreshed by SpotifyContext are picked up automatically
+        // instead of the SDK holding the (eventually expired) initial one.
+        cb(localStorage.getItem('spotify_access_token') || token);
       },
       volume: 0.5
     });
@@ -343,7 +356,10 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
 
       const stateObj = state as Record<string, unknown>;
       const currentTrack = (stateObj.track_window as Record<string, unknown>)?.current_track as Record<string, unknown> | undefined;
-      
+
+      // Fresh position from the SDK: re-anchor the interpolation clock.
+      lastPositionUpdateRef.current = Date.now();
+
       setPlayerState(prev => ({
         is_paused: Boolean(stateObj.paused),
         is_active: true,
@@ -358,7 +374,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         position: Number(stateObj.position) || 0,
         duration: Number(currentTrack?.duration_ms) || 0,
         volume: prev.volume, // Keep current volume since Spotify doesn't provide it in state
-        device_id: deviceId
+        device_id: deviceIdRef.current
       }));
     });
 
@@ -371,6 +387,8 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     newPlayer.addListener('ready', (...args) => {
       const data = args[0] as { device_id: string };
       console.log('Spotify Web Player is ready with Device ID:', data.device_id);
+      deviceIdRef.current = data.device_id;
+      isReadyRef.current = true;
       setDeviceId(data.device_id);
       setPlayerState(prev => ({
         ...prev,
@@ -387,6 +405,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     newPlayer.addListener('not_ready', (...args) => {
       const data = args[0] as { device_id: string };
       console.log('Spotify Web Player device has gone offline:', data.device_id);
+      isReadyRef.current = false;
       setIsReady(false);
       stopStatePolling();
       stopPositionInterpolation();
@@ -414,16 +433,21 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       });
       isInitializingRef.current = false;
     });
-  };
+  }, [startStatePolling, startPositionInterpolation, stopStatePolling, stopPositionInterpolation]);
 
-  const playTrack = (trackUri: string) => {
-    if (!player || !deviceId) {
+  // Starting playback of a track/context is the ONE thing the SDK has no
+  // local method for -- it requires the Web API. Everything else (toggle,
+  // seek, volume, next/previous) uses the SDK's local methods below: they
+  // act on this device directly with no network round trip, no token read,
+  // and no device checks, so the controls respond instantly.
+  const playTrack = useCallback((trackUri: string) => {
+    const targetDeviceId = deviceIdRef.current;
+    if (!playerRef.current || !targetDeviceId) {
       console.error('Player not ready or device ID not available');
       return;
     }
 
-    // Use the Web API to start playback directly
-    fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+    fetch(`https://api.spotify.com/v1/me/player/play?device_id=${targetDeviceId}`, {
       method: 'PUT',
       body: JSON.stringify({
         uris: [trackUri]
@@ -440,10 +464,11 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     }).catch(error => {
       console.error('Error starting track playback:', error);
     });
-  };
+  }, []);
 
-  const playPlaylist = async (playlistUri: string) => {
-    if (!player || !deviceId) {
+  const playPlaylist = useCallback(async (playlistUri: string) => {
+    const targetDeviceId = deviceIdRef.current;
+    if (!playerRef.current || !targetDeviceId) {
       console.error('Player not ready or device ID not available');
       return;
     }
@@ -454,20 +479,17 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       return;
     }
 
-    console.log('Starting playlist playback with device ID:', deviceId);
-    console.log('Playlist URI:', playlistUri);
-    console.log('Token (first 20 chars):', token.substring(0, 20) + '...');
-
-    // Verify device is still registered before attempting playback
-    const isDeviceRegistered = await checkAvailableDevices(deviceId, false);
+    // Verify device is still registered before starting a new playback
+    // context (this is the one action where a stale registration commonly
+    // bites, e.g. after the SDK device dropped while the tab slept).
+    const isDeviceRegistered = await checkAvailableDevices(targetDeviceId, false);
     if (!isDeviceRegistered) {
       console.error('Device not registered with Spotify, cannot start playback');
       return;
     }
 
-    // Use the Web API to start playlist playback
     try {
-      const response = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${deviceId}`, {
+      const response = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${targetDeviceId}`, {
         method: 'PUT',
         body: JSON.stringify({
           context_uri: playlistUri
@@ -478,9 +500,6 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         }
       });
 
-      console.log('Response status:', response.status);
-      console.log('Response headers:', Object.fromEntries(response.headers.entries()));
-      
       if (!response.ok) {
         const errorText = await response.text();
         console.error('Spotify API Error Response:', errorText);
@@ -490,108 +509,47 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     } catch (error) {
       console.error('Error starting playlist playback:', error);
     }
-  };
+  }, [checkAvailableDevices]);
 
-  const togglePlay = async () => {
-    if (!player || !deviceId) {
-      console.error('Player not available or device ID not available');
+  const togglePlay = useCallback(async () => {
+    if (!playerRef.current) {
+      console.error('Player not available');
       return;
     }
-
-    // Verify device is still registered before attempting playback
-    const isDeviceRegistered = await checkAvailableDevices(deviceId, false);
-    if (!isDeviceRegistered) {
-      console.error('Device not registered with Spotify, cannot toggle playback');
-      return;
-    }
-
-    // Use the Web API to toggle playback
-    const action = playerState.is_paused ? 'play' : 'pause';
-    console.log(`Toggling playback: ${action} with device ID:`, deviceId);
-    
     try {
-      const response = await fetch(`https://api.spotify.com/v1/me/player/${action}?device_id=${deviceId}`, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
-        }
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
-      }
-      console.log(`Playback ${action} successful`);
+      await playerRef.current.togglePlay();
     } catch (error) {
-      console.error(`Error ${action}ing playback:`, error);
+      console.error('Error toggling playback:', error);
     }
-  };
+  }, []);
 
-  const nextTrack = async () => {
-    if (!player || !deviceId) {
-      console.error('Player not available or device ID not available');
+  const nextTrack = useCallback(async () => {
+    if (!playerRef.current) {
+      console.error('Player not available');
       return;
     }
-
     try {
-      const response = await fetch(`https://api.spotify.com/v1/me/player/next?device_id=${deviceId}`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
-        }
-      });
-
-      if (!response.ok) {
-        // If 403 or 404, the device might need to be checked
-        if (response.status === 403 || response.status === 404) {
-          const isDeviceRegistered = await checkAvailableDevices(deviceId, false);
-          if (!isDeviceRegistered) {
-            console.error('Device not registered with Spotify, cannot skip to next track');
-            return;
-          }
-        }
-        const errorText = await response.text();
-        throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
-      }
+      await playerRef.current.nextTrack();
     } catch (error) {
       console.error('Error skipping to next track:', error);
     }
-  };
+  }, []);
 
-  const previousTrack = async () => {
-    if (!player || !deviceId) {
-      console.error('Player not available or device ID not available');
+  const previousTrack = useCallback(async () => {
+    if (!playerRef.current) {
+      console.error('Player not available');
       return;
     }
-
-    // Verify device is still registered before attempting playback
-    const isDeviceRegistered = await checkAvailableDevices(deviceId, false);
-    if (!isDeviceRegistered) {
-      console.error('Device not registered with Spotify, cannot skip to previous track');
-      return;
-    }
-
     try {
-      const response = await fetch(`https://api.spotify.com/v1/me/player/previous?device_id=${deviceId}`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
-        }
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
-      }
-      console.log('Previous track successful');
+      await playerRef.current.previousTrack();
     } catch (error) {
       console.error('Error skipping to previous track:', error);
     }
-  };
+  }, []);
 
-  const setVolume = async (volume: number) => {
-    if (!player || !deviceId) {
-      console.error('Player not available or device ID not available');
+  const setVolume = useCallback(async (volume: number) => {
+    if (!playerRef.current) {
+      console.error('Player not available');
       return;
     }
 
@@ -601,61 +559,28 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       volume: volume
     }));
 
-    // Verify device is still registered before attempting playback
-    const isDeviceRegistered = await checkAvailableDevices(deviceId, false);
-    if (!isDeviceRegistered) {
-      console.error('Device not registered with Spotify, cannot set volume');
-      return;
-    }
-
     try {
-      const response = await fetch(`https://api.spotify.com/v1/me/player/volume?volume_percent=${Math.round(volume * 100)}&device_id=${deviceId}`, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
-        }
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
-      }
-      console.log('Volume set successfully');
+      await playerRef.current.setVolume(volume);
     } catch (error) {
       console.error('Error setting volume:', error);
     }
-  };
+  }, []);
 
-  const seek = async (position: number) => {
-    if (!player || !deviceId) {
-      console.error('Player not available or device ID not available');
+  const seek = useCallback(async (position: number) => {
+    if (!playerRef.current) {
+      console.error('Player not available');
       return;
     }
-
-    // Verify device is still registered before attempting playback
-    const isDeviceRegistered = await checkAvailableDevices(deviceId, false);
-    if (!isDeviceRegistered) {
-      console.error('Device not registered with Spotify, cannot seek');
-      return;
-    }
-
     try {
-      const response = await fetch(`https://api.spotify.com/v1/me/player/seek?position_ms=${Math.round(position)}&device_id=${deviceId}`, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
-        }
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP error! status: ${response.status}, body: ${errorText}`);
-      }
-      console.log('Seek successful');
+      await playerRef.current.seek(Math.round(position));
+      // Re-anchor interpolation so the progress bar doesn't jump while the
+      // next state event is in flight.
+      lastPositionUpdateRef.current = Date.now();
+      setPlayerState(prev => ({ ...prev, position: Math.round(position) }));
     } catch (error) {
       console.error('Error seeking:', error);
     }
-  };
+  }, []);
 
 
   // Cleanup on unmount
@@ -675,6 +600,8 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       setPlayer(null);
       setIsReady(false);
       setDeviceId(null);
+      isReadyRef.current = false;
+      deviceIdRef.current = null;
       isInitializingRef.current = false;
       setPlayerState({
         is_paused: true,
@@ -686,9 +613,11 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         device_id: null
       });
     };
-  }, []);
+  }, [stopStatePolling, stopPositionInterpolation]);
 
-  const value: WebPlayerContextType = {
+  // Memoized so consumers' effects keyed on these functions don't re-run on
+  // every provider render.
+  const value: WebPlayerContextType = useMemo(() => ({
     player,
     playerState,
     isReady,
@@ -702,7 +631,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     previousTrack,
     setVolume,
     seek
-  };
+  }), [player, playerState, isReady, deviceId, playerError, initializePlayer, playTrack, playPlaylist, togglePlay, nextTrack, previousTrack, setVolume, seek]);
 
   return (
     <WebPlayerContext.Provider value={value}>

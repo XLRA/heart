@@ -1,12 +1,13 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import Icon from './Icon';
 import { useSettings, ParticleLevel, LyricsMode } from '../context/SettingsContext';
 import { useAudioVisualizer } from '../context/AudioVisualizerContext';
 
 const SettingsPanel = () => {
   const [isOpen, setIsOpen] = useState(false);
-  const { particleLevel, setParticleLevel, lyricsMode, setLyricsMode } = useSettings();
+  const { particleLevel, setParticleLevel, lyricsMode, setLyricsMode, setUiHidden } = useSettings();
   const { tabAudioStream, setTabAudioStream } = useAudioVisualizer();
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [isCapturing, setIsCapturing] = useState(false);
@@ -49,8 +50,13 @@ const SettingsPanel = () => {
           channelCount: 2,
         } as MediaTrackConstraints,
       };
-      // Chrome-specific hints to include current tab and exclude system audio
+      // Chrome-specific hints: preferCurrentTab collapses the share picker to
+      // a streamlined one-click "share this tab" dialog (Chrome 94+), which is
+      // exactly what we want since the music plays in this tab. selfBrowserSurface
+      // keeps the tab listed for browsers that ignore preferCurrentTab; system
+      // audio is excluded because we only want this tab's output.
       Object.assign(displayMediaOptions, {
+        preferCurrentTab: true,
         selfBrowserSurface: 'include',
         systemAudio: 'exclude',
       });
@@ -108,7 +114,7 @@ const SettingsPanel = () => {
         className="fixed bottom-8 right-8 z-50 w-11 h-11 rounded-xl bg-[#1a1a1d] border border-white/10 flex items-center justify-center cursor-pointer transition-all duration-200 hover:bg-[#252529] group shadow-lg"
         title="Settings"
       >
-        <i className={`fas fa-cog text-[#6b6b7a] text-lg transition-all duration-300 group-hover:text-[#8f8f9d] ${isOpen ? 'rotate-90' : ''}`}></i>
+        <Icon name="cog" className={`text-[#6b6b7a] text-lg transition-all duration-300 group-hover:text-[#8f8f9d] ${isOpen ? 'rotate-90' : ''}`} />
       </button>
 
       {/* Settings Panel - Opens above the button */}
@@ -127,7 +133,7 @@ const SettingsPanel = () => {
         <div className="px-5 py-4 border-b border-white/10">
           <div className="flex items-center justify-between mb-3">
             <span className="text-[#f1f1f1] text-[13px] font-medium">Particle Quality</span>
-            <i className="fas fa-sparkles text-[#8f8f9d] text-xs"></i>
+            <Icon name="sparkles" className="text-[#8f8f9d] text-xs" />
           </div>
           <div className="flex gap-2">
             {particleLevels.map((level) => (
@@ -156,7 +162,7 @@ const SettingsPanel = () => {
         <div className="px-5 py-4 border-b border-white/10">
           <div className="flex items-center justify-between mb-3">
             <span className="text-[#f1f1f1] text-[13px] font-medium">Lyrics Display</span>
-            <i className="fas fa-align-center text-[#8f8f9d] text-xs"></i>
+            <Icon name="align-center" className="text-[#8f8f9d] text-xs" />
           </div>
           <div className="flex gap-2">
             {lyricsModes.map((mode) => (
@@ -181,7 +187,7 @@ const SettingsPanel = () => {
         </div>
 
         {/* Live Audio Capture */}
-        <div className="px-5 py-4">
+        <div className="px-5 py-4 border-b border-white/10">
           <div className="flex items-center justify-between mb-3">
             <span className="text-[#f1f1f1] text-[13px] font-medium">Live Audio</span>
             {tabAudioStream ? (
@@ -190,7 +196,7 @@ const SettingsPanel = () => {
                 <span className="text-[#00e5a0] text-[10px] font-medium">LIVE</span>
               </span>
             ) : (
-              <i className="fas fa-music text-[#8f8f9d] text-xs"></i>
+              <Icon name="music" className="text-[#8f8f9d] text-xs" />
             )}
           </div>
 
@@ -203,7 +209,7 @@ const SettingsPanel = () => {
               onClick={stopTabCapture}
               className="w-full py-2 px-3 rounded-lg text-[12px] font-medium transition-all duration-200 bg-[#252529] text-[#00e5a0] border border-[#00e5a0]/30 hover:bg-[#2a2a30] hover:border-[#00e5a0]/50"
             >
-              <i className="fas fa-stop-circle mr-1.5"></i>
+              <Icon name="stop-circle" className="mr-1.5" />
               Disconnect Live Audio
             </button>
           ) : (
@@ -216,7 +222,7 @@ const SettingsPanel = () => {
                   : 'bg-[#1a1a1d] text-[#8f8f9d] border border-white/10 hover:bg-[#252529] hover:text-white hover:border-white/20 cursor-pointer'
               }`}
             >
-              <i className={`fas ${isCapturing ? 'fa-spinner fa-spin' : 'fa-broadcast-tower'} mr-1.5`}></i>
+              <Icon name={isCapturing ? 'spinner' : 'broadcast'} className={`mr-1.5 ${isCapturing ? 'animate-spin' : ''}`} />
               {isCapturing ? 'Waiting for selection...' : 'Enable Live Audio'}
             </button>
           )}
@@ -229,6 +235,28 @@ const SettingsPanel = () => {
             {tabAudioStream
               ? 'Heart reacts to real audio from the tab'
               : 'Capture tab audio to make the heart truly reactive to music'}
+          </p>
+        </div>
+
+        {/* Clean Mode */}
+        <div className="px-5 py-4">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-[#f1f1f1] text-[13px] font-medium">Interface</span>
+            <Icon name="eye-off" className="text-[#8f8f9d] text-xs" />
+          </div>
+          <button
+            onClick={() => {
+              setIsOpen(false);
+              setUiHidden(true);
+            }}
+            className="w-full py-2 px-3 rounded-lg text-[12px] font-medium transition-all duration-200 bg-[#1a1a1d] text-[#8f8f9d] border border-white/10 hover:bg-[#252529] hover:text-white hover:border-white/20 cursor-pointer"
+          >
+            <Icon name="eye-off" className="mr-1.5" />
+            Hide Interface
+          </button>
+          <p className="text-[#5a5a6e] text-[10px] mt-2 italic">
+            Clean view with just the heart. Press H or Esc to bring it back, or
+            move the mouse and click the button.
           </p>
         </div>
       </div>

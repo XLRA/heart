@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Image from 'next/image';
+import Icon from './Icon';
 import { useWebPlayer } from '../context/WebPlayerContext';
 
 interface SpotifyTrack {
@@ -181,7 +182,7 @@ const PlaylistSongList = ({ playlist, isVisible, onClose, currentTrackId, isPlay
           }}
           title="Close playlist"
         >
-          <i className="fas fa-chevron-down" style={{ fontSize: '14px' }}></i>
+          <Icon name="chevron-down" style={{ fontSize: '14px' }} />
         </button>
       </div>
 
@@ -201,7 +202,7 @@ const PlaylistSongList = ({ playlist, isVisible, onClose, currentTrackId, isPlay
             color: '#8f8f9d',
             padding: '40px 20px'
           }}>
-            <i className="fas fa-music" style={{ fontSize: '32px', marginBottom: '12px', opacity: 0.5 }}></i>
+            <Icon name="music" style={{ fontSize: '32px', marginBottom: '12px', opacity: 0.5 }} />
             <p>No tracks available</p>
           </div>
         ) : (
@@ -239,15 +240,15 @@ const PlaylistSongList = ({ playlist, isVisible, onClose, currentTrackId, isPlay
                     flexShrink: 0
                   }}>
                     {isCurrentTrack ? (
-                      <i className="fas fa-volume-up" style={{ 
-                        color: '#1db954', 
-                        fontSize: '12px' 
-                      }}></i>
+                      <Icon name="volume-up" style={{
+                        color: '#1db954',
+                        fontSize: '12px'
+                      }} />
                     ) : isHovered ? (
-                      <i className="fas fa-play" style={{ 
-                        color: '#f1f1f1', 
-                        fontSize: '10px' 
-                      }}></i>
+                      <Icon name="play" style={{
+                        color: '#f1f1f1',
+                        fontSize: '10px'
+                      }} />
                     ) : (
                       <span style={{
                         color: '#8f8f9d',
@@ -287,7 +288,7 @@ const PlaylistSongList = ({ playlist, isVisible, onClose, currentTrackId, isPlay
                         backgroundColor: '#252529',
                         color: '#8f8f9d'
                       }}>
-                        <i className="fas fa-music" style={{ fontSize: '16px' }}></i>
+                        <Icon name="music" style={{ fontSize: '16px' }} />
                       </div>
                     )}
                   </div>

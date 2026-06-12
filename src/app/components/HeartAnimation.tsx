@@ -5,9 +5,10 @@ import { ParticleLevel, PARTICLE_MULTIPLIERS, TRACE_COUNTS } from '../context/Se
 import type { AlbumColors } from '../../services/colorExtractor';
 import { createAudioAnalyzer, type AudioAnalyzer, type AudioReactiveData } from '../../services/audioAnalyzer';
 
-// Legacy audio frames from non-analyzer paths (Meyda, Spotify simulation/analysis fallback)
-// only carry the original six fields. The unified ref shape adds kick/snare/centroid/flatness
-// derived from the legacy values when the richer data isn't available.
+// Legacy audio frames from the non-analyzer path (the Spotify simulation
+// fallback) only carry the original six fields. The unified ref shape adds
+// kick/snare/centroid/flatness derived from the legacy values when the richer
+// data isn't available.
 type LegacyAudioFields = Pick<AudioReactiveData, 'bass' | 'mid' | 'treble' | 'overall' | 'beat' | 'beatStrength'>;
 type AudioFrameInput = LegacyAudioFields & Partial<AudioReactiveData>;
 
@@ -138,10 +139,10 @@ const buildAudioFrame = (input: AudioFrameInput): AudioReactiveData => ({
   overall: input.overall,
   beat: input.beat,
   beatStrength: input.beatStrength,
-  // Legacy paths fuse kick + snare into `beat`. Mirror them with slight asymmetry so
-  // the visualization at least gets *some* differentiation while playing local files
-  // with Meyda or Spotify simulation. Tab capture and local-file modes pass full data
-  // and overwrite these defaults.
+  // The simulation path fuses kick + snare into `beat`. Mirror them with slight
+  // asymmetry so the visualization at least gets *some* differentiation. Tab
+  // capture and local-file modes pass full analyzer data and overwrite these
+  // defaults.
   kick: input.kick ?? input.beat,
   kickStrength: input.kickStrength ?? (input.beat ? input.beatStrength : 0),
   snare: input.snare ?? input.beat,
@@ -165,72 +166,36 @@ interface AudioVisualizerProps {
   audioElement?: HTMLAudioElement | null;
   isPlaying?: boolean;
   isSpotifyMode?: boolean;
-  spotifyTrackData?: {
-    tempo?: number;
-    energy?: number;
-    danceability?: number;
-    valence?: number;
-  } | null;
-  meydaData?: {
-    rms: number;
-    spectralCentroid: number;
-    spectralRolloff: number;
-    spectralFlux: number;
-    spectralSpread: number;
-    spectralKurtosis: number;
-    loudness: number;
-    mfcc: number[];
-    chroma: number[];
-  } | null;
   albumColors?: AlbumColors | null;
-  currentTrackId?: string | null;
   currentPosition?: number;
   particleLevel?: ParticleLevel;
   tabAudioStream?: MediaStream | null;
+  /** Clean mode: suppress the audio-source indicator dot. */
+  hideIndicator?: boolean;
 }
 
-interface SpotifyAudioAnalysis {
-  track: {
-    tempo: number;
-    loudness: number;
-    duration: number;
-  };
-  beats: Array<{
-    start: number;
-    duration: number;
-    confidence: number;
-  }>;
-  segments: Array<{
-    start: number;
-    duration: number;
-    loudness_start: number;
-    loudness_max: number;
-    loudness_max_time: number;
-    loudness_end: number;
-    pitches: number[];
-    timbre: number[];
-  }>;
-  sections: Array<{
-    start: number;
-    duration: number;
-    loudness: number;
-    tempo: number;
-    key: number;
-    mode: number;
-  }>;
-}
+// One persistent Web Audio graph per <audio> element. An HTMLMediaElement can
+// only ever be captured by ONE MediaElementSourceNode for its lifetime
+// (Chrome throws InvalidStateError on a second createMediaElementSource, and
+// closing the owning context permanently silences the element). The previous
+// per-effect create/close cycle therefore killed local-file audio + analysis
+// after any Spotify-mode round trip. The graph (context + source wired to
+// destination) is created once and kept for the page's lifetime; only the
+// analyzer side-chain is built/disposed per effect run.
+const elementAudioGraphs = new WeakMap<
+  HTMLMediaElement,
+  { ctx: AudioContext; source: MediaElementAudioSourceNode }
+>();
 
-const HeartAnimation = ({ 
-  audioElement, 
-  isPlaying = false, 
-  isSpotifyMode = false, 
-  spotifyTrackData = null,
-  meydaData = null,
+const HeartAnimation = ({
+  audioElement,
+  isPlaying = false,
+  isSpotifyMode = false,
   albumColors = null,
-  currentTrackId = null,
   currentPosition = 0,
   particleLevel = 'high',
-  tabAudioStream = null
+  tabAudioStream = null,
+  hideIndicator = false
 }: AudioVisualizerProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -251,9 +216,6 @@ const HeartAnimation = ({
     overall: 0, beat: false,
   });
   const lastIndicatorUpdateRef = useRef(0);
-
-  const [spotifyAnalysis, setSpotifyAnalysis] = useState<SpotifyAudioAnalysis | null>(null);
-  const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
 
   const isPlayingRef = useRef(isPlaying);
 
@@ -301,98 +263,6 @@ const HeartAnimation = ({
     }
   }, [albumColors]);
 
-  // Convert Meyda real-time data to audioData format for heart animation
-  useEffect(() => {
-    if (!meydaData || !isPlaying || tabAudioStream) return;
-
-    const convertMeydaToAudioData = () => {
-      // Convert Meyda features to audioData format (normal amplification)
-      const bass = Math.max(0.1, Math.min(1, meydaData.rms * 2)); // Normal amplification for bass
-      const mid = Math.max(0.1, Math.min(1, meydaData.spectralCentroid)); // Normal amplification for mid
-      const treble = Math.max(0.1, Math.min(1, meydaData.spectralRolloff / 20000)); // Normal amplification for treble
-      const overall = Math.max(0.2, Math.min(1, meydaData.loudness / 100)); // Normal amplification for overall
-      
-      // Beat detection from spectral flux and RMS
-      const beat = meydaData.spectralFlux > 0.1 || meydaData.rms > 0.3;
-
-      writeAudioData({
-        bass,
-        mid,
-        treble,
-        overall,
-        beat,
-        beatStrength: beat ? 0.5 : 0,
-      });
-    };
-
-    // Update immediately
-    convertMeydaToAudioData();
-
-    // Set up interval for continuous updates
-    const interval = setInterval(convertMeydaToAudioData, 50); // Update every 50ms
-    
-    return () => clearInterval(interval);
-  }, [meydaData, isPlaying, tabAudioStream, writeAudioData]);
-
-  // Fetch Spotify audio analysis data with fallback
-  const fetchSpotifyAudioAnalysis = useCallback(async (trackId: string) => {
-    if (!trackId) return;
-    
-    // Check if audio-analysis endpoint is deprecated (cached)
-    const isDeprecated = localStorage.getItem('spotify_audio_analysis_deprecated') === 'true';
-    
-    if (isDeprecated) {
-      // Skip API call and use enhanced simulation
-      setSpotifyAnalysis(null);
-      setIsLoadingAnalysis(false);
-      return;
-    }
-    
-    setIsLoadingAnalysis(true);
-    try {
-      const token = localStorage.getItem('spotify_access_token');
-      if (!token) {
-        setSpotifyAnalysis(null);
-        setIsLoadingAnalysis(false);
-        return;
-      }
-
-      const response = await fetch(`https://api.spotify.com/v1/audio-analysis/${trackId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-
-      if (response.ok) {
-        const analysis = await response.json();
-        setSpotifyAnalysis(analysis);
-      } else if (response.status === 403) {
-        // Cache deprecation status to avoid repeated calls
-        localStorage.setItem('spotify_audio_analysis_deprecated', 'true');
-        // Don't set analysis, will fall back to enhanced simulation
-        setSpotifyAnalysis(null);
-      } else {
-        setSpotifyAnalysis(null);
-      }
-    } catch {
-      setSpotifyAnalysis(null);
-    } finally {
-      setIsLoadingAnalysis(false);
-    }
-  }, []);
-
-  // Fetch audio analysis when track changes
-  useEffect(() => {
-    if (isSpotifyMode && currentTrackId) {
-      // Check if we need to fetch analysis for a new track
-      const lastTrackId = localStorage.getItem('lastAnalyzedTrackId');
-      if (currentTrackId !== lastTrackId) {
-        fetchSpotifyAudioAnalysis(currentTrackId);
-        localStorage.setItem('lastAnalyzedTrackId', currentTrackId);
-      }
-    }
-  }, [isSpotifyMode, currentTrackId, fetchSpotifyAudioAnalysis]);
-
   // Initialize Web Audio API (only for local audio files).
   // Audio graph:
   //   source ──> destination          (audible: user hears unmodified track)
@@ -403,17 +273,26 @@ const HeartAnimation = ({
 
     const initAudioContext = async () => {
       try {
-        audioContextRef.current = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-        if (audioContextRef.current.state === 'suspended') {
-          await audioContextRef.current.resume();
+        // Reuse the element's persistent graph (see elementAudioGraphs).
+        // Creating a second MediaElementSourceNode for the same element
+        // throws, and closing the context silences the element forever.
+        let graph = elementAudioGraphs.get(audioElement);
+        if (!graph) {
+          const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+          const source = ctx.createMediaElementSource(audioElement);
+          source.connect(ctx.destination);
+          graph = { ctx, source };
+          elementAudioGraphs.set(audioElement, graph);
+        }
+        if (graph.ctx.state === 'suspended') {
+          await graph.ctx.resume();
         }
 
-        sourceRef.current = audioContextRef.current.createMediaElementSource(audioElement);
-        sourceRef.current.connect(audioContextRef.current.destination);
-
+        audioContextRef.current = graph.ctx;
+        sourceRef.current = graph.source;
         localAnalyzerRef.current = createAudioAnalyzer({
-          audioContext: audioContextRef.current,
-          sourceNode: sourceRef.current,
+          audioContext: graph.ctx,
+          sourceNode: graph.source,
         });
 
         console.log('Audio visualizer initialized');
@@ -428,16 +307,15 @@ const HeartAnimation = ({
     initAudioContext();
 
     return () => {
+      // Dispose only the analyzer side-chain. The context and source node are
+      // shared for the element's lifetime and must stay connected so the
+      // element remains audible.
       if (localAnalyzerRef.current) {
         localAnalyzerRef.current.dispose();
         localAnalyzerRef.current = null;
       }
-      if (sourceRef.current) {
-        try { sourceRef.current.disconnect(); } catch { /* already disconnected */ }
-      }
-      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-        audioContextRef.current.close();
-      }
+      audioContextRef.current = null;
+      sourceRef.current = null;
     };
   }, [audioElement, isSpotifyMode]);
 
@@ -487,141 +365,42 @@ const HeartAnimation = ({
     };
   }, [isPlaying, isSpotifyMode, tabAudioStream, writeAudioData]);
 
-  // Spotify mode: Enhanced simulation when audio analysis is not available
+  // Spotify mode without tab capture: position-seeded simulation. Spotify's
+  // SDK audio is DRM-protected (can't be tapped with Web Audio) and the
+  // audio-features / audio-analysis endpoints are deprecated for new apps,
+  // so without live capture this synthetic motion is the honest fallback.
+  // Live audio capture (tabAudioStream) replaces it with real analysis.
   useEffect(() => {
-    if (!isSpotifyMode || !isPlaying || !currentPosition) return;
-    
-    // Tab capture provides real audio data -- skip simulation
-    if (tabAudioStream) return;
-    
-    // If we have Meyda real-time data, don't override it with simulation
-    if (meydaData) return;
-    
-    // If we have audio analysis, use it; otherwise use enhanced simulation
-    if (!spotifyAnalysis) {
-      // Enhanced simulation based on track features and time
-      const simulateEnhancedAudioData = () => {
-        const currentTimeSeconds = currentPosition / 1000;
-        
-        // Use Spotify track data for simulation (Meyda data is handled separately)
-        let baseIntensity = 0.6;
-        let energyMultiplier = 1;
-        let danceabilityMultiplier = 1;
-        let valenceMultiplier = 1;
-        
-        if (spotifyTrackData) {
-          // Use Spotify track data for simulation
-          baseIntensity = spotifyTrackData.energy || 0.6;
-          energyMultiplier = spotifyTrackData.energy || 1;
-          danceabilityMultiplier = spotifyTrackData.danceability || 1;
-          valenceMultiplier = spotifyTrackData.valence || 1;
-        }
-        
-        // Create more realistic simulation patterns based on audio features
-        const timeBasedIntensity = Math.sin(currentTimeSeconds * 0.3) * 0.4 + baseIntensity;
-        const beatPattern = Math.sin(currentTimeSeconds * 1.5) > 0.7 ? 1 : 0;
-        
-        // Add some randomness for more natural feel
-        const randomVariation = (Math.random() - 0.5) * 0.1;
-        
-        // Simulate frequency bands with more realistic distribution based on audio features
-        const bass = Math.max(0, Math.min(1, timeBasedIntensity * 0.7 * energyMultiplier + randomVariation + 0.1));
-        const mid = Math.max(0, Math.min(1, timeBasedIntensity * 0.5 * danceabilityMultiplier + randomVariation + 0.2));
-        const treble = Math.max(0, Math.min(1, timeBasedIntensity * 0.3 * valenceMultiplier + randomVariation + 0.1));
-        const overall = (bass + mid + treble) / 3;
-        
-        writeAudioData({
-          bass,
-          mid,
-          treble,
-          overall,
-          beat: Boolean(beatPattern),
-          beatStrength: beatPattern ? 0.5 : 0,
-        });
-      };
+    if (!isSpotifyMode || !isPlaying || !currentPosition || tabAudioStream) return;
 
-      const interval = setInterval(simulateEnhancedAudioData, 50);
-      return () => clearInterval(interval);
-    }
-  }, [isSpotifyMode, isPlaying, currentPosition, spotifyAnalysis, meydaData, spotifyTrackData, tabAudioStream, writeAudioData]);
+    const simulateAudioData = () => {
+      const currentTimeSeconds = currentPosition / 1000;
 
-  // Spotify mode: Real audio-reactive behavior based on audio analysis
-  useEffect(() => {
-    if (!isSpotifyMode || !isPlaying || !spotifyAnalysis || !currentPosition || tabAudioStream) return;
+      const timeBasedIntensity = Math.sin(currentTimeSeconds * 0.3) * 0.4 + 0.6;
+      const beatPattern = Math.sin(currentTimeSeconds * 1.5) > 0.7 ? 1 : 0;
 
-    const updateAudioDataFromAnalysis = () => {
-      const currentTimeSeconds = currentPosition / 1000; // Convert ms to seconds
-      
-      // Find current segment
-      const currentSegment = spotifyAnalysis.segments.find(segment => 
-        currentTimeSeconds >= segment.start && 
-        currentTimeSeconds < segment.start + segment.duration
-      );
-      
-      // Find current beat
-      const currentBeat = spotifyAnalysis.beats.find(beat => 
-        currentTimeSeconds >= beat.start && 
-        currentTimeSeconds < beat.start + beat.duration
-      );
-      
-      // Find current section
-      const currentSection = spotifyAnalysis.sections.find(section => 
-        currentTimeSeconds >= section.start && 
-        currentTimeSeconds < section.start + section.duration
-      );
+      // Add some randomness for more natural feel
+      const randomVariation = (Math.random() - 0.5) * 0.1;
 
-      if (currentSegment) {
-        // Use real segment data for frequency analysis
-        const pitches = currentSegment.pitches || [];
-        
-        // Map pitches to frequency bands (12 pitch classes)
-        const bass = pitches.slice(0, 3).reduce((sum, val) => sum + val, 0) / 3;
-        const mid = pitches.slice(3, 8).reduce((sum, val) => sum + val, 0) / 5;
-        const treble = pitches.slice(8, 12).reduce((sum, val) => sum + val, 0) / 4;
-        
-        // Use loudness data for overall intensity
-        const loudnessNormalized = Math.max(0, Math.min(1, 
-          (currentSegment.loudness_max + 60) / 60 // Normalize from -60dB to 0dB
-        ));
-        
-        // Enhanced beat detection based on actual beat timing
-        const isBeat = currentBeat && 
-          (currentTimeSeconds - currentBeat.start) < 0.15; // Within 150ms of beat start for more responsive detection
-        
-        writeAudioData({
-          bass: Math.max(0, Math.min(1, bass)),
-          mid: Math.max(0, Math.min(1, mid)),
-          treble: Math.max(0, Math.min(1, treble)),
-          overall: loudnessNormalized,
-          beat: Boolean(isBeat),
-          beatStrength: isBeat ? 0.6 : 0,
-        });
-      } else if (currentSection) {
-        // Fallback to section data with more dramatic values
-        const loudnessNormalized = Math.max(0, Math.min(1, 
-          (currentSection.loudness + 60) / 60
-        ));
-        
-        // Create more dynamic frequency distribution
-        const bass = loudnessNormalized * 0.9 + Math.random() * 0.1;
-        const mid = loudnessNormalized * 0.7 + Math.random() * 0.1;
-        const treble = loudnessNormalized * 0.5 + Math.random() * 0.1;
-        
-        writeAudioData({
-          bass: Math.max(0, Math.min(1, bass)),
-          mid: Math.max(0, Math.min(1, mid)),
-          treble: Math.max(0, Math.min(1, treble)),
-          overall: loudnessNormalized,
-          beat: false,
-          beatStrength: 0,
-        });
-      }
+      const bass = Math.max(0, Math.min(1, timeBasedIntensity * 0.7 + randomVariation + 0.1));
+      const mid = Math.max(0, Math.min(1, timeBasedIntensity * 0.5 + randomVariation + 0.2));
+      const treble = Math.max(0, Math.min(1, timeBasedIntensity * 0.3 + randomVariation + 0.1));
+      const overall = (bass + mid + treble) / 3;
+
+      writeAudioData({
+        bass,
+        mid,
+        treble,
+        overall,
+        beat: Boolean(beatPattern),
+        beatStrength: beatPattern ? 0.5 : 0,
+      });
     };
 
-    const interval = setInterval(updateAudioDataFromAnalysis, 50); // Update every 50ms
-    
+    simulateAudioData();
+    const interval = setInterval(simulateAudioData, 50);
     return () => clearInterval(interval);
-  }, [isSpotifyMode, isPlaying, spotifyAnalysis, currentPosition, tabAudioStream, writeAudioData]);
+  }, [isSpotifyMode, isPlaying, currentPosition, tabAudioStream, writeAudioData]);
 
   // Tab audio capture: real-time analysis of audio shared via getDisplayMedia.
   // Uses the unified analyzer (pre-emphasis + per-band beat detection + noise gate).
@@ -987,6 +766,12 @@ const HeartAnimation = ({
     let midRingPulse = 0;
     let outerRingPulse = 0;
     let snareFlare = 0;
+    // Per-frame memo for particle colors. getInterpolatedColor depends on
+    // colorIndex only through (colorIndex % palette length), so for the
+    // common no-spark case there are only ~8 distinct colors per frame --
+    // memoizing avoids re-running the HSLA regex parse and string build for
+    // every particle every frame (~11k regex execs/sec before).
+    const frameColorMemo = new Map<number, string>();
     // Independent envelope-followed glow trackers for kick (sub-bass) and snare
     // (upper-mid). Kick drives the central heart pulse + speed boost; snare drives
     // the outer-ring radial spike. They overlap on most beats but separate on
@@ -1316,6 +1101,23 @@ const HeartAnimation = ({
       // in [0.78, 1.0] for typical music since flatness rarely exceeds ~0.6.
       const saturationMod = 1 - currentFlatness * 0.35;
 
+      // --- Color-pass inputs (frame-invariant, hoisted out of the particle loop) ---
+      const baseIntensity = currentIsPlaying ? 0.25 + currentAudioData.overall * 0.5 : 0.4;
+      const bassIntensity = currentIsPlaying ? currentAudioData.bass * 0.2 : 0;
+      // Brightness flash on either kick OR snare so any beat brightens the scene.
+      const glowIntensity = combinedGlow * 0.35;
+      const trebleSparkle = currentIsPlaying ? currentAudioData.treble * 0.1 : 0;
+      const baseColorIntensity = Math.min(1.0, baseIntensity + bassIntensity + glowIntensity + trebleSparkle);
+      const baseLightnessBoost = combinedGlow * 15;
+      // Spectral centroid -> hue shift. Centroid is in [0, 1] (perceptual log-Hz).
+      // Map [0, 1] to [-12, +12] degrees: bass-heavy passages cool the palette,
+      // bright passages (cymbals, vocals, leads) warm it up. Subtle on purpose --
+      // the album palette stays the visual anchor.
+      const centroidShift = currentIsPlaying ? (currentAudioData.centroid - 0.5) * 24 : 0;
+      frameColorMemo.clear();
+      const curPaletteLen = Math.max(1, currentColorsRef.current.length);
+      const tgtPaletteLen = Math.max(1, targetColorsRef.current.length);
+
       for (let i = e.length; i--;) {
         const u = e[i];
         const q = targetPoints[u.q];
@@ -1516,25 +1318,29 @@ const HeartAnimation = ({
           }
         }
 
-        const baseIntensity = currentIsPlaying ? 0.25 + currentAudioData.overall * 0.5 : 0.4;
-        const bassIntensity = currentIsPlaying ? currentAudioData.bass * 0.2 : 0;
-        // Brightness flash on either kick OR snare so any beat brightens the scene.
-        const glowIntensity = combinedGlow * 0.35;
-        const trebleSparkle = currentIsPlaying ? currentAudioData.treble * 0.1 : 0;
         // Particles forming an extended thorn (pointSpike, written by pulse())
         // or flying in a section burst (u.spike) burn brighter -- alpha +
-        // lightness -- so spikes read as luminous rays against the rim.
+        // lightness -- so spikes read as luminous rays against the rim. Those
+        // get a bespoke color; everything else shares the per-palette-slot
+        // memoized color computed at most once per frame.
         const sparkGlow = Math.max(u.spike, pointSpike[u.q]);
-        const colorIntensity = Math.min(1.0,
-          baseIntensity + bassIntensity + glowIntensity + trebleSparkle + sparkGlow * 0.35);
-        const lightnessBoost = combinedGlow * 15 + sparkGlow * 22;
-        // Spectral centroid -> hue shift. Centroid is in [0, 1] (perceptual log-Hz).
-        // Map [0, 1] to [-12, +12] degrees: bass-heavy passages cool the palette,
-        // bright passages (cymbals, vocals, leads) warm it up. Subtle on purpose --
-        // the album palette stays the visual anchor.
-        const centroidShift = currentIsPlaying ? (currentAudioData.centroid - 0.5) * 24 : 0;
-        // Flatness -> saturation desaturation (computed once per frame above).
-        u.f = getInterpolatedColor(u.colorIndex, colorIntensity, lightnessBoost, centroidShift, saturationMod);
+        if (sparkGlow > 0.01) {
+          u.f = getInterpolatedColor(
+            u.colorIndex,
+            Math.min(1.0, baseColorIntensity + sparkGlow * 0.35),
+            baseLightnessBoost + sparkGlow * 22,
+            centroidShift,
+            saturationMod,
+          );
+        } else {
+          const memoKey = (u.colorIndex % curPaletteLen) * 1024 + (u.colorIndex % tgtPaletteLen);
+          let cached = frameColorMemo.get(memoKey);
+          if (cached === undefined) {
+            cached = getInterpolatedColor(u.colorIndex, baseColorIntensity, baseLightnessBoost, centroidShift, saturationMod);
+            frameColorMemo.set(memoKey, cached);
+          }
+          u.f = cached;
+        }
 
         ctx.fillStyle = u.f;
         for (let k = 0; k < u.trace.length; k++) {
@@ -1626,7 +1432,7 @@ const HeartAnimation = ({
   return (
     <>
       <canvas ref={canvasRef} id="heart" />
-      {isPlaying && (
+      {isPlaying && !hideIndicator && (
         <div 
           style={{
             position: 'fixed',
@@ -1635,13 +1441,11 @@ const HeartAnimation = ({
             width: '10px',
             height: '10px',
             borderRadius: '50%',
-            backgroundColor: isLoadingAnalysis
-              ? '#ff6b6b'
-              : tabAudioStream
-                ? `hsl(${180 + indicatorData.overall * 40}, 70%, 60%)`
-                : isSpotifyMode
-                  ? (meydaData ? `hsl(${120 + indicatorData.overall * 40}, 70%, 60%)` : `hsl(${30 + indicatorData.overall * 40}, 70%, 60%)`)
-                  : `hsl(${280 + indicatorData.overall * 40}, 70%, 60%)`,
+            backgroundColor: tabAudioStream
+              ? `hsl(${180 + indicatorData.overall * 40}, 70%, 60%)`
+              : isSpotifyMode
+                ? `hsl(${30 + indicatorData.overall * 40}, 70%, 60%)`
+                : `hsl(${280 + indicatorData.overall * 40}, 70%, 60%)`,
             opacity: 0.7,
             zIndex: 1000,
             transition: 'all 0.1s ease',
@@ -1649,13 +1453,11 @@ const HeartAnimation = ({
             boxShadow: indicatorData.beat ? '0 0 20px rgba(255, 0, 150, 0.8)' : 'none'
           }}
             title={
-            isLoadingAnalysis
-              ? "Loading Audio Analysis..." 
-              : tabAudioStream
-                ? "Live Tab Audio Capture (Real-time)"
-                : isSpotifyMode 
-                  ? (meydaData ? "Spotify Visualizer (Meyda Real-time Analysis)" : "Spotify Visualizer (Enhanced Simulation)")
-                  : "Real-time Audio Visualizer"
+            tabAudioStream
+              ? "Live Tab Audio Capture (Real-time)"
+              : isSpotifyMode
+                ? "Spotify Visualizer (Simulation - enable Live Audio for real reactivity)"
+                : "Real-time Audio Visualizer"
           }
         />
       )}

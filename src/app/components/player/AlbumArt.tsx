@@ -1,4 +1,5 @@
 import Image from 'next/image';
+import Icon from '../Icon';
 
 interface AlbumArtProps {
   cover: string;
@@ -35,7 +36,7 @@ const AlbumArt = ({ cover, title, isActive, isBuffering }: AlbumArtProps) => {
         />
         {/* Fallback placeholder */}
         <div className="absolute inset-0 hidden items-center justify-center bg-[#252529] text-[#8f8f9d] text-2xl">
-          <i className="fas fa-music"></i>
+          <Icon name="music" />
         </div>
       </div>
 

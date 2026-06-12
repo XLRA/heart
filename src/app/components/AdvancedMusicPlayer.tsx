@@ -4,7 +4,6 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useSpotify } from '../context/SpotifyContext';
 import { useWebPlayer } from '../context/WebPlayerContext';
 import { useAudioVisualizer } from '../context/AudioVisualizerContext';
-import { meydaAudioService } from '../../services/meyda';
 import { extractColorsFromImage, getSmallestImageUrl, getDefaultColors } from '../../services/colorExtractor';
 import PlaylistSelector from './PlaylistSelector';
 import PlaylistSongList from './PlaylistSongList';
@@ -40,7 +39,7 @@ const AdvancedMusicPlayer = () => {
     setVolume, 
     seek 
   } = useWebPlayer();
-  const { setAudioElement, setIsPlaying, setSpotifyMode, spotifyTrackData, setSpotifyTrackData, setMeydaData, setAlbumColors } = useAudioVisualizer();
+  const { setAudioElement, setIsPlaying, setSpotifyMode, setAlbumColors } = useAudioVisualizer();
   
   const [previousVolume, setPreviousVolume] = useState(0.47);
   const [isMuted, setIsMuted] = useState(false);
@@ -55,11 +54,15 @@ const AdvancedMusicPlayer = () => {
     duration: 0,
     volume: 0.5
   });
-  
+  // Index into the local song list (playlist songs or bundled defaults).
+  const [localSongIndex, setLocalSongIndex] = useState(0);
+
   const isSeekingRef = useRef<boolean>(false);
   const seekTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const meydaInitializedTrackRef = useRef<string | null>(null);
-  
+  // Set when a local track change should keep playing (next/prev while
+  // playing, or auto-advance on 'ended'); consumed by the src-loading effect.
+  const autoPlayNextLoadRef = useRef(false);
+
   const audioRef = useRef<HTMLAudioElement>(null);
 
   const defaultSongs = useMemo<Song[]>(() => [
@@ -107,6 +110,21 @@ const AdvancedMusicPlayer = () => {
     return defaultSongs;
   }, [currentPlaylistSongs, defaultSongs, isUsingSpotifyPlayer, playerState.current_track]);
 
+  // The track shown in the UI / loaded into the <audio> element. In Spotify
+  // mode `songs` is always a single-entry list; in local mode it's the full
+  // local list indexed by localSongIndex (wrapped for safety).
+  const currentSong = useMemo<Song | undefined>(() => {
+    if (isUsingSpotifyPlayer) return songs[0];
+    if (songs.length === 0) return undefined;
+    return songs[localSongIndex % songs.length];
+  }, [isUsingSpotifyPlayer, songs, localSongIndex]);
+
+  // Reset the local index when the local list itself changes (playlist
+  // loaded / cleared) so we never start mid-list.
+  useEffect(() => {
+    setLocalSongIndex(0);
+  }, [currentPlaylistSongs]);
+
   // Use appropriate player state based on whether we're using Spotify or local audio
   const currentPlayerState = useMemo(() => {
     if (isUsingSpotifyPlayer) {
@@ -130,19 +148,36 @@ const AdvancedMusicPlayer = () => {
     }
   }, [isUsingSpotifyPlayer, isReady, togglePlay, localPlayerState.is_paused]);
 
+  // Local-mode track stepping. Wraps around the list; if the player was
+  // playing, the newly loaded track auto-plays (via autoPlayNextLoadRef,
+  // consumed in the src-loading effect).
+  const stepLocalSong = useCallback((direction: 1 | -1) => {
+    if (songs.length === 0) return;
+    autoPlayNextLoadRef.current = !localPlayerState.is_paused;
+    setLocalSongIndex(prev => (prev + direction + songs.length) % songs.length);
+  }, [songs.length, localPlayerState.is_paused]);
+
   const handleNextSong = useCallback(() => {
     if (isUsingSpotifyPlayer && isReady) {
       nextTrack();
+    } else if (!isUsingSpotifyPlayer) {
+      stepLocalSong(1);
     }
-    // For local songs, we'd need to implement this differently
-  }, [isUsingSpotifyPlayer, isReady, nextTrack]);
+  }, [isUsingSpotifyPlayer, isReady, nextTrack, stepLocalSong]);
 
   const handlePreviousSong = useCallback(() => {
     if (isUsingSpotifyPlayer && isReady) {
       previousTrack();
+    } else if (!isUsingSpotifyPlayer) {
+      // Standard player behavior: restart the current track when it's been
+      // playing for a few seconds, otherwise go to the previous one.
+      if (audioRef.current && audioRef.current.currentTime > 3) {
+        audioRef.current.currentTime = 0;
+      } else {
+        stepLocalSong(-1);
+      }
     }
-    // For local songs, we'd need to implement this differently
-  }, [isUsingSpotifyPlayer, isReady, previousTrack]);
+  }, [isUsingSpotifyPlayer, isReady, previousTrack, stepLocalSong]);
 
   const handleSeek = (newPositionMs: number) => {
     // Prevent multiple seek operations
@@ -270,17 +305,24 @@ const AdvancedMusicPlayer = () => {
   // Set audio source when current song changes (only for local playback)
   useEffect(() => {
     // Only load local audio when NOT using Spotify player AND we have a valid local URL
-    if (!isUsingSpotifyPlayer && audioRef.current && songs.length > 0 && songs[0].url) {
-      // Double check that the song URL is actually a local file path (starts with /)
-      // This prevents accidentally loading if a Spotify track sneaks through
-      if (songs[0].url.startsWith('/')) {
-        audioRef.current.src = songs[0].url;
-        audioRef.current.load(); // Reload the audio element with new source
-        // Set audio element for visualizer
-        setAudioElement(audioRef.current);
+    // Double check that the song URL is actually a local file path (starts with /)
+    // This prevents accidentally loading if a Spotify track sneaks through
+    if (!isUsingSpotifyPlayer && audioRef.current && currentSong?.url?.startsWith('/')) {
+      const audio = audioRef.current;
+      // Skip the reload when this source is already loaded (e.g. effect
+      // re-run from a mode round trip) so playback position survives.
+      if (!audio.src.endsWith(currentSong.url)) {
+        audio.src = currentSong.url;
+        audio.load(); // Reload the audio element with new source
+        if (autoPlayNextLoadRef.current) {
+          autoPlayNextLoadRef.current = false;
+          audio.play().catch(err => console.warn('Auto-play after track change failed:', err));
+        }
       }
+      // Set audio element for visualizer
+      setAudioElement(audio);
     }
-  }, [songs, setAudioElement, isUsingSpotifyPlayer]);
+  }, [currentSong, setAudioElement, isUsingSpotifyPlayer]);
 
   // Add audio event listeners for local playback
   useEffect(() => {
@@ -322,24 +364,33 @@ const AdvancedMusicPlayer = () => {
     };
 
     const handleLoadedMetadata = () => {
-      setLocalPlayerState(prev => ({ 
-        ...prev, 
+      setLocalPlayerState(prev => ({
+        ...prev,
         duration: audio.duration * 1000 || prev.duration
       }));
+    };
+
+    // Auto-advance to the next local track when the current one finishes.
+    const handleEnded = () => {
+      if (songs.length === 0) return;
+      autoPlayNextLoadRef.current = true;
+      setLocalSongIndex(prev => (prev + 1) % songs.length);
     };
 
     audio.addEventListener('play', handlePlay);
     audio.addEventListener('pause', handlePause);
     audio.addEventListener('timeupdate', handleTimeUpdate);
     audio.addEventListener('loadedmetadata', handleLoadedMetadata);
+    audio.addEventListener('ended', handleEnded);
 
     return () => {
       audio.removeEventListener('play', handlePlay);
       audio.removeEventListener('pause', handlePause);
       audio.removeEventListener('timeupdate', handleTimeUpdate);
       audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      audio.removeEventListener('ended', handleEnded);
     };
-  }, [isUsingSpotifyPlayer, setIsPlaying]);
+  }, [isUsingSpotifyPlayer, setIsPlaying, songs.length]);
 
   // Update visualizer state based on Spotify player state
   useEffect(() => {
@@ -353,112 +404,8 @@ const AdvancedMusicPlayer = () => {
       }
     } else {
       setSpotifyMode(false);
-      setSpotifyTrackData(null);
     }
-  }, [isUsingSpotifyPlayer, playerState.is_paused, playerState.is_active, setIsPlaying, setSpotifyMode, setSpotifyTrackData]);
-
-  // Fetch Spotify track audio features
-  useEffect(() => {
-    if (!isUsingSpotifyPlayer || !playerState.current_track?.id) {
-      setSpotifyTrackData(null);
-      setMeydaData(null);
-      meydaAudioService.stopAnalysis();
-      return;
-    }
-
-    let isMounted = true;
-
-    const fetchTrackFeatures = async () => {
-      // Check if audio-features endpoint is deprecated (cached)
-      const isDeprecated = localStorage.getItem('spotify_audio_features_deprecated') === 'true';
-      
-      if (isDeprecated) {
-        // Skip API call and use fallback values immediately
-        if (isMounted) {
-          setSpotifyTrackData({
-            tempo: 120,
-            energy: 0.5,
-            danceability: 0.5,
-            valence: 0.5
-          });
-        }
-        return;
-      }
-
-      try {
-        const token = localStorage.getItem('spotify_access_token');
-        if (!token) {
-          if (isMounted) {
-            setSpotifyTrackData({
-              tempo: 120,
-              energy: 0.5,
-              danceability: 0.5,
-              valence: 0.5
-            });
-          }
-          return;
-        }
-
-        // Try the audio-features endpoint first
-        const response = await fetch(`https://api.spotify.com/v1/audio-features/${playerState.current_track?.id}`, {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        });
-
-        if (!isMounted) return;
-
-        if (response.ok) {
-          const features = await response.json();
-          if (isMounted) {
-            setSpotifyTrackData({
-              tempo: features.tempo,
-              energy: features.energy,
-              danceability: features.danceability,
-              valence: features.valence
-            });
-          }
-        } else if (response.status === 403) {
-          // Cache deprecation status to avoid repeated calls
-          localStorage.setItem('spotify_audio_features_deprecated', 'true');
-          // Use fallback values when API is deprecated
-          if (isMounted) {
-            setSpotifyTrackData({
-              tempo: 120,
-              energy: 0.5,
-              danceability: 0.5,
-              valence: 0.5
-            });
-          }
-        } else {
-          if (isMounted) {
-            setSpotifyTrackData({
-              tempo: 120,
-              energy: 0.5,
-              danceability: 0.5,
-              valence: 0.5
-            });
-          }
-        }
-      } catch {
-        // Fallback to default values
-        if (isMounted) {
-          setSpotifyTrackData({
-            tempo: 120,
-            energy: 0.5,
-            danceability: 0.5,
-            valence: 0.5
-          });
-        }
-      }
-    };
-
-    fetchTrackFeatures();
-    
-    return () => {
-      isMounted = false;
-    };
-  }, [isUsingSpotifyPlayer, playerState.current_track?.id, setSpotifyTrackData, setMeydaData]);
+  }, [isUsingSpotifyPlayer, playerState.is_paused, playerState.is_active, setIsPlaying, setSpotifyMode]);
 
   // Extract album colors when track changes (supports both Spotify and local tracks)
   useEffect(() => {
@@ -509,62 +456,6 @@ const AdvancedMusicPlayer = () => {
     };
   }, [playerState.current_track?.id, playerState.current_track?.album?.images, isUsingSpotifyPlayer, songs, setAlbumColors]);
 
-  // Initialize Meyda analysis separately - only when track ID changes
-  useEffect(() => {
-    if (!isUsingSpotifyPlayer || !playerState.current_track?.id) {
-      meydaInitializedTrackRef.current = null;
-      meydaAudioService.stopAnalysis();
-      return;
-    }
-
-    const currentTrackId = playerState.current_track.id;
-
-    // Only initialize if we haven't already initialized for this track
-    if (meydaInitializedTrackRef.current === currentTrackId) {
-      return;
-    }
-
-    // Only initialize if we have track data (wait for it to be set)
-    if (!spotifyTrackData) {
-      return;
-    }
-
-    let isMounted = true;
-
-    const initializeMeyda = async () => {
-      if (!isMounted || meydaInitializedTrackRef.current === currentTrackId) return;
-      
-      meydaInitializedTrackRef.current = currentTrackId;
-
-      try {
-        // Initialize Meyda audio context (creates synthetic audio source for Spotify)
-        await meydaAudioService.initializeAudioContext();
-        
-        // Start Meyda analysis with callback and track data
-        await meydaAudioService.startAnalysis((features) => {
-          if (isMounted && meydaInitializedTrackRef.current === currentTrackId) {
-            setMeydaData(features);
-          }
-        }, spotifyTrackData);
-      } catch (error) {
-        console.error('Error initializing Meyda analysis:', error);
-        if (isMounted) {
-          setMeydaData(null);
-        }
-        meydaInitializedTrackRef.current = null;
-      }
-    };
-
-    initializeMeyda();
-    
-    return () => {
-      isMounted = false;
-      if (meydaInitializedTrackRef.current === currentTrackId) {
-        meydaAudioService.stopAnalysis();
-      }
-    };
-  }, [isUsingSpotifyPlayer, playerState.current_track?.id, spotifyTrackData, setMeydaData]);
-
   // Cleanup timeouts on unmount
   useEffect(() => {
     return () => {
@@ -591,9 +482,9 @@ const AdvancedMusicPlayer = () => {
             />
           )}
 
-          <TrackInfo 
-            title={songs[0]?.title}
-            artist={songs[0]?.artist}
+          <TrackInfo
+            title={currentSong?.title ?? ''}
+            artist={currentSong?.artist ?? ''}
             currentPlaylist={currentPlaylist}
             showPlaylistSongs={showPlaylistSongs}
             onPlaylistSongsToggle={handlePlaylistSongsToggle}
@@ -610,9 +501,9 @@ const AdvancedMusicPlayer = () => {
 
           {/* Player Content */}
           <div className="relative h-full bg-[#101012] shadow-[0_30px_80px_#101012] rounded-[15px] z-[2] border border-white/10">
-            <AlbumArt 
-              cover={songs[0]?.cover} 
-              title={songs[0]?.title} 
+            <AlbumArt
+              cover={currentSong?.cover ?? ''}
+              title={currentSong?.title ?? ''}
               isActive={isActive}
               isBuffering={!currentPlayerState.is_active && isReady}
             />

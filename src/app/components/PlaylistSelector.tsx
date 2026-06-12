@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Image from 'next/image';
+import Icon from './Icon';
 import { useSpotify } from '../context/SpotifyContext';
 import { useWebPlayer } from '../context/WebPlayerContext';
 
@@ -255,7 +256,7 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
               e.currentTarget.style.color = '#8f8f9d';
             }}
           >
-            <i className="fas fa-times" style={{ fontSize: '16px' }}></i>
+            <Icon name="times" style={{ fontSize: '16px' }} />
           </button>
         </div>
 
@@ -268,16 +269,16 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
             display: 'flex',
             alignItems: 'center'
           }}>
-            <i 
-              className="fas fa-search" 
-              style={{ 
+            <Icon
+              name="search"
+              style={{
                 position: 'absolute',
                 left: '14px',
                 color: '#8f8f9d',
                 fontSize: '14px',
                 pointerEvents: 'none'
               }}
-            ></i>
+            />
             <input
               type="text"
               placeholder="Search playlists..."
@@ -327,7 +328,7 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
                   e.currentTarget.style.color = '#8f8f9d';
                 }}
               >
-                <i className="fas fa-times" style={{ fontSize: '12px' }}></i>
+                <Icon name="times" style={{ fontSize: '12px' }} />
               </button>
             )}
           </div>
@@ -405,7 +406,7 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
               color: '#8f8f9d',
               padding: '40px 20px'
             }}>
-              <i className="fas fa-music" style={{ fontSize: '48px', marginBottom: '16px', opacity: 0.5 }}></i>
+              <Icon name="music" style={{ fontSize: '48px', marginBottom: '16px', opacity: 0.5 }} />
               <p>No playlists found</p>
             </div>
           ) : filteredPlaylists.length === 0 ? (
@@ -414,7 +415,7 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
               color: '#8f8f9d',
               padding: '40px 20px'
             }}>
-              <i className="fas fa-search" style={{ fontSize: '48px', marginBottom: '16px', opacity: 0.5 }}></i>
+              <Icon name="search" style={{ fontSize: '48px', marginBottom: '16px', opacity: 0.5 }} />
               <p>No playlists match &quot;{searchQuery}&quot;</p>
             </div>
           ) : (
@@ -482,18 +483,15 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
                         }}
                       />
                     ) : null}
-                    <i 
-                      className="fas fa-music" 
-                      style={{ 
-                        color: '#8f8f9d', 
+                    <Icon
+                      name="music"
+                      style={{
+                        color: '#8f8f9d',
                         fontSize: '20px',
-                        display: playlist.images && playlist.images.length > 0 ? 'none' : 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        width: '100%',
-                        height: '100%'
+                        display: playlist.images && playlist.images.length > 0 ? 'none' : 'block',
+                        margin: 'auto'
                       }}
-                    ></i>
+                    />
                   </div>
 
                   {/* Playlist Info */}
@@ -539,14 +537,14 @@ const PlaylistSelector = ({ onPlaylistSelect, isVisible, onClose }: PlaylistSele
                       animation: 'spin 1s linear infinite'
                     }}></div>
                   ) : (
-                    <i 
-                      className="fas fa-chevron-right" 
-                      style={{ 
-                        color: '#8f8f9d', 
+                    <Icon
+                      name="chevron-right"
+                      style={{
+                        color: '#8f8f9d',
                         fontSize: '14px',
                         opacity: selectedPlaylist?.id === playlist.id ? 1 : 0.5
                       }}
-                    ></i>
+                    />
                   )}
                 </div>
               ))}
