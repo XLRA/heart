@@ -52,22 +52,27 @@ const SECTION_BURST_STRENGTH = 8.0;
 //                           the old time -- between beats the silhouette
 //                           fully re-forms instead of staying a cloud.
 // Spiked particles (per-particle u.spike = 1 at launch, decaying at
-// SPIKE_FADE_60, ~0.5 s lifetime) get a two-phase flight:
-//   OUT  (u.spike high): damping relieved (SPIKE_GLIDE) and the free zone
-//        extended (SPIKE_FREE_EXTEND) so the needle extends cleanly to its
-//        full length instead of being recalled mid-flight -- this is what
-//        makes spikes read as deliberate protrusions.
-//   HOME (u.spike fading): return pull ramps up to 1 + SPIKE_RETURN_GAIN,
-//        snapping the particle back into the silhouette before the next
-//        beat. Net: long visible spike, zero lingering cloud.
+// SPIKE_FADE_60, ~0.35 s lifetime) glow for the flight and get a MILD recall
+// boost that ramps in as the spike fades (1 -> 1 + SPIKE_RETURN_GAIN).
+//
+// Two failure modes are deliberately designed out here -- both shipped
+// briefly and sent particles flying across the whole screen:
+//   * Damping relief ("glide") on fresh spikes: coast distance scales as
+//     1/(1 - retention), so relieving damping is EXPONENTIALLY stronger for
+//     high-retention particles -- u.force=0.9 particles became near-
+//     frictionless and crossed the screen. Launches are instead ballistic-
+//     normalized at the source (see the needle-launch code), and damping is
+//     never modified.
+//   * A strong recall (gain 3.0): falling home from 200+ px under 4x pull
+//     builds ~100 px/frame and SLINGSHOTS the particle through the heart and
+//     out the far side, repeatedly. Gain 0.8 caps return pull at 1.8x; the
+//     small residual overshoot reads as the original "trace back" look.
 const SOFT_PULL_RADIUS = 110;
 const SOFT_PULL_FLOOR = 0.45;
 const MAX_FREE_EXCURSION = 260;
 const EXCURSION_STIFFNESS = 180;
-const SPIKE_RETURN_GAIN = 3.0;
-const SPIKE_FADE_60 = 0.95;
-const SPIKE_GLIDE = 0.55;
-const SPIKE_FREE_EXTEND = 200;
+const SPIKE_RETURN_GAIN = 0.8;
+const SPIKE_FADE_60 = 0.93;
 
 // Ring-pulse system. A kick hits the INNER ring first and propagates outward
 // (inner -> mid -> outer) through two chase filters, so the heart visibly
@@ -113,15 +118,15 @@ const MAX_INTEGRATION_DT = 2.5;
 // many consecutive frames, and a level-triggered roll would re-launch
 // particles every frame -- the continuous-fountain failure mode.
 const KICK_SPIKE_MIN_STRENGTH = 0.12;        // permissive floor; weak kicks still spike a little
-const KICK_SPIKE_FORCE_BASE = 34;            // base outward velocity
-const KICK_SPIKE_FORCE_RANDOM = 30;          // additional random magnitude
+const KICK_SPIKE_LEN_BASE = 200;             // commanded needle drift in px (pre-braking)
+const KICK_SPIKE_LEN_RANDOM = 120;           // + random extra commanded drift
 const KICK_SPIKE_ANGLE_JITTER = 0.12;        // ±0.06 rad (~±3.5 deg): collimated, needle-like
-const KICK_SPIKE_REFRACTORY_MS = 150;        // min gap between spike events
-const SPIKE_SITE_BASE = 3;                   // sites on the weakest qualifying kick
-const SPIKE_SITE_PER_STRENGTH = 4;           // + up to this many at full kick strength
-const SPIKE_SITE_HALF_WIDTH = 0.09;          // rad; widened at lower particle densities
+const KICK_SPIKE_REFRACTORY_MS = 250;        // min gap between spike events
+const SPIKE_SITE_BASE = 2;                   // sites on the weakest qualifying kick
+const SPIKE_SITE_PER_STRENGTH = 3;           // + up to this many at full kick strength
+const SPIKE_SITE_HALF_WIDTH = 0.11;          // rad; widened at lower particle densities
 const SPIKE_SITE_PROB = 0.92;                // launch prob for particles inside a site
-const KICK_SPIKE_SCATTER_PROB = 0.08;        // soft all-over sparkle outside the sites
+const KICK_SPIKE_SCATTER_PROB = 0.05;        // soft all-over sparkle outside the sites
 // Manual test trigger: press 'B' to fire a maximum-strength burst on demand,
 // independent of the audio. Useful for visually calibrating the effect when
 // the music isn't producing strong kicks. Sets manualBurstFlag for one frame.
@@ -1300,11 +1305,8 @@ const HeartAnimation = ({
         // spiked particles get an extra return boost so accents resolve before
         // the next beat lands. See the constant declarations for the full
         // write-up.
-        // Fresh spikes get an extended free zone (needle extends cleanly);
-        // the recall boost ramps in as u.spike fades -- out free, home hard.
-        const freeExcursion = MAX_FREE_EXCURSION + u.spike * SPIKE_FREE_EXTEND;
-        const excursionFactor = length > freeExcursion
-          ? 1 + (length - freeExcursion) / EXCURSION_STIFFNESS
+        const excursionFactor = length > MAX_FREE_EXCURSION
+          ? 1 + (length - MAX_FREE_EXCURSION) / EXCURSION_STIFFNESS
           : 1;
         const proximityTaper = length < SOFT_PULL_RADIUS
           ? SOFT_PULL_FLOOR + (1 - SOFT_PULL_FLOOR) * (length / SOFT_PULL_RADIUS)
@@ -1390,15 +1392,21 @@ const HeartAnimation = ({
         // each particle checks its angular position from screen center against
         // this kick's spike sites:
         //   IN a site  -> launch (92%) along its own radial with tiny jitter,
-        //                 force peaking at the site center (quadratic falloff)
-        //                 so the spike is pointed. Neighbors in the same slice
-        //                 fly together: their trails overlap into one needle.
-        //   OUTSIDE    -> small chance of a soft, half-force scatter for
+        //                 commanded drift peaking at the site center
+        //                 (quadratic falloff) so the spike is pointed.
+        //                 Neighbors in the same slice fly together: their
+        //                 trails overlap into one needle. Outer + mid rings
+        //                 only -- inner-ring particles crossing the whole
+        //                 body read as chaos, not spikes.
+        //   OUTSIDE    -> small chance of a soft scatter at 40% length for
         //                 all-over sparkle texture (u.spike = 0.55 -> dimmer
-        //                 glow, earlier recall).
+        //                 glow).
+        // Particles already in flight (u.spike >= 0.2) are skipped: re-hits
+        // stack velocity on top of existing velocity and ratchet particles
+        // off-screen over consecutive beats.
         // No dt scaling on the rolls: spikeEvent fires once per detected kick
         // (edge + refractory above); selection is per-event, not per-second.
-        if (spikeSites) {
+        if (spikeSites && u.spike < 0.2) {
           const pdx = u.trace[0].x - cX;
           const pdy = u.trace[0].y - cY;
           const pdist = Math.sqrt(pdx * pdx + pdy * pdy);
@@ -1410,28 +1418,36 @@ const HeartAnimation = ({
               if (d > Math.PI) d = Math.PI * 2 - d;
               if (d < nearest) nearest = d;
             }
-            if (nearest < siteHalfWidth && Math.random() < SPIKE_SITE_PROB) {
+            // Ballistic normalization: launch velocity is sized so the
+            // particle's total coast distance equals the commanded length,
+            // compensating per-particle damping. u.force spans 0.7..0.9,
+            // which is a ~4x spread in coast distance per unit velocity --
+            // uniform launch forces send low-friction particles flying
+            // across the screen while high-friction ones barely move.
+            const damp = Math.pow(u.force, SPEED_MULTIPLIER);
+            const ballistic = (1 - damp) / SPEED_MULTIPLIER;
+            if (nearest < siteHalfWidth && u.q < midRingEnd && Math.random() < SPIKE_SITE_PROB) {
               const tip = 1 - (nearest / siteHalfWidth) * (nearest / siteHalfWidth) * 0.5;
               const angle = pAngle + (Math.random() - 0.5) * KICK_SPIKE_ANGLE_JITTER;
-              // Force scales with kick strength AND overall loudness, so a
-              // hard kick in a loud chorus throws ~2x the needle length of a
+              // Needle length scales with kick strength AND overall loudness,
+              // so a hard kick in a loud chorus throws ~2x the length of a
               // kick in a quiet verse.
               const loudnessFactor = manualBurstFlag ? 1.2 : (0.75 + currentAudioData.overall * 0.5);
-              const force = (KICK_SPIKE_FORCE_BASE + Math.random() * KICK_SPIKE_FORCE_RANDOM)
+              const lengthPx = (KICK_SPIKE_LEN_BASE + Math.random() * KICK_SPIKE_LEN_RANDOM)
                 * (0.7 + spikeStrength * 0.4)
                 * loudnessFactor
                 * tip;
-              u.vx += Math.cos(angle) * force;
-              u.vy += Math.sin(angle) * force;
+              u.vx += Math.cos(angle) * lengthPx * ballistic;
+              u.vy += Math.sin(angle) * lengthPx * ballistic;
               // Light the spark: drives the glow in the color pass and the
-              // two-phase glide-then-recall flight.
+              // fade-in recall.
               u.spike = 1;
             } else if (nearest >= siteHalfWidth && Math.random() < spikeStrength * KICK_SPIKE_SCATTER_PROB) {
               const angle = pAngle + (Math.random() - 0.5) * (Math.PI / 4);
-              const force = (KICK_SPIKE_FORCE_BASE + Math.random() * KICK_SPIKE_FORCE_RANDOM)
-                * 0.5 * (0.7 + spikeStrength * 0.4);
-              u.vx += Math.cos(angle) * force;
-              u.vy += Math.sin(angle) * force;
+              const lengthPx = (KICK_SPIKE_LEN_BASE + Math.random() * KICK_SPIKE_LEN_RANDOM)
+                * 0.4 * (0.7 + spikeStrength * 0.4);
+              u.vx += Math.cos(angle) * lengthPx * ballistic;
+              u.vy += Math.sin(angle) * lengthPx * ballistic;
               u.spike = 0.55;
             }
           }
@@ -1446,15 +1462,13 @@ const HeartAnimation = ({
         u.trace[0].y += u.vy * integrationDt;
         // Velocity damping: was per-frame retention. Math.pow per particle since
         // u.force is per-particle (~0.7..0.9). Cost: ~50ns x particle count.
-        // Fresh spikes get damping RELIEF (SPIKE_GLIDE shortens the effective
-        // dt exponent) so the needle glides to full length instead of stalling
-        // a few px out -- the relief fades with u.spike, restoring normal
-        // damping for the recall phase.
-        const dampingPow = Math.pow(u.force, dtFrames * (1 - SPIKE_GLIDE * u.spike));
+        // NEVER modified for spikes -- see the SPIKE_* constant block for why
+        // damping relief is catastrophic for high-retention particles.
+        const dampingPow = Math.pow(u.force, dtFrames);
         u.vx *= dampingPow;
         u.vy *= dampingPow;
 
-        // Spark state fade (~0.5 s glow; recall ramps in as it fades).
+        // Spark state fade (~0.35 s glow; recall ramps in as it fades).
         if (u.spike > 0) {
           u.spike *= spikeFade;
           if (u.spike < 0.02) u.spike = 0;
