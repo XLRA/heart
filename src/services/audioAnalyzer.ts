@@ -115,6 +115,29 @@ const LOUDNESS_TIME_CONSTANT_FRAMES = 600; // ~10 seconds at 60 fps
 const AGC_MIN_GAIN = 0.5;
 const AGC_MAX_GAIN = 4.0;
 
+// Analysis cadence + dt correction. read() is driven by rAF, so on 120/144 Hz
+// displays the whole FFT pipeline used to run ~2-2.4x more often than the
+// 60 fps these constants were tuned for: envelopes decayed too fast, the
+// flux-history window shrank in wall-clock terms, and per-frame spectral
+// deltas were half the size (biasing beat detection quieter). Two fixes:
+//   1. Throttle: calls arriving sooner than MIN_ANALYSIS_INTERVAL_MS return
+//      the cached frame with the one-shot flags (beat/kick/snare/section)
+//      cleared, so events still fire exactly once per detection.
+//   2. dt correction: remaining cadence jitter is compensated by raising the
+//      smoothing retention factors to the power of dtFrames (interval / 16.7ms).
+const MIN_ANALYSIS_INTERVAL_MS = 12;
+
+// Per-band spectral balance. The global AGC normalizes overall loudness but
+// preserves the mix's internal balance: a bass-heavy track pins `bass` near 1
+// while `treble` idles near 0, so any visualization channel mapped to treble
+// barely moves for the whole song. Each band tracks its own long-term level;
+// bands sitting below the overall mix level get boosted toward parity. The
+// clamp keeps the boost subtle so the track's spectral character (dark vs
+// bright) still reads -- we're widening the dynamic range of each channel,
+// not flattening the spectrum.
+const BAND_BALANCE_MIN = 0.75;
+const BAND_BALANCE_MAX = 1.5;
+
 // Section detection. Compares short-term loudness (~2 s) to the long-term EMA
 // (~10 s, the AGC tracker). When the ratio jumps past SECTION_RATIO_THRESHOLD
 // we fire a one-frame `section` flag (cooled down for SECTION_COOLDOWN_MS so
@@ -280,6 +303,17 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
   let longTermLoudness = 0;
   const loudnessAlpha = 1 / LOUDNESS_TIME_CONSTANT_FRAMES;
 
+  // Per-band long-term levels for the spectral-balance gains. Same time
+  // constant as the AGC tracker; only updated on non-silent frames.
+  let longTermBass = 0;
+  let longTermMid = 0;
+  let longTermTreble = 0;
+
+  // Analysis throttle state. cachedFrame is the last fully-analyzed frame;
+  // returned (with one-shots cleared) for calls inside the throttle window.
+  let lastReadTime = 0;
+  let cachedFrame: AudioReactiveData | null = null;
+
   // Section detection state. shortTermLoudness tracks ~2 s, longTermLoudness ~10 s.
   // When short jumps significantly above long (and absolute level is high enough),
   // we fire a one-frame section event. lastSectionStrength holds the magnitude so
@@ -300,8 +334,12 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
 
   const tempo = createTempoTracker();
 
-  const applyEnvelope = (current: number, raw: number, attack: number, decay: number) => {
-    const rate = raw > current ? attack : decay;
+  // dt-corrected asymmetric envelope follower. `rate` constants are tuned for
+  // 60 fps; raising the retention (1 - rate) to dtFrames keeps the wall-clock
+  // attack/decay identical across analysis cadences.
+  const applyEnvelope = (current: number, raw: number, attack: number, decay: number, dtFrames: number) => {
+    const base = raw > current ? attack : decay;
+    const rate = 1 - Math.pow(1 - base, dtFrames);
     return current + rate * (raw - current);
   };
 
@@ -335,6 +373,30 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
         loudness: 0, section: false, sectionStrength: 0,
       };
     }
+
+    const now = performance.now();
+    const sinceLast = now - lastReadTime;
+
+    // Throttle: inside the analysis window, replay the cached frame with all
+    // one-shot event flags cleared so a single detected kick/snare/section
+    // can never be consumed twice by a high-Hz render loop.
+    if (cachedFrame && sinceLast < MIN_ANALYSIS_INTERVAL_MS) {
+      return {
+        ...cachedFrame,
+        beat: false, beatStrength: 0,
+        kick: false, kickStrength: 0,
+        snare: false, snareStrength: 0,
+        section: false,
+      };
+    }
+
+    // dtFrames = analysis interval relative to a 60 fps frame. Clamped so a
+    // background-tab gap doesn't slam every tracker in one step.
+    const dtFrames = lastReadTime === 0 ? 1 : Math.min(4, Math.max(0.25, sinceLast / (1000 / 60)));
+    lastReadTime = now;
+    const loudnessAlphaDt = 1 - Math.pow(1 - loudnessAlpha, dtFrames);
+    const shortLoudnessAlphaDt = 1 - Math.pow(1 - shortLoudnessAlpha, dtFrames);
+    const sectionStrengthDecayDt = Math.pow(sectionStrengthDecay, dtFrames);
 
     analyser.getFloatFrequencyData(floatData);
 
@@ -389,16 +451,16 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
     if (rawOverall < NOISE_FLOOR) {
       // Decay to silence; don't update AGC, centroid, or flatness trackers (silence is
       // not informative about the song's character, and updating would drag them around).
-      envBass    = applyEnvelope(envBass,    0, ENV.bass.attack,    ENV.bass.decay);
-      envMid     = applyEnvelope(envMid,     0, ENV.mid.attack,     ENV.mid.decay);
-      envTreble  = applyEnvelope(envTreble,  0, ENV.treble.attack,  ENV.treble.decay);
-      envOverall = applyEnvelope(envOverall, 0, ENV.overall.attack, ENV.overall.decay);
+      envBass    = applyEnvelope(envBass,    0, ENV.bass.attack,    ENV.bass.decay,    dtFrames);
+      envMid     = applyEnvelope(envMid,     0, ENV.mid.attack,     ENV.mid.decay,     dtFrames);
+      envTreble  = applyEnvelope(envTreble,  0, ENV.treble.attack,  ENV.treble.decay,  dtFrames);
+      envOverall = applyEnvelope(envOverall, 0, ENV.overall.attack, ENV.overall.decay, dtFrames);
       pushFlux(kickFluxHistory, 0);
       pushFlux(snareFluxHistory, 0);
       // Section strength decays even through silence so a long break doesn't keep
       // the previous section glow alive forever.
-      lastSectionStrength *= sectionStrengthDecay;
-      return {
+      lastSectionStrength *= sectionStrengthDecayDt;
+      cachedFrame = {
         bass: envBass, mid: envMid, treble: envTreble, overall: envOverall,
         beat: false, beatStrength: 0,
         kick: false, kickStrength: 0,
@@ -409,6 +471,7 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
         loudness: longTermLoudness,
         section: false, sectionStrength: lastSectionStrength,
       };
+      return cachedFrame;
     }
 
     // --- Spectral descriptors (only updated on non-silent frames) ---------------------
@@ -419,7 +482,7 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       const rawCentroid = Math.max(0, Math.min(1,
         (Math.log(centroidHz) - centroidLogMin) / centroidLogRange
       ));
-      smoothedCentroid += CENTROID_SMOOTH_ALPHA * (rawCentroid - smoothedCentroid);
+      smoothedCentroid += (1 - Math.pow(1 - CENTROID_SMOOTH_ALPHA, dtFrames)) * (rawCentroid - smoothedCentroid);
     }
     // Flatness: geometric mean / arithmetic mean. Both computed over the same bin set
     // [1, trebleEnd), so they share the same N. Use the centroid sum as arith.
@@ -428,15 +491,20 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       const arithMean = centroidDenominator / totalBins;
       const geoMean = Math.exp(logMagSum / totalBins);
       const rawFlatness = Math.max(0, Math.min(1, geoMean / arithMean));
-      smoothedFlatness += FLATNESS_SMOOTH_ALPHA * (rawFlatness - smoothedFlatness);
+      smoothedFlatness += (1 - Math.pow(1 - FLATNESS_SMOOTH_ALPHA, dtFrames)) * (rawFlatness - smoothedFlatness);
     }
 
     // Long-term loudness EMA, only updated on non-silent frames so silence doesn't
     // drag the tracker down (which would over-amplify the next loud passage).
-    longTermLoudness += loudnessAlpha * (rawOverall - longTermLoudness);
+    longTermLoudness += loudnessAlphaDt * (rawOverall - longTermLoudness);
     // Short-term loudness on the same input. Together they form a 2 s vs 10 s
     // ratio that signals chorus / drop transitions.
-    shortTermLoudness += shortLoudnessAlpha * (rawOverall - shortTermLoudness);
+    shortTermLoudness += shortLoudnessAlphaDt * (rawOverall - shortTermLoudness);
+
+    // Per-band long-term levels feed the spectral-balance gains below.
+    longTermBass   += loudnessAlphaDt * (combinedBass - longTermBass);
+    longTermMid    += loudnessAlphaDt * (combinedMid  - longTermMid);
+    longTermTreble += loudnessAlphaDt * (rawTreble    - longTermTreble);
 
     // AGC gain: target / longTermLoudness, clamped. Pre-envelope so the envelope
     // follower sees normalized dynamics across loud/quiet songs.
@@ -444,22 +512,29 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       ? Math.min(AGC_MAX_GAIN, Math.max(AGC_MIN_GAIN, LOUDNESS_TARGET / longTermLoudness))
       : 1;
 
-    const gainedBass    = clamp01(combinedBass * agcGain);
-    const gainedMid     = clamp01(combinedMid  * agcGain);
-    const gainedTreble  = clamp01(rawTreble    * agcGain);
+    // Spectral-balance gain per band: bands running quieter than the overall
+    // mix get lifted toward parity (clamped). This is what lets a treble-shy
+    // track still drive treble-mapped visual channels with its hi-hats, and a
+    // bass-light acoustic track still pump on its kick drum.
+    const bandBalance = (longTermBand: number) =>
+      longTermBand > 0.002 && longTermLoudness > 0.002
+        ? Math.min(BAND_BALANCE_MAX, Math.max(BAND_BALANCE_MIN, longTermLoudness / longTermBand))
+        : 1;
+
+    const gainedBass    = clamp01(combinedBass * agcGain * bandBalance(longTermBass));
+    const gainedMid     = clamp01(combinedMid  * agcGain * bandBalance(longTermMid));
+    const gainedTreble  = clamp01(rawTreble    * agcGain * bandBalance(longTermTreble));
     const gainedOverall = clamp01(rawOverall   * agcGain);
 
-    envBass    = applyEnvelope(envBass,    gainedBass,    ENV.bass.attack,    ENV.bass.decay);
-    envMid     = applyEnvelope(envMid,     gainedMid,     ENV.mid.attack,     ENV.mid.decay);
-    envTreble  = applyEnvelope(envTreble,  gainedTreble,  ENV.treble.attack,  ENV.treble.decay);
-    envOverall = applyEnvelope(envOverall, gainedOverall, ENV.overall.attack, ENV.overall.decay);
+    envBass    = applyEnvelope(envBass,    gainedBass,    ENV.bass.attack,    ENV.bass.decay,    dtFrames);
+    envMid     = applyEnvelope(envMid,     gainedMid,     ENV.mid.attack,     ENV.mid.decay,     dtFrames);
+    envTreble  = applyEnvelope(envTreble,  gainedTreble,  ENV.treble.attack,  ENV.treble.decay,  dtFrames);
+    envOverall = applyEnvelope(envOverall, gainedOverall, ENV.overall.attack, ENV.overall.decay, dtFrames);
 
     // Beat detection runs on raw flux (gain-invariant: scaling kickFlux scales the
     // threshold proportionally, so AGC doesn't bias detection).
     pushFlux(kickFluxHistory, kickFlux);
     pushFlux(snareFluxHistory, snareFlux);
-
-    const now = performance.now();
 
     const { threshold: kickThreshold, scale: kickScale } =
       robustThreshold(kickFluxHistory, KICK_THRESHOLD_K);
@@ -527,7 +602,7 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
     }
     // Decay strength regardless of whether we fired this frame, so the visual fades.
     if (!sectionThisFrame) {
-      lastSectionStrength *= sectionStrengthDecay;
+      lastSectionStrength *= sectionStrengthDecayDt;
     }
 
     // --- Tempo phase + lookahead ----------------------------------------------------
@@ -545,7 +620,7 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       }
     }
 
-    return {
+    cachedFrame = {
       bass: envBass,
       mid: envMid,
       treble: envTreble,
@@ -566,6 +641,7 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       section: sectionThisFrame,
       sectionStrength: lastSectionStrength,
     };
+    return cachedFrame;
   }
 
   function dispose() {

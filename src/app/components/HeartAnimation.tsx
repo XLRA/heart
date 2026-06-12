@@ -17,9 +17,11 @@ const INDICATOR_THROTTLE_MS = 50; // ~20 Hz; plenty for the 10x10 px dot
 // A3 anticipatory pulse. Window over which we ramp into a predicted beat.
 // 130 ms gives a perceptible build without bleeding into the previous beat's
 // decay at common tempos. Gain scales with tempoConfidence so unstable locks
-// don't push false anticipations.
+// don't push false anticipations. Gain halved (0.3 -> 0.15) in the ring-pulse
+// rework: the pre-beat swell must stay SMALLER than the on-beat pump or the
+// rhythm hierarchy reads backwards.
 const ANTICIPATION_WINDOW_MS = 130;
-const ANTICIPATION_GAIN = 0.3;
+const ANTICIPATION_GAIN = 0.15;
 
 // A4 tempo-locked breathing. A subtle continuous sine at the song's tempo so
 // the heart breathes *with* the music between hits. Smaller than the per-beat
@@ -31,13 +33,46 @@ const TEMPO_BREATHE_GAIN = 0.06;
 const SECTION_DECAY_60 = 0.992; // ~3 s half-life at 60 fps
 const SECTION_BURST_STRENGTH = 8.0;
 
-// Particles operate under constant-force radial pull within this distance from
-// their target (preserves the original "stretch out, drift back" feel). Beyond
-// this, pull amplifies linearly with distance so particles can't fly off-screen
-// and leave a persistent streak. Generous bound so the kick-spike effect can
-// fly visibly far before being yanked back -- the integration-dt cap below is
-// the actual structural fix for tab-return teleports.
-const MAX_FREE_EXCURSION = 550;
+// Radial-pull shaping. Three zones, by distance from target:
+//   < SOFT_PULL_RADIUS    : pull TAPERS toward the target. The old constant-
+//                           force pull made particles perpetually overshoot
+//                           and orbit, and the audio speed multipliers raised
+//                           that orbit amplitude exactly when the music got
+//                           loud -- the main reason the silhouette fattened
+//                           into a blob during loud passages. Tapering kills
+//                           the overshoot loop near the rim while the taper
+//                           floor (SOFT_PULL_FLOOR) keeps enough residual
+//                           motion that the rim still shimmers organically.
+//   .. MAX_FREE_EXCURSION : constant force -- the original "stretch out,
+//                           drift back" feel, unchanged.
+//   > MAX_FREE_EXCURSION  : pull stiffens linearly (divided by
+//                           EXCURSION_STIFFNESS). Pulled in from 550 to 260
+//                           and steepened so spark flights stay visible but
+//                           displaced particles snap home in a fraction of
+//                           the old time -- between beats the silhouette
+//                           fully re-forms instead of staying a cloud.
+// SPIKE_RETURN_GAIN adds extra pull to recently-spiked particles (per-particle
+// u.spike, decaying at SPIKE_FADE_60): sparks are punchy on the way out and
+// fast on the way home, so at any moment only a small, quickly-recovering
+// fraction of particles is away from the shape.
+const SOFT_PULL_RADIUS = 110;
+const SOFT_PULL_FLOOR = 0.45;
+const MAX_FREE_EXCURSION = 260;
+const EXCURSION_STIFFNESS = 180;
+const SPIKE_RETURN_GAIN = 2.5;
+const SPIKE_FADE_60 = 0.92;
+
+// Ring-pulse system. A kick hits the INNER ring first and propagates outward
+// (inner -> mid -> outer) through two chase filters, so the heart visibly
+// pumps from its core like a contraction instead of inflating uniformly.
+// Each ring also carries its own frequency band (treble -> inner, mid ->
+// middle, bass -> outer), giving the silhouette spatial spectral separation.
+// Crucially, ALL of these displacements move the TARGETS, which scales the
+// silhouette coherently -- the shape never dissolves, unlike per-particle
+// shoves.
+const KICK_PULSE_DECAY_60 = 0.92;   // pump-wave envelope, ~190 ms visible tail
+const RING_CHASE_60 = 0.30;         // chase rate: mid follows inner, outer follows mid (~75 ms core-to-rim)
+const SNARE_FLARE_DECAY_60 = 0.78;  // fast outer-ring flare on snares, ~50 ms half-life
 
 // Cap the dt used for POSITION integration only (velocity update + glow decays
 // still use the full dtFrames so they recover properly after a hitch). Without
@@ -54,18 +89,27 @@ const MAX_INTEGRATION_DT = 2.5;
 // the heart and tracing back" look as a recurring rhythmic event, scaled
 // with kickStrength so soft kicks barely sparkle and hard kicks fling
 // dozens of visible streamers.
-// Kick spike tuning. Bumped 2026-05 after live testing on bundled mp3s
-// showed audio-driven bursts plateauing at ~40-50% of the manual `B` burst
-// ceiling -- probability and force were the limiting factors. New values
-// target ~55% of particles spiking on a strong kick (was ~21%) and ~75% of
-// the manual-burst force (was ~65%). Strength-scaling kept so weak kicks
-// stay visibly different from strong ones; we don't want it to read as a
-// constant strobe.
-const KICK_SPIKE_MIN_STRENGTH = 0.12;       // slightly more permissive floor
-const KICK_SPIKE_PROB_GAIN = 0.55;          // ~55% of particles per full-strength kick
-const KICK_SPIKE_FORCE_BASE = 36;           // base outward velocity
-const KICK_SPIKE_FORCE_RANDOM = 38;         // additional random magnitude
+//
+// Rebalanced 2026-06: the previous tuning (~55% of particles per strong
+// kick, force 36+38) put more than half the heart in transit on every beat;
+// at >=120 BPM return flights overlapped the next kick and the silhouette
+// never re-formed -- the "blob". New philosophy: FEWER particles, BRIGHTER
+// (spiked particles glow via u.spike in the color pass), FASTER home
+// (SPIKE_RETURN_GAIN). The accent reads stronger than before because the
+// sparks are luminous streaks against an intact heart, not part of a
+// general cloud.
+//
+// Spikes are also edge-triggered with a refractory now (see spikeEvent in
+// the loop): legacy audio paths (Meyda, Spotify simulation) hold `kick`
+// high for many consecutive frames, and the old level-triggered roll
+// re-launched particles every frame for the duration -- a continuous
+// fountain that was the single worst blobifier on those paths.
+const KICK_SPIKE_MIN_STRENGTH = 0.12;       // permissive floor; weak kicks still sparkle a little
+const KICK_SPIKE_PROB_GAIN = 0.30;          // ~30% of particles per full-strength kick
+const KICK_SPIKE_FORCE_BASE = 28;           // base outward velocity
+const KICK_SPIKE_FORCE_RANDOM = 30;         // additional random magnitude
 const KICK_SPIKE_ANGLE_JITTER = Math.PI / 4; // ±45 deg from radial (visible scatter, mostly outward)
+const KICK_SPIKE_REFRACTORY_MS = 150;       // min gap between spike events
 // Manual test trigger: press 'B' to fire a maximum-strength burst on demand,
 // independent of the audio. Useful for visually calibrating the effect when
 // the music isn't producing strong kicks. Sets manualBurstFlag for one frame.
@@ -624,22 +668,33 @@ const HeartAnimation = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Get device pixel ratio for retina displays
-    const dpr = window.devicePixelRatio || 1;
+    // Get device pixel ratio for retina displays. Re-read on every resize:
+    // browser zoom changes it mid-session (Ctrl +/- fires a resize).
+    let dpr = window.devicePixelRatio || 1;
 
-    // Set canvas size accounting for device pixel ratio
-    let width = canvas.width = window.innerWidth * dpr;
-    let height = canvas.height = window.innerHeight * dpr;
-    
+    // `width`/`height` are CSS pixels -- the coordinate space everything in
+    // this loop draws in (the context is scaled by dpr). The full-canvas
+    // fills below MUST use CSS dims: passing the backing-store size
+    // (css * dpr) only covers css * dpr^2 device pixels, which is SMALLER
+    // than the canvas whenever dpr < 1 (Chrome zoomed out / scaled-down
+    // displays). That left a never-faded strip along the bottom and right
+    // where every particle pixel persisted forever -- the "frozen particles
+    // at the bottom center" bug under live audio, where kick spikes
+    // constantly launch particles down into that strip.
+    let width = window.innerWidth;
+    let height = window.innerHeight;
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+
     // Scale canvas style size
-    canvas.style.width = `${window.innerWidth}px`;
-    canvas.style.height = `${window.innerHeight}px`;
-    
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+
     // Scale context to account for device pixel ratio
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     ctx.fillStyle = "rgba(0,0,0,1)";
-    ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+    ctx.fillRect(0, 0, width, height);
 
     const heartPosition = (rad: number): [number, number] => {
       return [
@@ -653,13 +708,16 @@ const HeartAnimation = ({
     };
 
     const handleResize = () => {
-      width = canvas.width = window.innerWidth * dpr;
-      height = canvas.height = window.innerHeight * dpr;
-      canvas.style.width = `${window.innerWidth}px`;
-      canvas.style.height = `${window.innerHeight}px`;
-      ctx.scale(dpr, dpr);
+      dpr = window.devicePixelRatio || 1;
+      width = window.innerWidth;
+      height = window.innerHeight;
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.fillStyle = "rgba(0,0,0,1)";
-      ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+      ctx.fillRect(0, 0, width, height);
     };
 
     window.addEventListener('resize', handleResize);
@@ -708,6 +766,7 @@ const HeartAnimation = ({
     for (let i = 0; i < Math.PI * 2; i += dr) {
       pointsOrigin.push(scaleAndTranslate(heartPosition(i), 150, 9, 0, 0));
     }
+    const midRingEnd = pointsOrigin.length;
     for (let i = 0; i < Math.PI * 2; i += dr) {
       pointsOrigin.push(scaleAndTranslate(heartPosition(i), 90, 5, 0, 0));
     }
@@ -715,11 +774,18 @@ const HeartAnimation = ({
     const heartPointsCount = pointsOrigin.length;
     const targetPoints: [number, number][] = [];
 
-    const pulse = (kx: number, ky: number) => {
+    // Per-ring scaling: each of the three silhouette rings gets its own scale
+    // factor so the kick pump wave can travel core -> rim and each ring can
+    // carry its own frequency band. Scaling targets (rather than shoving
+    // particles) is what keeps every audio response shape-preserving.
+    const pulse = (kOuter: number, kMid: number, kInner: number) => {
+      const cx = window.innerWidth / 2;
+      const cy = window.innerHeight / 2;
       for (let i = 0; i < pointsOrigin.length; i++) {
+        const k = i < outerRingCount ? kOuter : i < midRingEnd ? kMid : kInner;
         targetPoints[i] = [
-          kx * pointsOrigin[i][0] + window.innerWidth / 2,
-          ky * pointsOrigin[i][1] + window.innerHeight / 2
+          k * pointsOrigin[i][0] + cx,
+          k * pointsOrigin[i][1] + cy
         ];
       }
     };
@@ -735,6 +801,10 @@ const HeartAnimation = ({
       f: string;
       trace: { x: number; y: number }[];
       colorIndex: number; // Index into the color palette
+      /** 1 right after a kick-spark launch, decaying toward 0. Drives both the
+       *  extra return pull (SPIKE_RETURN_GAIN) and the spark's glow in the
+       *  color pass, so launched particles read as bright streamers. */
+      spike: number;
     }
 
     // Default colors (pink/purple) for fallback
@@ -780,7 +850,8 @@ const HeartAnimation = ({
         force: 0.2 * Math.random() + 0.7,
         f: getParticleColor(i),
         trace: Array(traceCount).fill(null).map(() => ({ x, y })),
-        colorIndex: i // Store which color index this particle uses
+        colorIndex: i, // Store which color index this particle uses
+        spike: 0
       } as Particle;
     }
 
@@ -827,9 +898,23 @@ const HeartAnimation = ({
     let pendingTrailCollapse = false;
 
     let time = 0;
-    let lastBeatTime = 0;
     let lastFrameTime = 0;
     let animationId: number;
+    // Kick edge detection + spike refractory. Legacy audio paths (Meyda,
+    // Spotify simulation) report `kick` as a LEVEL that can stay true for
+    // seconds; analyzer paths report one-frame events. Edge-triggering both
+    // unifies them and prevents the every-frame re-launch fountains.
+    let prevKick = false;
+    let lastSpikeLaunchTime = 0;
+    // Ring-pulse state. kickPulse is the pump-wave source (attacks on kick
+    // edges, exponential release); midRingPulse / outerRingPulse chase it in
+    // series so the pulse physically propagates core -> rim. snareFlare is a
+    // fast outer-ring-only flare -- the snare's "expansion" now scales the
+    // silhouette instead of scattering its particles.
+    let kickPulse = 0;
+    let midRingPulse = 0;
+    let outerRingPulse = 0;
+    let snareFlare = 0;
     // Independent envelope-followed glow trackers for kick (sub-bass) and snare
     // (upper-mid). Kick drives the central heart pulse + speed boost; snare drives
     // the outer-ring radial spike. They overlap on most beats but separate on
@@ -954,6 +1039,10 @@ const HeartAnimation = ({
       const snareDecay = Math.pow(0.78, dtFrames);
       const sectionDecayDt = Math.pow(SECTION_DECAY_60, dtFrames);
       const tracePullFactor = 1 - Math.pow(1 - config.traceK, dtFrames);
+      const kickPulseDecay = Math.pow(KICK_PULSE_DECAY_60, dtFrames);
+      const snareFlareDecay = Math.pow(SNARE_FLARE_DECAY_60, dtFrames);
+      const spikeFade = Math.pow(SPIKE_FADE_60, dtFrames);
+      const ringChase = 1 - Math.pow(1 - RING_CHASE_60, dtFrames);
 
       // Get current values from refs
       const currentAudioData = audioDataRef.current;
@@ -1006,35 +1095,53 @@ const HeartAnimation = ({
       // Section folds in too so chorus/drop lifts everything for its full tail.
       const combinedGlow = Math.max(kickGlow, snareGlow, sectionGlow * 0.8);
 
-      // Pulse: energy envelope + KICK spike (not generic beat) for heart size changes.
-      // Snares no longer pulse the heart -- they drive the outer ring instead.
-      let pulseFactor = 1.0;
-      if (currentIsPlaying && currentAudioData.overall > 0) {
-        pulseFactor += currentAudioData.overall * 0.2;
-        pulseFactor += currentAudioData.bass * 0.1;
+      // --- Ring-pulse envelopes -------------------------------------------------
+      // Kick edge: fires once per detected kick regardless of whether the
+      // audio path reports `kick` as a one-frame event or a held level.
+      const kickEdge = currentAudioData.kick && !prevKick;
+      prevKick = currentAudioData.kick;
 
-        if (currentAudioData.kick) {
-          pulseFactor += 0.25 + currentKickStrength * 0.35;
-          lastBeatTime = time;
-        } else {
-          const timeSinceBeat = time - lastBeatTime;
-          const beatDecay = Math.exp(-timeSinceBeat * 6);
-          pulseFactor += beatDecay * 0.3;
-        }
+      // Pump wave source. Attack on the kick edge (scaled by strength),
+      // exponential release. midRingPulse and outerRingPulse chase it in
+      // series, so the pump visibly travels inner -> mid -> outer over ~75 ms
+      // -- the heart contracts from its core like a real heartbeat instead of
+      // inflating in one rigid step.
+      if (kickEdge && currentIsPlaying) {
+        kickPulse = Math.max(kickPulse, 0.45 + 0.55 * currentKickStrength);
+      }
+      kickPulse *= kickPulseDecay;
+      if (kickPulse < 0.005) kickPulse = 0;
+      midRingPulse += (kickPulse - midRingPulse) * ringChase;
+      outerRingPulse += (midRingPulse - outerRingPulse) * ringChase;
+
+      // Snare flare: the snare's visual is now an outer-ring SCALE bump (plus
+      // the brightness flash via snareGlow) -- shape-preserving, unlike the
+      // old radial particle shove.
+      if (currentAudioData.snare && currentIsPlaying) {
+        snareFlare = Math.max(snareFlare, 0.4 + 0.6 * currentSnareStrength);
+      } else {
+        snareFlare *= snareFlareDecay;
+        if (snareFlare < 0.005) snareFlare = 0;
+      }
+
+      // --- Base pulse (shared by all rings) -------------------------------------
+      // Energy bed + anticipation + tempo breathing. The per-beat spike lives
+      // in the ring envelopes above, so the base stays a slow, smooth bed.
+      let basePulse = 1.0;
+      if (currentIsPlaying && currentAudioData.overall > 0) {
+        basePulse += currentAudioData.overall * 0.12;
 
         // A3: Anticipatory pulse. When tempo is locked, ramp the pulse up *before*
         // the predicted beat lands so the visual peak coincides with the hit
         // instead of trailing it. Without this, kicks visibly arrive before the
         // animation responds (~30-80 ms detection latency on tab capture).
-        // Window of 130 ms gives a noticeable ramp without overlapping the
-        // previous beat's decay tail at typical tempos (>= 100 BPM => 600 ms period).
         if (
           currentAudioData.tempoConfidence > 0.7 &&
           currentAudioData.nextBeatIn < ANTICIPATION_WINDOW_MS
         ) {
           const proximity = 1 - currentAudioData.nextBeatIn / ANTICIPATION_WINDOW_MS;
           // Squared falloff so it rises gently at the edge and steepens as we approach.
-          pulseFactor += proximity * proximity * currentAudioData.tempoConfidence * ANTICIPATION_GAIN;
+          basePulse += proximity * proximity * currentAudioData.tempoConfidence * ANTICIPATION_GAIN;
         }
       }
 
@@ -1052,15 +1159,33 @@ const HeartAnimation = ({
         // the peak lands at the *off* (between beats), creating an anticipatory
         // breath that exhales into each kick.
         const breath = Math.sin(currentAudioData.beatPhase * 2 * Math.PI - Math.PI / 2);
-        pulseFactor += breath * TEMPO_BREATHE_GAIN * currentAudioData.tempoConfidence;
+        basePulse += breath * TEMPO_BREATHE_GAIN * currentAudioData.tempoConfidence;
       } else {
-        pulseFactor += Math.sin(time * 2) * 0.04;
+        basePulse += Math.sin(time * 2) * 0.04;
       }
-      const clampedPulse = Math.max(0.8, Math.min(1.8, pulseFactor));
-      pulse(clampedPulse, clampedPulse);
+
+      // --- Per-ring scales: band mapping + pump wave ----------------------------
+      // treble -> inner, mid -> middle, bass -> outer: the spectrum is laid
+      // out spatially across the silhouette, so a hi-hat run shivers the
+      // core while a bass drop swells the rim. The pump wave rides on top
+      // with growing amplitude toward the rim (0.12 / 0.18 / 0.26) -- the
+      // outward-traveling contraction is the signature kick visual. Clamps
+      // are much tighter than the old [0.8, 1.8]: large scale jumps combined
+      // with particle lag smeared the rim into an annulus.
+      const trebleBand = currentIsPlaying ? currentAudioData.treble : 0;
+      const midBand = currentIsPlaying ? currentAudioData.mid : 0;
+      const bassBand = currentIsPlaying ? currentAudioData.bass : 0;
+      const innerScale = Math.max(0.85, Math.min(1.45,
+        basePulse + kickPulse * 0.12 + trebleBand * 0.05));
+      const midScale = Math.max(0.85, Math.min(1.5,
+        basePulse + midRingPulse * 0.18 + midBand * 0.06));
+      const outerScale = Math.max(0.85, Math.min(1.6,
+        basePulse + outerRingPulse * 0.26 + bassBand * 0.10
+        + snareFlare * 0.08 + sectionGlow * 0.05));
+      pulse(outerScale, midScale, innerScale);
 
       const timeMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.5) : 1;
-      time += ((Math.sin(time)) < 0 ? 12 : (pulseFactor > 1.15) ? .3 : 1.5) * config.timeDelta * timeMultiplier * dtFrames;
+      time += ((Math.sin(time)) < 0 ? 12 : (outerScale > 1.12) ? .3 : 1.5) * config.timeDelta * timeMultiplier * dtFrames;
 
       // Trail erase: a black overlay with low alpha each frame multiplicatively
       // fades old trails. Higher Hz means more applications/sec, so trails fade
@@ -1075,6 +1200,16 @@ const HeartAnimation = ({
 
       const cX = window.innerWidth / 2;
       const cY = window.innerHeight / 2;
+
+      // One spark EVENT per detected kick: edge-triggered + refractory. The
+      // per-particle probability roll happens inside the loop; this gate just
+      // guarantees a "kick" that stays high for several frames (legacy paths)
+      // or arrives in a rapid burst can't re-launch particles continuously.
+      const spikeEvent = kickEdge &&
+        currentIsPlaying &&
+        currentKickStrength > KICK_SPIKE_MIN_STRENGTH &&
+        now - lastSpikeLaunchTime > KICK_SPIKE_REFRACTORY_MS;
+      if (spikeEvent) lastSpikeLaunchTime = now;
 
       // --- Flatness-driven scene parameters (computed once per frame, applied per-particle) ---
       // Flatness ~ 0 (tonal: vocals, melody) -> heart silhouette stays crisp + vivid.
@@ -1115,22 +1250,34 @@ const HeartAnimation = ({
           }
         }
 
-        const audioSpeedMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.35) : 1;
-        const bassMultiplier = currentIsPlaying ? (1 + currentAudioData.bass * 0.2) : 1;
-        // Speed boost now keyed to KICK, the rhythmic anchor. Snare-only hits don't
-        // accelerate the particle wash (they already get the radial spike below).
-        const beatSpeedMult = currentAudioData.kick ? 1.2 + currentKickStrength * 0.2 : 1.0;
+        // Speed multipliers, tamed from (0.35 / 0.2 / 0.2+0.2k). These scale
+        // the pull acceleration, and with a constant-force pull the orbit
+        // amplitude around each target scales with acceleration -- so the old
+        // gains made the rim FUZZIER exactly when the music got loud. Loudness
+        // now expresses itself mainly through the ring scales and brightness;
+        // the multipliers just add a touch of urgency to the wash.
+        const audioSpeedMultiplier = currentIsPlaying ? (1 + currentAudioData.overall * 0.18) : 1;
+        const bassMultiplier = currentIsPlaying ? (1 + currentAudioData.bass * 0.10) : 1;
+        // Speed boost keyed to KICK, the rhythmic anchor.
+        const beatSpeedMult = currentAudioData.kick ? 1.10 + currentKickStrength * 0.10 : 1.0;
         const totalSpeedMultiplier = audioSpeedMultiplier * bassMultiplier * beatSpeedMult;
 
-        // Radial pull (acceleration): scales linearly with dt. Within
-        // MAX_FREE_EXCURSION it's constant force (the original feel); beyond,
-        // amplifies linearly with distance so particles can't fly off-screen
-        // and leave a persistent streak. See MAX_FREE_EXCURSION declaration
-        // for the full bug write-up.
+        // Radial pull (acceleration): scales linearly with dt. Three zones --
+        // tapered near the target (kills the overshoot/orbit fuzz at the rim),
+        // constant in the mid-band (original drift feel), stiffening beyond
+        // MAX_FREE_EXCURSION (fast recovery from spark flights). Recently
+        // spiked particles get an extra return boost so accents resolve before
+        // the next beat lands. See the constant declarations for the full
+        // write-up.
         const excursionFactor = length > MAX_FREE_EXCURSION
-          ? 1 + (length - MAX_FREE_EXCURSION) / MAX_FREE_EXCURSION
+          ? 1 + (length - MAX_FREE_EXCURSION) / EXCURSION_STIFFNESS
           : 1;
-        const radialAccel = u.speed * totalSpeedMultiplier * excursionFactor * dtFrames;
+        const proximityTaper = length < SOFT_PULL_RADIUS
+          ? SOFT_PULL_FLOOR + (1 - SOFT_PULL_FLOOR) * (length / SOFT_PULL_RADIUS)
+          : 1;
+        const spikeReturn = 1 + u.spike * SPIKE_RETURN_GAIN;
+        const radialAccel = u.speed * totalSpeedMultiplier * excursionFactor
+          * proximityTaper * spikeReturn * dtFrames;
         u.vx += -dx / length * radialAccel;
         u.vy += -dy / length * radialAccel;
 
@@ -1146,54 +1293,40 @@ const HeartAnimation = ({
           u.vy += tangY * jitter;
         }
 
-        // Outer-ring expressiveness. Two coupled responses:
+        // Outer-ring expressiveness. The breathe-in-on-kick / breathe-out-on-
+        // snare rhythm survives the rework, but the snare's main displacement
+        // moved from particle shoves to the snareFlare target scale (computed
+        // above): pushing particles radially from SCREEN center was not the
+        // silhouette's normal direction -- it shoved the bottom tip (farthest
+        // from center) hardest and smeared the shape asymmetrically. What
+        // remains here is:
         //
-        // 1. Snare spike (expansion). Pushes outer-ring particles outward from
-        //    screen center. Magnitude was `snareGlow * 4.0` (only reactive to
-        //    snare detection). Now scales with the full music signature:
-        //    snareGlow envelope * (overall energy + bass weight + treble
-        //    sparkle). Quiet passages produce subtle blooms; loud, full-spectrum
-        //    drops produce dramatic ones -- same detection, much wider dynamic
-        //    range. On big hits (intensity > 1.3) every outer-ring particle
-        //    responds instead of every 3rd, with per-particle strength halved
-        //    to keep total energy similar.
+        // 1. Snare texture scatter. Every 3rd outer-ring particle gets a small
+        //    center-radial nudge so the flare has organic grain on top of the
+        //    coherent target expansion. Magnitude is ~1/3 of the old shove and
+        //    no longer escalates with overall/bass (those drove the wider-net
+        //    full-ring blasts that dissolved the rim on loud choruses).
         //
-        // 2. Kick contraction. On kicks, outer-ring particles get an extra pull
-        //    toward target scaled by kickStrength. Combined with (1), this
-        //    creates a breathe-in-on-kick / breathe-out-on-snare rhythm:
-        //    expressive motion in the outer ring instead of just brightness.
+        // 2. Kick contraction. Outer-ring particles get an extra pull toward
+        //    target riding the kickPulse ENVELOPE (not the raw flag), so it
+        //    tracks the pump wave and works identically on one-shot and
+        //    level-style kick reporting.
         const isOuterRing = u.q < outerRingCount;
         if (isOuterRing) {
-          if (snareGlow > 0.15) {
-            const snareSpikeIntensity = snareGlow * (
-              1 +
-              currentAudioData.overall * 0.5 +
-              currentAudioData.bass * 0.4 +
-              currentAudioData.treble * 0.2
-            );
-            // Wider-net threshold lowered (1.3 -> 1.0) so percussive hits in
-            // moderately loud songs more often engage the entire outer ring,
-            // not just every 3rd particle. Per-particle force when wider net
-            // is active was bumped 2.2 -> 2.6 to keep visual weight roughly
-            // proportional to perceived loudness even after the /3x increase
-            // in affected particle count.
-            const widerNet = snareSpikeIntensity > 1.0;
-            if (widerNet || i % 3 === 0) {
-              const spDx = u.trace[0].x - cX;
-              const spDy = u.trace[0].y - cY;
-              const spDist = Math.sqrt(spDx * spDx + spDy * spDy);
-              if (spDist > 10) {
-                const perParticleBase = widerNet ? 2.6 : 4.4;
-                const radial = snareSpikeIntensity * perParticleBase * dtFrames;
-                u.vx += (spDx / spDist) * radial;
-                u.vy += (spDy / spDist) * radial;
-              }
+          if (snareGlow > 0.2 && i % 3 === 0) {
+            const spDx = u.trace[0].x - cX;
+            const spDy = u.trace[0].y - cY;
+            const spDist = Math.sqrt(spDx * spDx + spDy * spDy);
+            if (spDist > 10) {
+              const radial = snareGlow * (1 + currentAudioData.treble * 0.5) * 1.3 * dtFrames;
+              u.vx += (spDx / spDist) * radial;
+              u.vy += (spDy / spDist) * radial;
             }
           }
-          if (currentAudioData.kick) {
+          if (kickPulse > 0.05) {
             // Pull toward target (heart silhouette). dx/dy already point from
             // particle to target, so -dx/length is the toward-target unit vector.
-            const kickPull = currentKickStrength * 5.0 * dtFrames;
+            const kickPull = kickPulse * 4.0 * dtFrames;
             u.vx += -dx / length * kickPull;
             u.vy += -dy / length * kickPull;
           }
@@ -1214,6 +1347,8 @@ const HeartAnimation = ({
             const burst = SECTION_BURST_STRENGTH * (0.6 + currentAudioData.sectionStrength * 0.4);
             u.vx += (bDx / bDist) * burst * dtFrames;
             u.vy += (bDy / bDist) * burst * dtFrames;
+            // Mark as spiked: the burst glows and recovers fast, same as sparks.
+            u.spike = 1;
           }
         }
 
@@ -1230,10 +1365,10 @@ const HeartAnimation = ({
         //   - The initial-load motion that this is mimicking IS radial-outward
         //     (particles spawn at center, targets are on the heart silhouette).
         //
-        // No dt scaling on the probability: kicks are one-frame events, the
-        // selection roll is per-event not per-second.
-        const audioSpike = currentAudioData.kick &&
-          currentKickStrength > KICK_SPIKE_MIN_STRENGTH &&
+        // No dt scaling on the probability: spikeEvent fires once per detected
+        // kick (edge + refractory, see above), the selection roll is per-event
+        // not per-second.
+        const audioSpike = spikeEvent &&
           Math.random() < currentKickStrength * KICK_SPIKE_PROB_GAIN;
         const manualSpike = manualBurstFlag && Math.random() < 0.5;
         if (audioSpike || manualSpike) {
@@ -1258,6 +1393,10 @@ const HeartAnimation = ({
             * loudnessFactor;
           u.vx += Math.cos(angle) * force;
           u.vy += Math.sin(angle) * force;
+          // Light the spark: drives the glow in the color pass and the extra
+          // return pull, so launched particles read as bright streamers that
+          // resolve back into the silhouette before the next beat.
+          u.spike = 1;
         }
 
         // Position integration. dt is capped at MAX_INTEGRATION_DT so a single
@@ -1272,6 +1411,12 @@ const HeartAnimation = ({
         const dampingPow = Math.pow(u.force, dtFrames);
         u.vx *= dampingPow;
         u.vy *= dampingPow;
+
+        // Spark state fade (~160 ms visible glow + return boost).
+        if (u.spike > 0) {
+          u.spike *= spikeFade;
+          if (u.spike < 0.02) u.spike = 0;
+        }
 
         // Trail interpolation: per-frame multiplicative pull. tracePullFactor
         // is the dt-corrected lerp coefficient (precomputed once per frame).
@@ -1324,8 +1469,14 @@ const HeartAnimation = ({
         // Brightness flash on either kick OR snare so any beat brightens the scene.
         const glowIntensity = combinedGlow * 0.35;
         const trebleSparkle = currentIsPlaying ? currentAudioData.treble * 0.1 : 0;
-        const colorIntensity = Math.min(1.0, baseIntensity + bassIntensity + glowIntensity + trebleSparkle);
-        const lightnessBoost = combinedGlow * 15;
+        // Spiked particles burn brighter (alpha + lightness) for the duration
+        // of their flight. This is what lets the spark effect read STRONGER
+        // than the old tuning despite launching far fewer particles: a few
+        // luminous streamers against an intact heart beat dozens of dim dots
+        // inside a cloud.
+        const colorIntensity = Math.min(1.0,
+          baseIntensity + bassIntensity + glowIntensity + trebleSparkle + u.spike * 0.35);
+        const lightnessBoost = combinedGlow * 15 + u.spike * 22;
         // Spectral centroid -> hue shift. Centroid is in [0, 1] (perceptual log-Hz).
         // Map [0, 1] to [-12, +12] degrees: bass-heavy passages cool the palette,
         // bright passages (cymbals, vocals, leads) warm it up. Subtle on purpose --
@@ -1353,7 +1504,7 @@ const HeartAnimation = ({
         const pad = 12;
         const barW = 90;
         const lineH = 14;
-        const rows = 14;
+        const rows = 17;
         let dbgY = pad;
         ctx.fillStyle = 'rgba(0,0,0,0.8)';
         ctx.fillRect(pad - 4, pad - 4, barW + 80, lineH * rows + 12);
@@ -1371,7 +1522,12 @@ const HeartAnimation = ({
         drawBar('ovrl', currentAudioData.overall, '#ff5');
         drawBar('kGlw', kickGlow, '#0ff');
         drawBar('sGlw', snareGlow, '#f0f');
-        drawBar('plse', clampedPulse - 0.8, '#fff');
+        // Ring scales shown relative to their 0.85 floor; kPls/flre are the
+        // pump-wave source and the snare target-flare envelopes.
+        drawBar('oScl', outerScale - 0.85, '#fff');
+        drawBar('iScl', innerScale - 0.85, '#ccc');
+        drawBar('kPls', kickPulse, '#fc0');
+        drawBar('flre', snareFlare, '#c6f');
         drawBar('kStr', currentKickStrength, '#fa0');
         drawBar('sStr', currentSnareStrength, '#a0f');
         drawBar('cent', currentAudioData.centroid, '#0fa');
