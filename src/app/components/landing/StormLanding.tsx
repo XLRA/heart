@@ -1,10 +1,15 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styles from './StormLanding.module.css';
 import { generateLightning } from './generateBolt';
-import { StormAudio, readPersistedVolume } from './stormAudio';
+import {
+  StormAudio,
+  SONG_FILES,
+  readPersistedRainVolume,
+  readPersistedSongVolume,
+} from './stormAudio';
 import {
   STRIKES,
   PRIMARY_STRIKE_T,
@@ -102,18 +107,18 @@ export default function StormLanding() {
   // Audio is gated behind a user gesture (browser autoplay policy).
   // 'locked' = never unlocked, 'on' = playing, 'off' = unlocked but muted.
   const [audioState, setAudioState] = useState<'locked' | 'on' | 'off'>('locked');
-  // Per-voice switches in the audio tab. Independent of the master
-  // mute above — the tab lets you balance rain vs. song individually.
-  const [rainOn, setRainOn] = useState(true);
-  const [songOn, setSongOn] = useState(true);
+  // Per-voice volumes in the audio tab (0..1). Independent of the master
+  // mute above — the tab balances rain (storm) vs. song individually.
+  // The rain bar rides the rain loop AND thunder; the song bar rides the
+  // music. Hydrated from localStorage on mount so the user's mix carries
+  // across reloads / page navigation (SSR returns the default).
+  const [rainVolume, setRainVolumeState] = useState<number>(0.7);
+  const [songVolume, setSongVolumeState] = useState<number>(0.6);
   const [songTitle, setSongTitle] = useState('');
   const audioRef = useRef<StormAudio | null>(null);
-  // User-controlled volume slider (0..1). Hydrated from localStorage
-  // on mount so navigation between pages preserves the user's choice.
-  // SSR returns the default; the effect below upgrades to persisted.
-  const [volume, setVolumeState] = useState<number>(0.40);
   useEffect(() => {
-    setVolumeState(readPersistedVolume());
+    setRainVolumeState(readPersistedRainVolume());
+    setSongVolumeState(readPersistedSongVolume());
   }, []);
 
   // Debug overlay — opt-in via `?debug` query param. The metrics object
@@ -131,11 +136,12 @@ export default function StormLanding() {
         // both start (the song fades in softly beneath the rain).
         await audio.unlock();
         setAudioState('on');
-        // Sync state with whatever volume the slider was showing pre-unlock.
-        setVolumeState(audio.getVolume());
-        setRainOn(audio.isRainEnabled());
-        setSongOn(audio.isSongEnabled());
+        // Sync sliders with whatever the engine hydrated pre-unlock, and
+        // keep the now-playing label in step with playlist auto-advance.
+        setRainVolumeState(audio.getRainVolume());
+        setSongVolumeState(audio.getSongVolume());
         setSongTitle(audio.getCurrentSongTitle());
+        audio.setSongChangeHandler(setSongTitle);
         // Welcome rumble so the user gets immediate confirmation
         // that audio is alive — distant, soft, builds atmosphere.
         audio.triggerThunder({ distance: 0.85, intensity: 0.55, delay: 0.3 });
@@ -152,50 +158,60 @@ export default function StormLanding() {
   }, []);
 
   /**
-   * Rain switch (audio tab). No-op until the AudioContext is unlocked —
-   * the tab is hidden in that state anyway, so this can't be reached.
+   * Per-voice volume handler factory. Updates local state immediately
+   * for a responsive bar, drives the engine, and — if the user nudges a
+   * bar above 0 while the master is muted — auto-unmutes as a one-shot
+   * convenience (mirrors how native OS volume sliders behave). Persists
+   * even pre-unlock so the mix is ready when the user clicks the icon.
    */
-  const handleToggleRain = useCallback(() => {
-    const audio = audioRef.current;
-    if (!audio?.isUnlocked()) return;
-    const next = !audio.isRainEnabled();
-    audio.setRainEnabled(next);
-    setRainOn(next);
-  }, []);
+  const makeVolumeHandler = useCallback(
+    (
+      setLocal: (v: number) => void,
+      apply: (audio: StormAudio, v: number) => void,
+      persistKey: string,
+    ) =>
+      (next: number) => {
+        setLocal(next);
+        const audio = audioRef.current;
+        if (audio) {
+          apply(audio, next);
+          if (next > 0 && audioState === 'off') {
+            audio.setMuted(false);
+            setAudioState('on');
+          }
+        } else {
+          try {
+            window.localStorage.setItem(persistKey, String(next));
+          } catch { /* ignore */ }
+        }
+      },
+    [audioState],
+  );
 
-  /** Song switch (audio tab). Mirror of the rain switch. */
-  const handleToggleSong = useCallback(() => {
-    const audio = audioRef.current;
-    if (!audio?.isUnlocked()) return;
-    const next = !audio.isSongEnabled();
-    audio.setSongEnabled(next);
-    setSongOn(next);
-  }, []);
+  const handleRainVolumeChange = useMemo(
+    () =>
+      makeVolumeHandler(
+        setRainVolumeState,
+        (audio, v) => audio.setRainVolume(v),
+        'stormRainVolume',
+      ),
+    [makeVolumeHandler],
+  );
 
-  /**
-   * Volume slider handler. Persists immediately (via setVolume) so
-   * the value survives reloads even if the user never interacts with
-   * the icon. If the user drags the slider above 0 while currently
-   * muted, auto-unmute as a one-shot convenience — mirrors how
-   * basically every native OS volume slider behaves.
-   */
-  const handleVolumeChange = useCallback((next: number) => {
-    setVolumeState(next);
-    const audio = audioRef.current;
-    if (audio) {
-      audio.setVolume(next);
-      if (next > 0 && audioState === 'off') {
-        audio.setMuted(false);
-        setAudioState('on');
-      }
-    } else {
-      // Audio not yet unlocked — still persist so the value is applied
-      // when the user next clicks the speaker icon to unlock.
-      try {
-        window.localStorage.setItem('stormVolume', String(next));
-      } catch { /* ignore */ }
-    }
-  }, [audioState]);
+  const handleSongVolumeChange = useMemo(
+    () =>
+      makeVolumeHandler(
+        setSongVolumeState,
+        (audio, v) => audio.setSongVolume(v),
+        'stormSongVolume',
+      ),
+    [makeVolumeHandler],
+  );
+
+  const handlePrevSong = useCallback(() => audioRef.current?.prevSong(), []);
+  const handleNextSong = useCallback(() => audioRef.current?.nextSong(), []);
+  // Transport (skip/back) only makes sense with a real playlist.
+  const hasPlaylist = SONG_FILES.length > 1;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1150,63 +1166,57 @@ export default function StormLanding() {
       </div>
 
       <div className={styles.audioControl}>
-        {/* Mini audio tab — collapsed to nothing in steady state so it
-            doesn't clutter the corner; slides open on hover/focus of
-            the cluster. Holds per-voice switches + the master volume. */}
+        {/* Mini audio mixer — collapsed to nothing in steady state so it
+            doesn't clutter the corner; slides open on hover/focus of the
+            cluster. A dark card (styled after the music player) with one
+            volume bar per voice + the now-playing track. */}
         <div className={styles.audioPanel} aria-hidden={audioState === 'locked'}>
-          <div className={styles.toggleRow}>
-            <span className={styles.toggleLabel}>rain</span>
-            <button
-              type="button"
-              className={styles.switch}
-              role="switch"
-              aria-checked={rainOn}
-              aria-label="Toggle rain"
-              onClick={handleToggleRain}
-            >
-              <span className={styles.switchKnob} />
-            </button>
-          </div>
+          <span className={styles.panelTitle}>mix</span>
 
-          <div className={styles.toggleRow}>
-            <span className={styles.toggleLabel}>song</span>
-            <button
-              type="button"
-              className={styles.switch}
-              role="switch"
-              aria-checked={songOn}
-              aria-label="Toggle song"
-              onClick={handleToggleSong}
-            >
-              <span className={styles.switchKnob} />
-            </button>
-          </div>
-
-          {songTitle && <div className={styles.songTitle}>{songTitle}</div>}
-
-          <div className={styles.panelDivider} aria-hidden />
-
-          <div className={styles.volumeRow}>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              step={1}
-              value={Math.round(volume * 100)}
-              onChange={(e) => handleVolumeChange(Number(e.target.value) / 100)}
-              className={styles.volumeSlider}
-              aria-label="Site volume"
-              aria-valuetext={`${Math.round(volume * 100)} percent`}
-              // Block the slider's value-change clicks from also
-              // triggering a scene click → lightning strike.
-              onClick={(e) => e.stopPropagation()}
-              onMouseDown={(e) => e.stopPropagation()}
-              // CSS-side rendering uses a CSS variable so the filled
-              // portion of the track tracks the value with no JS work.
-              style={{ ['--volPct' as string]: `${Math.round(volume * 100)}%` }}
+          <div className={styles.voiceGroup}>
+            <VoiceSlider
+              ariaLabel="Rain volume"
+              value={rainVolume}
+              onChange={handleRainVolumeChange}
+              icon={<RainGlyph />}
             />
-            <span className={styles.volumeLabel}>{Math.round(volume * 100)}%</span>
+            <VoiceSlider
+              ariaLabel="Song volume"
+              value={songVolume}
+              onChange={handleSongVolumeChange}
+              icon={<NoteGlyph />}
+            />
           </div>
+
+          {songTitle && (
+            <div className={styles.songSection}>
+              <div className={styles.nowPlaying}>
+                <span className={styles.nowPlayingDot} aria-hidden />
+                <span className={styles.nowPlayingText}>{songTitle}</span>
+              </div>
+
+              {hasPlaylist && (
+                <div className={styles.transport}>
+                  <button
+                    type="button"
+                    className={styles.transportBtn}
+                    aria-label="Previous song"
+                    onClick={handlePrevSong}
+                  >
+                    <SkipGlyph dir="prev" />
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.transportBtn}
+                    aria-label="Next song"
+                    onClick={handleNextSong}
+                  >
+                    <SkipGlyph dir="next" />
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <button
           type="button"
@@ -1253,6 +1263,91 @@ function SoundIcon({ state }: { state: 'locked' | 'on' | 'off' }) {
       )}
       {state === 'off' && <path d="M11 5 L15 11 M15 5 L11 11" />}
       {state === 'locked' && <path d="M10.5 5.5 Q12 8 10.5 10.5" />}
+    </svg>
+  );
+}
+
+/** One volume bar in the mixer: a voice icon, a styled range input, and
+    a percentage readout. The filled portion is driven by a CSS variable
+    (--vol) so the visual fill tracks the value with zero per-frame JS.
+    Clicks/drags are stopped from bubbling to the scene so adjusting
+    volume never fires a lightning strike. */
+function VoiceSlider({
+  ariaLabel,
+  value,
+  onChange,
+  icon,
+}: {
+  ariaLabel: string;
+  value: number;
+  onChange: (v: number) => void;
+  icon: ReactNode;
+}) {
+  const pct = Math.round(value * 100);
+  return (
+    <div className={styles.voiceRow}>
+      <span className={styles.voiceIcon} aria-hidden>{icon}</span>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        step={1}
+        value={pct}
+        onChange={(e) => onChange(Number(e.target.value) / 100)}
+        className={styles.voiceSlider}
+        aria-label={ariaLabel}
+        aria-valuetext={`${pct} percent`}
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        style={{ ['--vol' as string]: `${pct}%` }}
+      />
+      <span className={styles.voicePct}>{pct}</span>
+    </div>
+  );
+}
+
+/** Skip-back / skip-forward transport glyph (triangle + end bar). The
+    'next' shape is drawn; 'prev' mirrors it across its own center. */
+function SkipGlyph({ dir }: { dir: 'prev' | 'next' }) {
+  return (
+    <svg
+      width="13" height="13" viewBox="0 0 16 16" fill="currentColor"
+      aria-hidden
+      style={dir === 'prev' ? { transform: 'scaleX(-1)' } : undefined}
+    >
+      <path d="M3.5 4 L10 8 L3.5 12 Z" />
+      <rect x="10.6" y="4" width="1.7" height="8" rx="0.6" />
+    </svg>
+  );
+}
+
+/** Rain glyph — a small cloud with two falling streaks. */
+function RainGlyph() {
+  return (
+    <svg
+      width="14" height="14" viewBox="0 0 16 16" fill="none"
+      stroke="currentColor" strokeWidth="1.2"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden
+    >
+      <path d="M4.5 9 A2.5 2.5 0 0 1 4.8 4 A3 3 0 0 1 10.7 4.3 A2.2 2.2 0 0 1 11 8.7" />
+      <path d="M5.5 11 L4.7 13" />
+      <path d="M8 11 L7.2 13.4" />
+      <path d="M10.5 11 L9.7 13" />
+    </svg>
+  );
+}
+
+/** Music-note glyph for the song bar. */
+function NoteGlyph() {
+  return (
+    <svg
+      width="14" height="14" viewBox="0 0 16 16" fill="none"
+      stroke="currentColor" strokeWidth="1.2"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden
+    >
+      <path d="M6 12.5 V5 L12 3.3 V10.5" />
+      <circle cx="4.4" cy="12.4" r="1.7" />
+      <circle cx="10.4" cy="10.4" r="1.7" />
     </svg>
   );
 }

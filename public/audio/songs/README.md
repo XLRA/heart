@@ -1,33 +1,52 @@
 # Landing songs
 
-The landing scene plays a looping background song alongside the rain
-ambience (see `src/app/components/landing/stormAudio.ts`). The song is
-decoded through the same Web Audio graph as the rain, so it shares the
-master volume, the per-voice mute, and the tab-suspend battery saver.
+The landing scene plays a looping playlist of background songs alongside
+the rain ambience (see `src/app/components/landing/stormAudio.ts`). Each
+song is decoded through the same Web Audio graph as the rain, so it
+shares the master mute, the per-voice volume, and the tab-suspend battery
+saver.
 
 A missing/corrupt file is skipped silently — the rain + thunder still
 play.
 
 ## Bundled files
 
-| Filename                  | Source                                       | Length | Bitrate     | Role                          |
-| ------------------------- | -------------------------------------------- | ------ | ----------- | ----------------------------- |
-| `neverending-cycle.m4a`   | YouTube `aKo5mR3j-98` (arimasen, trapeia)    | 2:05   | AAC 130 kbps | Background song — looped       |
+| Filename                  | Source                                     | Length | Bitrate      | Role                    |
+| ------------------------- | ------------------------------------------ | ------ | ------------ | ----------------------- |
+| `neverending-cycle.m4a`   | YouTube `aKo5mR3j-98` (arimasen, trapeia)  | 2:05   | AAC 130 kbps | Playlist track 1        |
+| `bipolar.m4a`             | YouTube `v06CVZR-dH4` (.diedlonely)        | 2:12   | AAC 130 kbps | Playlist track 2        |
 
 Downloaded at the highest available bitrate (format 140, AAC 130k m4a)
-via `yt-dlp -f 140`. AAC-in-MP4 decodes natively in every modern
-browser through `decodeAudioData`.
+via `yt-dlp -f 140`. AAC-in-MP4 decodes natively in every modern browser
+through `decodeAudioData`.
 
-## Balance
+## Playback
 
-The song sits **under** the rain so neither overpowers the other:
+`SONG_FILES` in `stormAudio.ts` is the playlist. The engine plays index
+0 on unlock and **auto-advances** to the next track when one ends,
+wrapping back to the start, prefetching the upcoming buffer so the
+handoff is gapless. A single-entry playlist just loops in place. The
+audio tab shows the now-playing title and keeps it in sync with
+auto-advance via a change callback.
 
-- Master volume caps everything at 78 % of unity.
-- Rain ambient: `RAIN_LEVEL` = 0.55 of master.
-- Song: `SONG_LEVEL` = 0.34 of master — deliberately below the rain.
+## Balance / the mixer
 
-Tune `SONG_LEVEL` in `stormAudio.ts` for a more (or less) song-forward
-mix.
+The audio tab (top-right) is a small mixer with **two volume bars** —
+one per voice — layered under a master mute (the speaker icon):
+
+- **rain bar** → the storm bus: the rain loop **and** thunder (thunder is
+  part of the storm, so muting the rain quiets the whole soundscape).
+- **song bar** → the song bus.
+
+Gain model (`stormAudio.ts`):
+
+- `MASTER_VOLUME` = 0.78 — caps everything; the speaker icon mutes it.
+- Storm bus gain = the rain bar value (0..1); the rain loop sits at
+  `RAIN_LEVEL` = 0.55 within it.
+- Song bus gain = the song bar value × `SONG_MAX` (0.42) — kept a touch
+  under the rain so music + rain stay balanced even at full song volume.
+- Defaults: `DEFAULT_RAIN_VOLUME` = 0.7, `DEFAULT_SONG_VOLUME` = 0.6.
+  Both persist to `localStorage` (`stormRainVolume` / `stormSongVolume`).
 
 ## Adding more songs
 
@@ -37,13 +56,13 @@ mix.
    ```ts
    export const SONG_FILES: LandingSong[] = [
      { src: '/audio/songs/neverending-cycle.m4a', title: 'arimasen, trapeia — neverending cycle' },
+     { src: '/audio/songs/bipolar.m4a',           title: '.diedlonely — bipolar' },
      { src: '/audio/songs/your-new-song.m4a',     title: 'artist — title' },
    ];
    ```
 
-The engine currently plays index 0 on unlock and the audio tab exposes
-a single song on/off switch. Per-song selection / skip can build on the
-`currentSongIndex` plumbing already in `stormAudio.ts`.
+The new track joins the auto-advancing rotation automatically — no other
+changes needed.
 
 ### Downloading at highest bitrate
 

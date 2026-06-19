@@ -373,13 +373,13 @@
 
 .cornerBL { bottom: clamp(1.5rem, 3vw, 2.5rem); left: clamp(1.5rem, 3vw, 2.5rem); }
 
-/* ── Audio control (icon + volume slider) ───────────────────
-   Top-right cluster: a horizontal slider with a percentage label
-   sits to the LEFT of the speaker icon. The slider stays hidden
-   in steady state and reveals on hover/focus-within of the
-   container, so the calm look isn't disrupted but power-users
-   get instant access to volume. The icon itself still toggles
-   mute/unmute on click. */
+/* ── Audio mixer (icon + per-voice volume bars) ─────────────
+   Top-right cluster: a speaker icon that unlocks / mutes audio, with
+   a dark "mixer" card that drops open beneath it on hover/focus. The
+   card holds one volume bar per voice (rain + song) and the now-
+   playing track. Styled after the music player's panels (dark slate
+   cards, hairline borders, slim white-on-#252529 bars) so the two
+   surfaces of the app feel like one product. */
 
 .audioControl {
   position: absolute;
@@ -394,31 +394,28 @@
   pointer-events: auto;
 }
 
-/* Mini audio tab. A small panel that drops down beneath the speaker
-   icon, holding the per-voice (rain / song) switches and the master
-   volume slider. Collapsed to nothing in steady state — 0 opacity +
+/* The mixer card. Collapsed to nothing in steady state — 0 opacity +
    a slight upward offset + pointer-events:none — so it never clutters
    the corner. Reveals on hover / focus-within of the whole cluster.
-   The ::before bridges the visible gap between the icon and the panel
+   The ::before bridges the visible gap between the icon and the card
    so the pointer can cross into it without the hover state dropping. */
 .audioPanel {
   position: absolute;
-  top: calc(100% + 0.5rem);
+  top: calc(100% + 0.6rem);
   right: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.55rem;
-  min-width: 152px;
-  padding: 0.75rem 0.85rem;
-  background: rgba(10, 10, 12, 0.7);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  width: 248px;
+  padding: 1rem 1.1rem 0.9rem;
+  background: rgba(16, 16, 18, 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
   opacity: 0;
-  transform: translateY(-6px);
-  transition: opacity 0.22s ease, transform 0.26s ease;
+  transform: translateY(-8px);
+  transition: opacity 0.22s ease, transform 0.26s cubic-bezier(0.4, 0, 0.2, 1);
   pointer-events: none;
 }
 
@@ -427,8 +424,8 @@
   position: absolute;
   left: 0;
   right: 0;
-  top: -0.5rem;
-  height: 0.5rem;
+  top: -0.55rem;
+  height: 0.55rem;
 }
 
 .audioControl:hover .audioPanel,
@@ -438,188 +435,243 @@
   pointer-events: auto;
 }
 
-/* Hide the panel entirely while audio is still locked — there are no
+/* Hide the card entirely while audio is still locked — there are no
    voices to balance yet, the user must click the icon first to unlock
    the AudioContext. visibility:hidden also blocks hover/pointer. */
 .audioPanel[aria-hidden="true"] {
   visibility: hidden;
 }
 
-/* ── Per-voice switch rows ─────────────────────────────────── */
+.panelTitle {
+  font-size: 0.55rem;
+  font-weight: 500;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: rgba(176, 179, 198, 0.45);
+  user-select: none;
+  margin-bottom: 0.7rem;
+}
 
-.toggleRow {
+/* ── Per-voice volume rows ─────────────────────────────────── */
+
+.voiceGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.voiceRow {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 1.1rem;
+  gap: 0.7rem;
 }
 
-.toggleLabel {
-  font-size: 0.6rem;
-  font-weight: 400;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: rgba(220, 220, 220, 0.55);
-  user-select: none;
-}
-
-.switch {
-  position: relative;
+.voiceIcon {
   flex: none;
-  width: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
   height: 16px;
-  padding: 0;
-  border: none;
-  border-radius: 999px;
-  background: rgba(220, 220, 220, 0.18);
-  cursor: pointer;
-  transition: background-color 0.25s ease;
-  -webkit-tap-highlight-color: transparent;
+  color: #8f8f9d;
+  transition: color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.switch[aria-checked="true"] {
-  background: rgba(245, 245, 245, 0.6);
-}
-
-.switch:focus-visible {
-  outline: 1px solid rgba(220, 220, 220, 0.4);
-  outline-offset: 2px;
-}
-
-.switchKnob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: rgba(245, 245, 245, 0.95);
-  box-shadow: 0 0 4px rgba(255, 255, 255, 0.35);
-  transition: transform 0.25s ease;
-}
-
-.switch[aria-checked="true"] .switchKnob {
-  transform: translateX(14px);
-}
-
-.songTitle {
-  max-width: 150px;
-  font-size: 0.56rem;
+.voicePct {
+  flex: none;
+  width: 2.1em;
+  text-align: right;
+  font-size: 0.6rem;
+  font-variant-numeric: tabular-nums;
   letter-spacing: 0.04em;
-  color: rgba(220, 220, 220, 0.4);
+  color: rgba(176, 179, 198, 0.5);
+  user-select: none;
+  transition: color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.voiceRow:hover .voiceIcon,
+.voiceRow:focus-within .voiceIcon,
+.voiceRow:hover .voicePct,
+.voiceRow:focus-within .voicePct {
+  color: #ffffff;
+}
+
+/* ── Volume range input ────────────────────────────────────
+   Custom-styled <input type="range"> matching the music player's
+   volume bar: a 4px #252529 track with a white fill. The filled
+   portion is driven by a CSS variable (--vol) the React side updates
+   as the user drags, so the visual fill stays in sync without any
+   per-frame JS. The thumb is hidden at rest (clean fill-only bar like
+   the player) and fades in on hover/focus for drag affordance.
+   WebKit and Mozilla need separate pseudo-elements. */
+.voiceSlider {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  min-width: 0;
+  height: 14px;
+  background: transparent;
+  cursor: pointer;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  /* Default in case React hasn't set --vol yet (SSR moment). */
+  --vol: 60%;
+}
+
+/* Track — WebKit (Chrome / Safari / Edge / Opera). */
+.voiceSlider::-webkit-slider-runnable-track {
+  height: 4px;
+  background: linear-gradient(
+    to right,
+    #ffffff 0%,
+    #ffffff var(--vol),
+    #252529 var(--vol),
+    #252529 100%
+  );
+  border-radius: 4px;
+}
+/* Thumb — WebKit. */
+.voiceSlider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  background: #ffffff;
+  border-radius: 50%;
+  /* Re-center the 10px thumb on a 4px track. */
+  margin-top: -3px;
+  border: none;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.5);
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.15s ease;
+}
+.voiceSlider:hover::-webkit-slider-thumb,
+.voiceSlider:focus-visible::-webkit-slider-thumb {
+  opacity: 1;
+}
+.voiceSlider:active::-webkit-slider-thumb {
+  transform: scale(1.2);
+}
+
+/* Track — Firefox. */
+.voiceSlider::-moz-range-track {
+  height: 4px;
+  background: #252529;
+  border-radius: 4px;
+  border: none;
+}
+.voiceSlider::-moz-range-progress {
+  height: 4px;
+  background: #ffffff;
+  border-radius: 4px;
+}
+/* Thumb — Firefox. */
+.voiceSlider::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  background: #ffffff;
+  border-radius: 50%;
+  border: none;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.5);
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.15s ease;
+}
+.voiceSlider:hover::-moz-range-thumb,
+.voiceSlider:focus-visible::-moz-range-thumb {
+  opacity: 1;
+}
+
+.voiceSlider:focus-visible {
+  outline: 1px solid rgba(220, 220, 220, 0.4);
+  outline-offset: 6px;
+  border-radius: 4px;
+}
+
+/* ── Song section: now-playing + transport ─────────────────── */
+
+.songSection {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.85rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.nowPlaying {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.nowPlayingDot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.6);
+  animation: nowPlayingPulse 2.4s ease-in-out infinite;
+}
+
+@keyframes nowPlayingPulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50%      { opacity: 1;    transform: scale(1.1); }
+}
+
+.nowPlayingText {
+  min-width: 0;
+  font-size: 0.58rem;
+  letter-spacing: 0.02em;
+  color: rgba(176, 179, 198, 0.75);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   user-select: none;
 }
 
-.panelDivider {
-  height: 1px;
-  background: rgba(255, 255, 255, 0.08);
-  margin: 0.05rem 0;
-}
-
-.volumeRow {
+/* Transport — prev/next, styled like the music player's round-rect
+   hover buttons (muted glyph that brightens + lifts a slate backplate
+   on hover). */
+.transport {
+  flex: none;
   display: flex;
   align-items: center;
-  gap: 0.55rem;
+  gap: 0.15rem;
 }
 
-.volumeLabel {
-  font-size: 0.62rem;
-  font-weight: 400;
-  letter-spacing: 0.18em;
-  color: rgba(220, 220, 220, 0.55);
-  font-variant-numeric: tabular-nums;
-  min-width: 2.2em;
-  text-align: right;
-  user-select: none;
-}
-
-/* ── Volume range input ────────────────────────────────────
-   Custom-styled <input type="range">. The filled portion of the
-   track is driven by a CSS variable (--volPct) the React side
-   updates as the user drags, so the visual fill stays in sync
-   without per-frame JS work. Cross-browser styling — WebKit and
-   Mozilla need separate pseudo-elements. */
-.volumeSlider {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 110px;
-  height: 16px;
-  background: transparent;
-  cursor: pointer;
-  margin: 0;
+.transportBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
   padding: 0;
-  outline: none;
-  /* Default in case React hasn't set --volPct yet (SSR moment). */
-  --volPct: 40%;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: #b0b3c6;
+  cursor: pointer;
+  transition: color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              background-color 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  -webkit-tap-highlight-color: transparent;
 }
 
-/* Track — WebKit (Chrome / Safari / Edge / Opera). */
-.volumeSlider::-webkit-slider-runnable-track {
-  height: 2px;
-  background: linear-gradient(
-    to right,
-    rgba(245, 245, 245, 0.7) 0%,
-    rgba(245, 245, 245, 0.7) var(--volPct),
-    rgba(220, 220, 220, 0.18) var(--volPct),
-    rgba(220, 220, 220, 0.18) 100%
-  );
-  border-radius: 2px;
-}
-/* Thumb — WebKit. */
-.volumeSlider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 10px;
-  height: 10px;
-  background: rgba(245, 245, 245, 0.95);
-  border-radius: 50%;
-  /* Re-center the 10px thumb on a 2px track. */
-  margin-top: -4px;
-  border: none;
-  box-shadow: 0 0 4px rgba(255, 255, 255, 0.35);
-  transition: transform 0.15s ease, box-shadow 0.2s ease;
-}
-.volumeSlider:hover::-webkit-slider-thumb,
-.volumeSlider:focus-visible::-webkit-slider-thumb {
-  transform: scale(1.15);
-  box-shadow: 0 0 8px rgba(255, 255, 255, 0.55);
+.transportBtn:hover {
+  color: #ffffff;
+  background-color: #252529;
 }
 
-/* Track — Firefox. */
-.volumeSlider::-moz-range-track {
-  height: 2px;
-  background: rgba(220, 220, 220, 0.18);
-  border-radius: 2px;
-  border: none;
-}
-.volumeSlider::-moz-range-progress {
-  height: 2px;
-  background: rgba(245, 245, 245, 0.7);
-  border-radius: 2px;
-}
-/* Thumb — Firefox. */
-.volumeSlider::-moz-range-thumb {
-  width: 10px;
-  height: 10px;
-  background: rgba(245, 245, 245, 0.95);
-  border-radius: 50%;
-  border: none;
-  box-shadow: 0 0 4px rgba(255, 255, 255, 0.35);
-  transition: transform 0.15s ease, box-shadow 0.2s ease;
-}
-.volumeSlider:hover::-moz-range-thumb,
-.volumeSlider:focus-visible::-moz-range-thumb {
-  transform: scale(1.15);
-  box-shadow: 0 0 8px rgba(255, 255, 255, 0.55);
+.transportBtn:active {
+  transform: scale(0.92);
 }
 
-.volumeSlider:focus-visible {
+.transportBtn:focus-visible {
   outline: 1px solid rgba(220, 220, 220, 0.4);
-  outline-offset: 6px;
-  border-radius: 4px;
+  outline-offset: 2px;
 }
 
 .audioToggle {
@@ -733,6 +785,11 @@
     opacity: 1;
     animation: none;
     filter: none;
+  }
+
+  .nowPlayingDot {
+    animation: none;
+    opacity: 1;
   }
 
   .wordmark {
