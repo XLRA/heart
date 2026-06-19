@@ -93,6 +93,32 @@ const RAIN_LEVEL = 0.55;
 /** Thunder peak level (per trigger) before distance attenuation. */
 const THUNDER_LEVEL = 0.85;
 
+/** Background-song level relative to master. Intentionally sits UNDER
+ *  the rain (0.55) so the track underscores the scene rather than
+ *  dominating it — the rain hiss and the music stay balanced. Tune to
+ *  taste; raise toward RAIN_LEVEL for a more song-forward mix. */
+const SONG_LEVEL = 0.34;
+
+/** A landing-scene song. Add more entries to grow the playlist — the
+ *  engine plays index 0 on unlock; multi-track switching can layer on
+ *  top later (the mini audio tab already exposes a per-song toggle). */
+export interface LandingSong {
+  /** Public path under /public (e.g. '/audio/songs/foo.m4a'). */
+  src: string;
+  /** Display title shown in the audio tab. */
+  title: string;
+}
+
+/** Songs bundled with the landing. Highest-bitrate source available
+ *  (AAC 130k m4a) — decoded through the Web Audio graph like the rain
+ *  loop, so it gets the same gain/balance + tab-suspend treatment. */
+export const SONG_FILES: LandingSong[] = [
+  {
+    src: '/audio/songs/neverending-cycle.m4a',
+    title: 'arimasen, trapeia — neverending cycle',
+  },
+];
+
 const RAIN_FILE = '/audio/storm/rain.mp3';
 /** Sharp, full-bandwidth thunder for close strikes (distance ≤ 0.5). */
 const THUNDER_NEAR_FILES = ['/audio/storm/thunder-near.mp3'];
@@ -111,10 +137,19 @@ export class StormAudio {
   private rainGain: GainNode | null = null;
   private rainSource: AudioBufferSourceNode | null = null;
   private rainBuffer: AudioBuffer | null = null;
+  private songGain: GainNode | null = null;
+  private songSource: AudioBufferSourceNode | null = null;
+  private songBuffer: AudioBuffer | null = null;
   private thunderNearBuffers: AudioBuffer[] = [];
   private thunderFarBuffers: AudioBuffer[] = [];
   private muted = true;
   private unlocked = false;
+  /** Per-voice enable flags — driven by the audio tab's rain/song
+   *  switches, independent of the master mute (the speaker icon). */
+  private rainEnabled = true;
+  private songEnabled = true;
+  /** Index into SONG_FILES of the currently-loaded song. */
+  private currentSongIndex = 0;
   /** Avoid playing the same sample twice in a row, per pool. */
   private lastIdx = { near: -1, far: -1 };
   /** User-controlled volume in 0..1; multiplies MASTER_VOLUME. */
@@ -126,6 +161,21 @@ export class StormAudio {
 
   isMuted(): boolean {
     return this.muted;
+  }
+
+  /** Whether the rain voice is currently enabled (tab switch). */
+  isRainEnabled(): boolean {
+    return this.rainEnabled;
+  }
+
+  /** Whether the song voice is currently enabled (tab switch). */
+  isSongEnabled(): boolean {
+    return this.songEnabled;
+  }
+
+  /** Display title of the currently-loaded song (for the audio tab). */
+  getCurrentSongTitle(): string {
+    return SONG_FILES[this.currentSongIndex]?.title ?? '';
   }
 
   /** Current user-volume slider value in 0..1. */
@@ -186,20 +236,25 @@ export class StormAudio {
     // — the missing voice just stays silent rather than tearing
     // down the whole scene. Lets the storm "work" even with a
     // partial install.
-    const nearStart = 1;
+    const songStart = 1;
+    const nearStart = songStart + 1;
     const farStart = nearStart + THUNDER_NEAR_FILES.length;
+    const songSrc = SONG_FILES[this.currentSongIndex]?.src;
     const buffers = await Promise.all([
       this.loadSample(RAIN_FILE),
+      songSrc ? this.loadSample(songSrc) : Promise.resolve(null),
       ...THUNDER_NEAR_FILES.map((f) => this.loadSample(f)),
       ...THUNDER_FAR_FILES.map((f) => this.loadSample(f)),
     ]);
     const notNull = (b: AudioBuffer | null): b is AudioBuffer => b !== null;
 
     this.rainBuffer = buffers[0];
+    this.songBuffer = buffers[songStart];
     this.thunderNearBuffers = buffers.slice(nearStart, farStart).filter(notNull);
     this.thunderFarBuffers = buffers.slice(farStart).filter(notNull);
 
     this.startRainLoop();
+    this.startSong();
 
     this.muted = false;
     this.unlocked = true;
@@ -234,10 +289,65 @@ export class StormAudio {
     this.rainSource.connect(this.rainGain);
     this.rainSource.start();
 
-    // Fade in over 1.5s — instant rain start sounds harsh.
+    // Fade in over 1.5s — instant rain start sounds harsh. Respect the
+    // rain switch in case it was toggled off before unlock completed.
     const t = this.ctx.currentTime;
     this.rainGain.gain.setValueAtTime(0, t);
-    this.rainGain.gain.linearRampToValueAtTime(RAIN_LEVEL, t + 1.5);
+    this.rainGain.gain.linearRampToValueAtTime(
+      this.rainEnabled ? RAIN_LEVEL : 0,
+      t + 1.5,
+    );
+  }
+
+  /**
+   * Start the looping background song through its own gain node, fading
+   * in over 2s so the track eases in beneath the rain rather than
+   * snapping on. No-op if the song failed to decode (missing/corrupt
+   * file) — the rest of the scene still runs.
+   */
+  private startSong() {
+    if (!this.ctx || !this.master || !this.songBuffer) return;
+
+    this.songGain = this.ctx.createGain();
+    this.songGain.gain.value = 0;
+    this.songGain.connect(this.master);
+
+    this.songSource = this.ctx.createBufferSource();
+    this.songSource.buffer = this.songBuffer;
+    this.songSource.loop = true;
+    this.songSource.connect(this.songGain);
+    this.songSource.start();
+
+    const t = this.ctx.currentTime;
+    this.songGain.gain.setValueAtTime(0, t);
+    this.songGain.gain.linearRampToValueAtTime(
+      this.songEnabled ? SONG_LEVEL : 0,
+      t + 2.0,
+    );
+  }
+
+  /** Enable/disable the rain voice (audio tab switch). Smoothly ramps
+   *  the rain gain over 0.4s so toggling never pops. */
+  setRainEnabled(on: boolean) {
+    this.rainEnabled = on;
+    if (!this.ctx || !this.rainGain) return;
+    const t = this.ctx.currentTime;
+    const g = this.rainGain.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(on ? RAIN_LEVEL : 0, t + 0.4);
+  }
+
+  /** Enable/disable the song voice (audio tab switch). Smoothly ramps
+   *  the song gain over 0.4s so toggling never pops. */
+  setSongEnabled(on: boolean) {
+    this.songEnabled = on;
+    if (!this.ctx || !this.songGain) return;
+    const t = this.ctx.currentTime;
+    const g = this.songGain.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(on ? SONG_LEVEL : 0, t + 0.4);
   }
 
   /**
@@ -324,7 +434,7 @@ export class StormAudio {
     // has audible presence. Distant thunder doesn't duck — it
     // would feel artificial since real distant thunder sits
     // alongside rain rather than replacing it.
-    if (this.rainGain && distance < 0.5 && intensity > 0.4) {
+    if (this.rainGain && this.rainEnabled && distance < 0.5 && intensity > 0.4) {
       const duck = (1 - distance * 2) * intensity * 0.12;
       const rg = this.rainGain.gain;
       // Quick dip down, slow recovery — same envelope shape as a
@@ -370,6 +480,10 @@ export class StormAudio {
       try { this.rainSource.stop(); } catch { /* already stopped */ }
       this.rainSource.disconnect();
     }
+    if (this.songSource) {
+      try { this.songSource.stop(); } catch { /* already stopped */ }
+      this.songSource.disconnect();
+    }
     if (this.ctx && this.ctx.state !== 'closed') {
       this.ctx.close().catch(() => { /* ignore */ });
     }
@@ -378,6 +492,9 @@ export class StormAudio {
     this.rainGain = null;
     this.rainSource = null;
     this.rainBuffer = null;
+    this.songGain = null;
+    this.songSource = null;
+    this.songBuffer = null;
     this.thunderNearBuffers = [];
     this.thunderFarBuffers = [];
     this.lastIdx = { near: -1, far: -1 };

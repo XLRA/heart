@@ -102,6 +102,11 @@ export default function StormLanding() {
   // Audio is gated behind a user gesture (browser autoplay policy).
   // 'locked' = never unlocked, 'on' = playing, 'off' = unlocked but muted.
   const [audioState, setAudioState] = useState<'locked' | 'on' | 'off'>('locked');
+  // Per-voice switches in the audio tab. Independent of the master
+  // mute above — the tab lets you balance rain vs. song individually.
+  const [rainOn, setRainOn] = useState(true);
+  const [songOn, setSongOn] = useState(true);
+  const [songTitle, setSongTitle] = useState('');
   const audioRef = useRef<StormAudio | null>(null);
   // User-controlled volume slider (0..1). Hydrated from localStorage
   // on mount so navigation between pages preserves the user's choice.
@@ -122,10 +127,15 @@ export default function StormLanding() {
       if (!audioRef.current) audioRef.current = new StormAudio();
       const audio = audioRef.current;
       if (!audio.isUnlocked()) {
+        // First click unlocks everything: rain ambience AND the song
+        // both start (the song fades in softly beneath the rain).
         await audio.unlock();
         setAudioState('on');
         // Sync state with whatever volume the slider was showing pre-unlock.
         setVolumeState(audio.getVolume());
+        setRainOn(audio.isRainEnabled());
+        setSongOn(audio.isSongEnabled());
+        setSongTitle(audio.getCurrentSongTitle());
         // Welcome rumble so the user gets immediate confirmation
         // that audio is alive — distant, soft, builds atmosphere.
         audio.triggerThunder({ distance: 0.85, intensity: 0.55, delay: 0.3 });
@@ -139,6 +149,27 @@ export default function StormLanding() {
     } catch {
       // Audio failure shouldn't crash the scene — just stay 'locked'.
     }
+  }, []);
+
+  /**
+   * Rain switch (audio tab). No-op until the AudioContext is unlocked —
+   * the tab is hidden in that state anyway, so this can't be reached.
+   */
+  const handleToggleRain = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio?.isUnlocked()) return;
+    const next = !audio.isRainEnabled();
+    audio.setRainEnabled(next);
+    setRainOn(next);
+  }, []);
+
+  /** Song switch (audio tab). Mirror of the rain switch. */
+  const handleToggleSong = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio?.isUnlocked()) return;
+    const next = !audio.isSongEnabled();
+    audio.setSongEnabled(next);
+    setSongOn(next);
   }, []);
 
   /**
@@ -1119,26 +1150,63 @@ export default function StormLanding() {
       </div>
 
       <div className={styles.audioControl}>
-        <div className={styles.volumePopover} aria-hidden={audioState === 'locked'}>
-          <span className={styles.volumeLabel}>{Math.round(volume * 100)}%</span>
-          <input
-            type="range"
-            min={0}
-            max={100}
-            step={1}
-            value={Math.round(volume * 100)}
-            onChange={(e) => handleVolumeChange(Number(e.target.value) / 100)}
-            className={styles.volumeSlider}
-            aria-label="Site volume"
-            aria-valuetext={`${Math.round(volume * 100)} percent`}
-            // Block the slider's value-change clicks from also
-            // triggering a scene click → lightning strike.
-            onClick={(e) => e.stopPropagation()}
-            onMouseDown={(e) => e.stopPropagation()}
-            // CSS-side rendering uses a CSS variable so the filled
-            // portion of the track tracks the value with no JS work.
-            style={{ ['--volPct' as string]: `${Math.round(volume * 100)}%` }}
-          />
+        {/* Mini audio tab — collapsed to nothing in steady state so it
+            doesn't clutter the corner; slides open on hover/focus of
+            the cluster. Holds per-voice switches + the master volume. */}
+        <div className={styles.audioPanel} aria-hidden={audioState === 'locked'}>
+          <div className={styles.toggleRow}>
+            <span className={styles.toggleLabel}>rain</span>
+            <button
+              type="button"
+              className={styles.switch}
+              role="switch"
+              aria-checked={rainOn}
+              aria-label="Toggle rain"
+              onClick={handleToggleRain}
+            >
+              <span className={styles.switchKnob} />
+            </button>
+          </div>
+
+          <div className={styles.toggleRow}>
+            <span className={styles.toggleLabel}>song</span>
+            <button
+              type="button"
+              className={styles.switch}
+              role="switch"
+              aria-checked={songOn}
+              aria-label="Toggle song"
+              onClick={handleToggleSong}
+            >
+              <span className={styles.switchKnob} />
+            </button>
+          </div>
+
+          {songTitle && <div className={styles.songTitle}>{songTitle}</div>}
+
+          <div className={styles.panelDivider} aria-hidden />
+
+          <div className={styles.volumeRow}>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={Math.round(volume * 100)}
+              onChange={(e) => handleVolumeChange(Number(e.target.value) / 100)}
+              className={styles.volumeSlider}
+              aria-label="Site volume"
+              aria-valuetext={`${Math.round(volume * 100)} percent`}
+              // Block the slider's value-change clicks from also
+              // triggering a scene click → lightning strike.
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+              // CSS-side rendering uses a CSS variable so the filled
+              // portion of the track tracks the value with no JS work.
+              style={{ ['--volPct' as string]: `${Math.round(volume * 100)}%` }}
+            />
+            <span className={styles.volumeLabel}>{Math.round(volume * 100)}%</span>
+          </div>
         </div>
         <button
           type="button"
