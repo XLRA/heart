@@ -415,7 +415,19 @@
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
   opacity: 0;
   transform: translateY(-8px);
-  transition: opacity 0.22s ease, transform 0.26s cubic-bezier(0.4, 0, 0.2, 1);
+  /* visibility:hidden while collapsed is a PERF fix, not cosmetic:
+     at opacity:0 the card still exists as a rendered layer, and its
+     backdrop-filter blur(16px) samples the animating canvas behind
+     it EVERY frame — a constant hidden GPU cost, worst on Safari.
+     visibility removes it from rendering entirely. The 0s visibility
+     transition is delayed until the opacity fade-out finishes so the
+     close animation still plays; on open the delay is zeroed so the
+     card is visible the instant the fade-in starts. */
+  visibility: hidden;
+  transition:
+    opacity 0.22s ease,
+    transform 0.26s cubic-bezier(0.4, 0, 0.2, 1),
+    visibility 0s linear 0.26s;
   pointer-events: none;
 }
 
@@ -432,6 +444,8 @@
 .audioControl:focus-within .audioPanel {
   opacity: 1;
   transform: translateY(0);
+  visibility: visible;
+  transition-delay: 0s;
   pointer-events: auto;
 }
 

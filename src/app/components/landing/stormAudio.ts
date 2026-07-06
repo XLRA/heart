@@ -6,9 +6,12 @@
      destination
        ← master         (MASTER_VOLUME, or 0 when muted via the speaker icon)
            ← stormGain  (rain-slider volume 0..1) ── the "rain" bus
-               ← rainGain    (RAIN_LEVEL fade-in + thunder ducking)
+               ← rainGain    (RAIN_LEVEL × lifecycle + thunder ducking)
                    ← rainSource (looping rain sample)
                ← [thunder]   (one gain+filter chain per strike)
+               ← windGain    (gust envelopes, idles at 0)
+                   ← windFilter (bandpass ~340Hz whoosh)
+                       ← windSource (looping synthesized noise)
            ← songGain   (song-slider volume → SONG_MAX) ── the "song" bus
                ← songSource  (current track; advances through SONG_FILES)
 
@@ -20,7 +23,18 @@
    Rain ambient
    ------------
    A single seamless rain loop streamed through the storm bus. Fades in
-   over 1.5s on unlock so it never pops in.
+   over 1.5s on unlock so it never pops in. Its steady level rides the
+   storm lifecycle (setStormIntensity) so the soundscape calms and
+   surges with the visuals.
+
+   Wind
+   ----
+   Fully synthesized — no sample file. A looping white-noise buffer
+   through a low bandpass (~340Hz) idles at zero gain; each visual
+   wind sheet triggers triggerWindGust with the sheet's own envelope
+   timings, so the audible swell attacks, holds, and dies in lockstep
+   with the rain leaning in on screen. The filter sweeps brighter
+   toward the gust peak — the classic wind "whoosh."
 
    Thunder
    -------
@@ -70,6 +84,11 @@ const RAIN_LEVEL = 0.55;
 
 /** Thunder peak level (per trigger) before distance attenuation. */
 const THUNDER_LEVEL = 0.85;
+
+/** Wind gust peak level within the storm bus. Sits well under the
+ *  rain — a gust should be felt as pressure, not heard as a hair
+ *  dryer. Scaled further by each sheet's own peak (0.75-1). */
+const WIND_LEVEL = 0.38;
 
 /** Song-bus gain when the song slider is at 100%. Sits a touch UNDER
  *  the rain so music + rain stay balanced even at full song volume —
@@ -159,6 +178,12 @@ export class StormAudio {
   private rainGain: GainNode | null = null;
   private rainSource: AudioBufferSourceNode | null = null;
   private rainBuffer: AudioBuffer | null = null;
+  /** Wind chain — synthesized noise → bandpass → gust-envelope gain. */
+  private windGain: GainNode | null = null;
+  private windFilter: BiquadFilterNode | null = null;
+  private windSource: AudioBufferSourceNode | null = null;
+  /** Storm-lifecycle scaling of the steady rain level (0.72..1.05). */
+  private rainLevelK = 1;
   /** Song bus — gain = song-slider value × SONG_MAX. */
   private songGain: GainNode | null = null;
   private songSource: AudioBufferSourceNode | null = null;
@@ -303,10 +328,100 @@ export class StormAudio {
     this.thunderFarBuffers = buffers.slice(farStart).filter(notNull);
 
     this.startRainLoop();
+    this.startWindBed();
     this.startSong();
 
     this.muted = false;
     this.unlocked = true;
+  }
+
+  /** Current steady rain-loop level (base × lifecycle scaling).
+   *  Thunder ducking recovers to THIS, not the raw constant, so a
+   *  duck during a calm phase doesn't ramp the rain back up. */
+  private currentRainLevel(): number {
+    return RAIN_LEVEL * this.rainLevelK;
+  }
+
+  /**
+   * Couple the rain loop's steady level to the storm lifecycle
+   * (0 = drizzle, 1 = peak downpour). Long 2.5s ramp — the arc
+   * itself moves over minutes, the audio should drift with it,
+   * never audibly "step." Safe to call before unlock (the value
+   * is picked up when the loop starts) and cheap to call often.
+   */
+  setStormIntensity(intensity: number) {
+    const k = lerp(0.72, 1.05, clamp01(intensity));
+    if (Math.abs(k - this.rainLevelK) < 0.01) return;
+    this.rainLevelK = k;
+    if (!this.ctx || !this.rainGain) return;
+    const t = this.ctx.currentTime;
+    const g = this.rainGain.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(this.currentRainLevel(), t + 2.5);
+  }
+
+  /** Start the always-running (gain 0) wind chain. The noise is
+   *  synthesized in place — 2s of white noise looped through a low
+   *  bandpass reads as wind; no sample file needed. An idle source
+   *  + biquad at zero gain costs effectively nothing. */
+  private startWindBed() {
+    if (!this.ctx || !this.stormGain) return;
+    const sr = this.ctx.sampleRate;
+    const buf = this.ctx.createBuffer(1, sr * 2, sr);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+
+    this.windFilter = this.ctx.createBiquadFilter();
+    this.windFilter.type = 'bandpass';
+    this.windFilter.frequency.value = 340;
+    this.windFilter.Q.value = 0.6;
+
+    this.windGain = this.ctx.createGain();
+    this.windGain.gain.value = 0;
+
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    src.connect(this.windFilter);
+    this.windFilter.connect(this.windGain);
+    this.windGain.connect(this.stormGain);
+    src.start();
+    this.windSource = src;
+  }
+
+  /**
+   * Audible gust swell, envelope-matched to a visual wind sheet.
+   * The caller passes the sheet's own ramp/plateau/release timings
+   * (ms) and peak (0..1) so sound and rain lean in together. The
+   * bandpass sweeps brighter toward the peak — the "whoosh."
+   */
+  triggerWindGust(opts: {
+    rampUpMs: number;
+    plateauMs: number;
+    rampDownMs: number;
+    peak: number;
+  }) {
+    if (!this.ctx || !this.windGain || !this.windFilter) return;
+    const t = this.ctx.currentTime;
+    const peak = clamp01(opts.peak);
+    const up = Math.max(0.05, opts.rampUpMs / 1000);
+    const hold = Math.max(0, opts.plateauMs / 1000);
+    const down = Math.max(0.2, opts.rampDownMs / 1000);
+    const target = WIND_LEVEL * (0.6 + peak * 0.4);
+
+    const g = this.windGain.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(target, t + up);
+    g.setValueAtTime(target, t + up + hold);
+    g.linearRampToValueAtTime(0, t + up + hold + down);
+
+    const f = this.windFilter.frequency;
+    f.cancelScheduledValues(t);
+    f.setValueAtTime(f.value, t);
+    f.linearRampToValueAtTime(340 + 420 * peak, t + up);
+    f.linearRampToValueAtTime(300, t + up + hold + down);
   }
 
   private async loadSample(url: string): Promise<AudioBuffer | null> {
@@ -341,7 +456,7 @@ export class StormAudio {
     // Fade in over 1.5s — instant rain start sounds harsh.
     const t = this.ctx.currentTime;
     this.rainGain.gain.setValueAtTime(0, t);
-    this.rainGain.gain.linearRampToValueAtTime(RAIN_LEVEL, t + 1.5);
+    this.rainGain.gain.linearRampToValueAtTime(this.currentRainLevel(), t + 1.5);
   }
 
   /** Start the playlist at the current index, fading the song bus in
@@ -546,12 +661,16 @@ export class StormAudio {
     // audible presence. Distant thunder doesn't duck — it would feel
     // artificial since real distant thunder sits alongside the rain.
     if (this.rainGain && distance < 0.5 && intensity > 0.4) {
-      const duck = (1 - distance * 2) * intensity * 0.12;
+      // Duck fraction (≈ up to 22%) of the CURRENT lifecycle-scaled
+      // level, and recover to it — same proportional dip as the old
+      // absolute 0.12 off RAIN_LEVEL, but correct in calm phases.
+      const duckK = (1 - distance * 2) * intensity * 0.22;
+      const base = this.currentRainLevel();
       const rg = this.rainGain.gain;
       rg.cancelScheduledValues(t);
       rg.setValueAtTime(rg.value, t);
-      rg.linearRampToValueAtTime(RAIN_LEVEL - duck, t + 0.06);
-      rg.linearRampToValueAtTime(RAIN_LEVEL, t + 1.6);
+      rg.linearRampToValueAtTime(base * (1 - duckK), t + 0.06);
+      rg.linearRampToValueAtTime(base, t + 1.6);
     }
   }
 
@@ -591,6 +710,10 @@ export class StormAudio {
       try { this.rainSource.stop(); } catch { /* already stopped */ }
       this.rainSource.disconnect();
     }
+    if (this.windSource) {
+      try { this.windSource.stop(); } catch { /* already stopped */ }
+      this.windSource.disconnect();
+    }
     if (this.songSource) {
       this.songSource.onended = null;
       try { this.songSource.stop(); } catch { /* already stopped */ }
@@ -605,6 +728,10 @@ export class StormAudio {
     this.rainGain = null;
     this.rainSource = null;
     this.rainBuffer = null;
+    this.windGain = null;
+    this.windFilter = null;
+    this.windSource = null;
+    this.rainLevelK = 1;
     this.songGain = null;
     this.songSource = null;
     this.songBuffers.clear();

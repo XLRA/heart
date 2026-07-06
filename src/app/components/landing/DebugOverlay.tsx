@@ -17,6 +17,10 @@ import { useEffect, useRef, useState } from 'react';
 export interface DebugMetrics {
   fps: number;
   drops: number;
+  /** Applied rain density factor (perf governor × lifecycle). */
+  rainDensity: number;
+  /** Storm lifecycle intensity 0..1 (0 = drizzle, 1 = peak). */
+  lifecycle: number;
   adHocStrikes: number;
   bgFlashes: number;
   windSheetActive: boolean;
@@ -29,6 +33,8 @@ export function createDebugMetrics(): DebugMetrics {
   return {
     fps: 0,
     drops: 0,
+    rainDensity: 1,
+    lifecycle: 0,
     adHocStrikes: 0,
     bgFlashes: 0,
     windSheetActive: false,
@@ -101,6 +107,8 @@ export default function DebugOverlay({ metricsRef }: Props) {
         </span>
       </div>
       <Row label="drops" value={snapshot.drops} />
+      <Row label="density" value={snapshot.rainDensity.toFixed(2)} />
+      <Row label="storm" value={snapshot.lifecycle.toFixed(2)} />
       <Row label="strikes" value={snapshot.adHocStrikes} />
       <Row label="bg flashes" value={snapshot.bgFlashes} />
       <div
@@ -128,7 +136,7 @@ export default function DebugOverlay({ metricsRef }: Props) {
   );
 }
 
-function Row({ label, value }: { label: string; value: number }) {
+function Row({ label, value }: { label: string; value: number | string }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
       <span style={{ opacity: 0.6 }}>{label}</span>

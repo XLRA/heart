@@ -19,7 +19,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${inter.className} bg-black`}>
+      {/* suppressHydrationWarning: browser extensions (Grammarly et al.)
+          inject attributes like data-gr-ext-installed into <body> before
+          React hydrates, tripping a false hydration mismatch. This flag
+          only suppresses ATTRIBUTE diffs on this one element — child
+          content is still fully hydration-checked. */}
+      <body className={`${inter.className} bg-black`} suppressHydrationWarning>
         {children}
         <Analytics />
       </body>

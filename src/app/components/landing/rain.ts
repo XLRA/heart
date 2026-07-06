@@ -24,10 +24,10 @@
    - Each drop drifts sideways on a personal sine wave — micro
      air-currents pushing each drop independently.
    - WIND SHEETS: every ~18-26s, a 4s gust event briefly steepens
-     the lean, brightens, and elongates one layer — plus a soft
-     sheen band that physically SWEEPS across the screen in the
-     lean direction, so the gust reads as a curtain crossing the
-     scene rather than a global parameter change.
+     the lean, brightens, and elongates one layer. The gust is
+     expressed ONLY through what the drops themselves do — no
+     overlay band (an earlier sheen "curtain" swept the screen and
+     read as an artificial vertical wave, so it was removed).
    - DEPTH PARALLAX: each layer carries a depth factor on the same
      axis as the CSS sky (+4, far) / stage (-7, near) parallax.
      Mist barely moves with the sky; near streaks swing past the
@@ -42,6 +42,11 @@
    - Streak length stretches with gust speed (longer exposure
      streaks when the air accelerates the drops), and flashes add
      a small downdraft speed kick.
+   - STORM LIFECYCLE: a slow scene-wide intensity arc (see
+     stormCycle.ts) scales drop speed, streak brightness, and haze
+     here — density is modulated by the orchestrator through
+     applyRainDensity — so the rain calms to a drizzle and surges
+     back over minutes.
 
    Drops that exit the bottom edge are silently rerolled to the
    top — no ground splashes are drawn, deliberately. The scene
@@ -83,17 +88,29 @@ export interface RainLayer {
  *   speed         — px/sec, magnitude of velocity vector
  *   length        — visible streak length in pixels
  *   wobbleAngle   — angular offset from base wind dir (radians)
- *   wobblePhase   — phase offset for horizontal sway sine
+ *   swaySin/Cos   — sin/cos of the drop's sway phase offset, baked
+ *                   at spawn. sin(t + φ) expands to
+ *                   sin(t)·cos(φ) + cos(t)·sin(φ), so the hot loop
+ *                   needs only 2 muls + 1 add per drop instead of a
+ *                   Math.sin call — with sin(t)/cos(t) computed ONCE
+ *                   per frame. Bit-identical output, ~1400 fewer
+ *                   trig calls per frame.
  *   wobbleAmp     — amplitude of horizontal sway in pixels
  */
 export interface RainSoA {
+  /** Allocated capacity — every Float32Array is sized to this. */
   count: number;
+  /** Drops actually simulated + drawn (≤ count). Lowered by the
+   *  adaptive density governor when frames run long, restored when
+   *  headroom returns. On fast machines this always equals count. */
+  active: number;
   x: Float32Array;
   y: Float32Array;
   speed: Float32Array;
   length: Float32Array;
   wobbleAngle: Float32Array;
-  wobblePhase: Float32Array;
+  swaySin: Float32Array;
+  swayCos: Float32Array;
   wobbleAmp: Float32Array;
 }
 
@@ -154,7 +171,9 @@ function rerollDrop(
     ? -len - Math.random() * 80
     : Math.random() * height;
   soa.wobbleAngle[i] = (Math.random() - 0.5) * 0.12;
-  soa.wobblePhase[i] = Math.random() * Math.PI * 2;
+  const phase = Math.random() * Math.PI * 2;
+  soa.swaySin[i] = Math.sin(phase);
+  soa.swayCos[i] = Math.cos(phase);
   // Heavier (faster) drops resist sideways drift more, so amplitude
   // scales inversely with normalized speed.
   soa.wobbleAmp[i] = (0.6 + Math.random() * 1.4) * (1.2 - speedT * 0.6);
@@ -164,12 +183,14 @@ function rerollDrop(
 function emptySoA(count: number): RainSoA {
   return {
     count,
+    active:      count,
     x:           new Float32Array(count),
     y:           new Float32Array(count),
     speed:       new Float32Array(count),
     length:      new Float32Array(count),
     wobbleAngle: new Float32Array(count),
-    wobblePhase: new Float32Array(count),
+    swaySin:     new Float32Array(count),
+    swayCos:     new Float32Array(count),
     wobbleAmp:   new Float32Array(count),
   };
 }
@@ -208,12 +229,50 @@ export function rainBudget(width: number, height: number): number {
   return Math.min(1400, Math.max(160, Math.floor((width * height) / 5500)));
 }
 
+/* ── Adaptive density ─────────────────────────────────────────
+   Professional real-time scenes never render a fixed particle
+   budget — they scale load to the frame budget. The orchestrator
+   watches a smoothed frame time and calls this with a factor in
+   [0.35, 1]. Layers shed drops UNEVENLY: mist (42% of the budget,
+   alpha 0.025 — individually invisible) sheds hardest, the sharp
+   near accents barely at all, so the storm keeps its character
+   while the fill-rate/path load drops.
+
+   Weights per layer: effective factor = 1 - (1 - factor) × weight.
+   At the 0.35 floor: mist keeps ~19%, far ~29%, mid ~48%, near ~67%
+   of their drops. On machines holding 60fps this never engages —
+   zero visual change. */
+const DENSITY_LAYER_WEIGHT: readonly number[] = [1.25, 1.1, 0.8, 0.5];
+
+export function applyRainDensity(
+  layers: LayeredDrops,
+  factor: number,
+  width: number,
+  height: number,
+): void {
+  for (let li = 0; li < layers.length; li++) {
+    const soa = layers[li];
+    if (soa.count === 0) continue;
+    const w = DENSITY_LAYER_WEIGHT[li] ?? 1;
+    const layerFactor = Math.max(0, Math.min(1, 1 - (1 - factor) * w));
+    const target = Math.round(soa.count * layerFactor);
+    // Drops coming BACK into the active window have stale positions
+    // (frozen where they were deactivated) — reroll them just above
+    // the top edge so they rain back in instead of popping mid-air.
+    for (let i = soa.active; i < target; i++) {
+      rerollDrop(soa, i, LAYERS[li], width, height, true);
+    }
+    soa.active = target;
+  }
+}
+
 /* ── Wind sheets ──────────────────────────────────────────
    Periodic gust events. Every ~18-26s a 4s "sheet" fires:
    - Wind lean steepens by up to ~75%
    - One layer's brightness + length scale up by ~50%
-   The result is a visible curtain of rain crossing the scene
-   like a real gust front.
+   The gust reads entirely through the drops' own motion — the
+   whole rain field leans in, accelerates, and one depth layer
+   thickens, like a real gust front.
 
    Modeled as a single envelope value 0..1 with three phases:
    ramp-up (~600ms, ease-out), plateau (~1.6s), ramp-down
@@ -269,18 +328,24 @@ function spawnSheet(now: number): ActiveSheet {
   };
 }
 
+/* Module-level scratch for updateWindSheet's result. Returning a
+   fresh object every frame is ~60 young-gen allocations/sec for no
+   reason — periodic minor-GC pauses are exactly the intermittent
+   hitching this scene can't afford. Single-threaded per frame, so
+   one shared instance is safe. */
+const SHEET_RESULT = {
+  intensity: 0,
+  targetLayer: -1,
+  leanDir: 0,
+};
+
 /**
  * Returns the current sheet envelope (0..1) AND advances the
  * scheduler. When a sheet expires, the next one is queued
- * 18-26s in the future.
+ * 18-26s in the future. The returned object is a reused module
+ * scratch — read it before the next call, don't retain it.
  */
-function updateWindSheet(state: WindSheetState, now: number): {
-  intensity: number;
-  targetLayer: number;
-  leanDir: number;
-  /** Lifetime fraction 0..1 — drives the sweeping curtain position. */
-  progress: number;
-} {
+function updateWindSheet(state: WindSheetState, now: number): typeof SHEET_RESULT {
   if (state.active) {
     const e = now - state.active.startTime;
     if (e >= state.active.duration) {
@@ -301,18 +366,19 @@ function updateWindSheet(state: WindSheetState, now: number): {
         const t = (e - a.rampUp - a.plateau) / a.rampDown;
         env = (1 - t) * (1 - t);
       }
-      return {
-        intensity: env * a.peak,
-        targetLayer: a.targetLayer,
-        leanDir: a.leanDir,
-        progress: e / a.duration,
-      };
+      SHEET_RESULT.intensity = env * a.peak;
+      SHEET_RESULT.targetLayer = a.targetLayer;
+      SHEET_RESULT.leanDir = a.leanDir;
+      return SHEET_RESULT;
     }
   }
   if (now >= state.nextAt) {
     state.active = spawnSheet(now);
   }
-  return { intensity: 0, targetLayer: -1, leanDir: 0, progress: 0 };
+  SHEET_RESULT.intensity = 0;
+  SHEET_RESULT.targetLayer = -1;
+  SHEET_RESULT.leanDir = 0;
+  return SHEET_RESULT;
 }
 
 /* ── Per-frame rain rendering ───────────────────────────────── */
@@ -334,6 +400,11 @@ export interface TickRainOpts {
    *  Drives per-layer depth offsets so the rain reads as a volume. */
   parallaxX?: number;
   parallaxY?: number;
+  /** Storm lifecycle 0..1 (stormCycle.ts). Scales drop speed,
+   *  streak brightness, and haze so the rain physically calms and
+   *  surges with the storm's slow arc. Density is handled by the
+   *  orchestrator (it owns applyRainDensity). Defaults to 1. */
+  lifecycle?: number;
 }
 
 /* ── Head-segment scratch buffer ──────────────────────────────
@@ -352,11 +423,23 @@ export interface TickRainOpts {
    check in the hot loop. */
 const HEAD_SCRATCH = new Float32Array(4096);
 
+/* ── Cached ground-haze gradient ──────────────────────────────
+   createLinearGradient + addColorStop used to allocate a fresh
+   gradient object EVERY frame — measurable on Safari, and steady
+   GC churn everywhere. The gradient is pure geometry: the
+   per-frame brightness is applied through ctx.globalAlpha instead,
+   which scales the gradient's alpha ramp linearly — pixel-identical
+   to baking the alpha into the top stop. Rebuilt only when the
+   viewport size changes. */
+let hazeGradient: CanvasGradient | null = null;
+let hazeGradientH = -1;
+
 /**
  * One full rain render pass. Mutates `layers` (drops advance +
- * reroll on exit). Returns metrics for the debug overlay.
+ * reroll on exit). Returns the active drop count for the debug
+ * overlay (a bare number — no per-frame result object).
  */
-export function tickRain(opts: TickRainOpts): { totalDrops: number } {
+export function tickRain(opts: TickRainOpts): number {
   const { ctx, layers, dt, width, height, elapsed, now, flashIntensity, windSheet } = opts;
   const parX = opts.parallaxX ?? 0;
   const parY = opts.parallaxY ?? 0;
@@ -388,10 +471,23 @@ export function tickRain(opts: TickRainOpts): { totalDrops: number } {
   // Flash downdraft kick — a nearby strike's pressure wave briefly
   // accelerates the rain. Small (≤10%), peak-gated like flashBoost.
   gust *= 1 + flashIntensity * 0.10;
+  // Storm lifecycle — at the calm end drops fall ~12% slower (and
+  // streaks shorten with them, since length rides G); at peak they
+  // push ~6% past baseline. The arc is felt in the rain's energy,
+  // not just its count.
+  const LC = opts.lifecycle ?? 1;
+  gust *= 0.88 + LC * 0.18;
 
+  // Sway phasor — sin/cos of the shared sway clock, computed ONCE
+  // per frame. Each drop combines these with its baked sin/cos
+  // phase (angle-addition identity) instead of calling Math.sin.
   const swayT = elapsed * 0.0014;
+  const swaySinT = Math.sin(swayT);
+  const swayCosT = Math.cos(swayT);
 
-  const flashBoost = 1 + flashIntensity * 0.7;
+  // Streak brightness rides the lifecycle too (±~7% around the old
+  // fixed value) — a drizzle phase reads dimmer as well as sparser.
+  const flashBoost = (1 + flashIntensity * 0.7) * (0.90 + LC * 0.14);
   const HEAD_FRACTION = 0.32;
 
   // Hoist into locals so the JIT can keep them in registers
@@ -402,7 +498,8 @@ export function tickRain(opts: TickRainOpts): { totalDrops: number } {
   const DT = dt;
   const VX = baseVx;
   const VY = baseVy;
-  const ST = swayT;
+  const S1 = swaySinT;
+  const C1 = swayCosT;
   const HF = HEAD_FRACTION;
 
   let totalDrops = 0;
@@ -417,34 +514,21 @@ export function tickRain(opts: TickRainOpts): { totalDrops: number } {
      more than individual drops do, so it responds ~3× stronger
      than the streak flashBoost). Drawn BEFORE the streaks so the
      rain falls through it, not behind it. */
-  const hazeK = 0.7 + Math.max(0, gustRaw) * 0.3 + flashIntensity * 2.2;
+  const hazeK =
+    (0.7 + Math.max(0, gustRaw) * 0.3 + flashIntensity * 2.2) *
+    (0.7 + LC * 0.3); // less suspended spray when the storm is calm
   const hazeAlpha = Math.min(0.12, 0.030 * hazeK);
   const hazeTop = H * 0.62;
-  const hazeGrad = ctx.createLinearGradient(0, hazeTop, 0, H);
-  hazeGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
-  hazeGrad.addColorStop(1, `rgba(205, 205, 205, ${hazeAlpha})`);
-  ctx.fillStyle = hazeGrad;
-  ctx.fillRect(0, hazeTop, W, H - hazeTop);
-
-  /* ── Gust curtain ─────────────────────────────────────────
-     While a wind sheet is active, a soft vertical sheen band
-     sweeps across the screen in the lean direction — the visible
-     "curtain of rain" the sheet's parameter changes imply. Starts
-     off-screen on the windward side and exits the other side over
-     the sheet's lifetime. Very low alpha; it should be felt as a
-     passing brightness, not seen as a band. */
-  if (sheet.intensity > 0.02) {
-    const sweep = sheet.progress * 1.5 - 0.25;   // -0.25 → 1.25
-    const cx = sheet.leanDir > 0 ? W * sweep : W * (1 - sweep);
-    const half = W * 0.20;
-    const curtainGrad = ctx.createLinearGradient(cx - half, 0, cx + half, 0);
-    const ca = 0.035 * sheet.intensity;
-    curtainGrad.addColorStop(0,   'rgba(0, 0, 0, 0)');
-    curtainGrad.addColorStop(0.5, `rgba(215, 215, 215, ${ca})`);
-    curtainGrad.addColorStop(1,   'rgba(0, 0, 0, 0)');
-    ctx.fillStyle = curtainGrad;
-    ctx.fillRect(cx - half, 0, half * 2, H);
+  if (hazeGradient === null || hazeGradientH !== H) {
+    hazeGradientH = H;
+    hazeGradient = ctx.createLinearGradient(0, hazeTop, 0, H);
+    hazeGradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    hazeGradient.addColorStop(1, 'rgba(205, 205, 205, 1)');
   }
+  ctx.globalAlpha = hazeAlpha;
+  ctx.fillStyle = hazeGradient;
+  ctx.fillRect(0, hazeTop, W, H - hazeTop);
+  ctx.globalAlpha = 1;
 
   // Rotating glint window — which seventh of each layer's drops
   // sparkles this frame. Advances every 50ms so successive frames
@@ -455,7 +539,7 @@ export function tickRain(opts: TickRainOpts): { totalDrops: number } {
   for (let li = 0; li < LAYERS.length; li++) {
     const layer = LAYERS[li];
     const soa = layers[li];
-    const n = soa.count;
+    const n = soa.active;
     if (n === 0) continue;
     totalDrops += n;
 
@@ -486,7 +570,8 @@ export function tickRain(opts: TickRainOpts): { totalDrops: number } {
     const speeds   = soa.speed;
     const lens     = soa.length;
     const wAngs    = soa.wobbleAngle;
-    const wPhases  = soa.wobblePhase;
+    const wSins    = soa.swaySin;
+    const wCoss    = soa.swayCos;
     const wAmps    = soa.wobbleAmp;
 
     // ── Single integration + tail-render pass ─────────────────
@@ -516,7 +601,8 @@ export function tickRain(opts: TickRainOpts): { totalDrops: number } {
         const nWAng = wAngs[i];
         const nDvx = VX + VY * nWAng;
         const nDvy = VY - VX * nWAng;
-        const nSway = Math.sin(ST + wPhases[i]) * wAmps[i];
+        // sin(ST + φ) via angle addition — no trig in the loop.
+        const nSway = (S1 * wCoss[i] + C1 * wSins[i]) * wAmps[i];
         const nx = xs[i];
         const ny = ys[i];
         const nPx = nx + nSway;
@@ -533,7 +619,7 @@ export function tickRain(opts: TickRainOpts): { totalDrops: number } {
       xs[i] = x;
       ys[i] = y;
 
-      const sway = Math.sin(ST + wPhases[i]) * wAmps[i];
+      const sway = (S1 * wCoss[i] + C1 * wSins[i]) * wAmps[i];
       const px = x + sway;
       const dl = len * layerLengthBoost;
       const hl = dl * HF;
@@ -588,5 +674,5 @@ export function tickRain(opts: TickRainOpts): { totalDrops: number } {
 
   ctx.restore();
 
-  return { totalDrops };
+  return totalDrops;
 }

@@ -46,6 +46,7 @@ import {
   makeEmptyDrops,
   rainBudget,
   tickRain,
+  applyRainDensity,
   createWindSheetState,
   type LayeredDrops,
 } from './rain';
@@ -53,8 +54,10 @@ import {
   spawnBgFlashEvent,
   renderBgFlash,
   bgFlashIntensity,
+  buildCloudBank,
   type BgFlash,
 } from './bgFlash';
+import { stormIntensity } from './stormCycle';
 import { spawnSparkBurst, renderSparks, type Spark } from './sparks';
 import DebugOverlay, {
   createDebugMetrics,
@@ -239,6 +242,34 @@ export default function StormLanding() {
     let height = window.innerHeight;
     let rainLayers: LayeredDrops = makeEmptyDrops();
 
+    /* ── Adaptive rain density (frame-budget governor) ─────────
+       The pro-grade answer to "sometimes laggy on some machines":
+       instead of a fixed particle budget, watch a smoothed frame
+       time and shed near-invisible mist/far drops when the device
+       can't hold the budget, restoring them when headroom returns.
+       On machines that hold 60fps the factor stays at 1 forever —
+       zero visual change. Steps down fast (struggling is urgent),
+       recovers slowly (avoid oscillation).
+
+       frameEma is an exponential moving average of raw frame time
+       in ms (α=0.08 ≈ a ~25-frame window), so single GC/strike
+       spikes never trigger a step.
+
+       Device tiering: obviously weak hardware (≤4 cores or ≤4GB)
+       STARTS at 0.7 instead of discovering the ceiling by lagging
+       through the first seconds — the governor climbs back to 1
+       if the device turns out to hold 60fps anyway. */
+    const navWithMemory = navigator as Navigator & { deviceMemory?: number };
+    const lowTierDevice =
+      (navigator.hardwareConcurrency || 8) <= 4 ||
+      (navWithMemory.deviceMemory ?? 8) <= 4;
+    let rainDensity = lowTierDevice ? 0.7 : 1;
+    let frameEma = 16.7;
+    let lastDensityChange = performance.now() + 4000; // settle-in grace
+    /** Density factor last pushed into the layers — the product of
+     *  the perf governor above and the storm lifecycle. */
+    let appliedDensity = 1;
+
     /* Variant readiness — variants 0-2 are required for the scripted
        intro and are always rendered synchronously on init / resize.
        Variants 3-7 are click-only and rendered in idle time so they
@@ -301,6 +332,13 @@ export default function StormLanding() {
       );
       for (let i = 0; i < INTRO_VARIANT_COUNT; i++) variantReady[i] = true;
       rainLayers = makeRaindrops(width, height, rainBudget(width, height));
+      // Rebuilt layers come back at full density — mark that so the
+      // per-frame density pass reapplies the governor × lifecycle
+      // factor next tick, and give the governor a cooldown so the
+      // (expensive) rebuild frame doesn't trigger a false step.
+      appliedDensity = 1;
+      lastDensityChange = performance.now();
+      buildCloudBank(width, height);
       scheduleClickVariantBuild();
     };
 
@@ -350,6 +388,13 @@ export default function StormLanding() {
 
     // Wind-sheet scheduler — starts the first sheet 8–15s in.
     const windSheet = createWindSheetState(start);
+    // startTime of the sheet whose gust audio already fired —
+    // lets the loop detect a NEW sheet spawning inside tickRain.
+    let lastWindSheetStart = -1;
+
+    // Next time the storm-lifecycle level is pushed to the audio
+    // engine (throttled to every 2s).
+    let nextAudioLifecycleAt = start + 3000;
 
     // Ambient auto-strike scheduler — the storm keeps producing real
     // visible bolts after the intro, no clicks required. First one
@@ -629,6 +674,70 @@ export default function StormLanding() {
     const variantLeader = new Float32Array(VARIANT_COUNT);
     const variantStrokeJX = new Float32Array(VARIANT_COUNT);
     const variantStrokeJY = new Float32Array(VARIANT_COUNT);
+    // Per-variant "youngest strike age" scratch — hoisted out of the
+    // tick so the loop never allocates. Filled with Infinity each frame.
+    const variantYoungestAge = new Float32Array(VARIANT_COUNT);
+
+    // Peak flash accumulator for the current frame — written by
+    // accumulateStrike below, read into a tick-local afterwards.
+    let peakFlash = 0;
+
+    // Feed a single strike's contribution into all the per-variant
+    // accumulators. Defined ONCE here (not per tick) so the rAF loop
+    // doesn't allocate a fresh closure 60× a second — allocation-free
+    // frames mean no periodic minor-GC hitches.
+    const accumulateStrike = (
+      local: number,
+      intensity: number,
+      variant: number,
+      hasLeader: boolean,
+      strokeJX = 0,
+      strokeJY = 0,
+    ) => {
+      const env = strikeEnvelope(local, hasLeader) * intensity;
+      const after = afterImage(local) * intensity;
+      const total = env + after;
+      if (total > variantIntensity[variant]) {
+        variantIntensity[variant] = total;
+      }
+      // Leader descent — while the stepped leader is propagating
+      // (negative local), record its spatial progress so the
+      // composite pass can clip-reveal the channel top-down.
+      if (hasLeader && local < 0) {
+        const p = leaderProgress(local);
+        if (p > 0 && p < variantLeader[variant]) variantLeader[variant] = p;
+      }
+      // Decoupled flash signal — drives the scene flash + rain
+      // brightening. Computed WITHOUT the leader phase so rain only
+      // reacts to the bright return stroke (identical to pre-Tier-A
+      // behavior). The bolt itself still uses the leader-inclusive
+      // envelope above for its own dim pre-trace.
+      const flashEnv = local >= 0 ? strikeEnvelope(local, false) * intensity : 0;
+      if (flashEnv > peakFlash) peakFlash = flashEnv;
+      // Track youngest active strike on this variant — its source/anchor
+      // X feed the cloud glow + anchor explosion. "Youngest" defined as
+      // smallest absolute |local| (closest to peak) among contributors.
+      if (env > 0.01) {
+        const age = Math.abs(local);
+        if (age < variantYoungestAge[variant]) {
+          variantYoungestAge[variant] = age;
+          const path = VARIANT_PATHS[variant];
+          variantSourceX[variant] = width * path.srcX;
+          variantAnchorX[variant] = width * path.dstX;
+          // The youngest strike's channel re-route offset wins —
+          // it's the stroke currently driving the visible channel.
+          variantStrokeJX[variant] = strokeJX;
+          variantStrokeJY[variant] = strokeJY;
+        }
+      }
+      // Track sweep — only when a strike is in its return-stroke window
+      // (0..RETURN_STROKE_SWEEP_MS). Take the LOWEST progress (most
+      // recent strike) as the dominant sweep state for the variant.
+      if (local >= 0) {
+        const p = sweepProgress(local);
+        if (p < variantSweep[variant]) variantSweep[variant] = p;
+      }
+    };
 
     /* ── Iris reflex state ─────────────────────────────────────
        The iris reflex (Tier C #4) dims the whole scene briefly
@@ -654,8 +763,61 @@ export default function StormLanding() {
       if (typeof document !== 'undefined' && document.hidden) return;
 
       const elapsed = now - start;
-      const dt = Math.min(0.05, (now - lastTick) / 1000);
+      // Raw frame delta, clamped so a one-off pause (tab switch the
+      // hidden-check missed, debugger, huge GC) can't poison the EMA.
+      const frameMs = Math.min(100, now - lastTick);
+      const dt = Math.min(0.05, frameMs / 1000);
       lastTick = now;
+
+      /* ── Density governor ─────────────────────────────────────
+         Smooth the frame time, then trade invisible mist drops for
+         fluidity when the device demonstrably can't keep up:
+         - > 22ms sustained (≲45fps) → step density down 0.15
+           (2.5s cooldown between steps)
+         - < 17.5ms sustained (solid 60fps+) → creep back up 0.08
+           (8s cooldown — recovery is deliberately slow so the
+           density never visibly oscillates)
+         The intro (first 4s) is exempt: prerenders + the scripted
+         strike make those frames unrepresentative. */
+      frameEma += (frameMs - frameEma) * 0.08;
+      if (!reduceMotion && elapsed > 4000 && now - lastDensityChange > 2500) {
+        if (frameEma > 22 && rainDensity > 0.35) {
+          rainDensity = Math.max(0.35, rainDensity - 0.15);
+          lastDensityChange = now;
+        } else if (
+          frameEma < 17.5 && rainDensity < 1 &&
+          now - lastDensityChange > 8000
+        ) {
+          rainDensity = Math.min(1, rainDensity + 0.08);
+          lastDensityChange = now;
+        }
+      }
+
+      /* ── Storm lifecycle ──────────────────────────────────────
+         One slow scene-wide intensity signal (stormCycle.ts). It
+         modulates rain density here, drop speed/brightness inside
+         tickRain, auto-strike + bg-flash cadence below, and the
+         rain audio level — everything breathes together. */
+      const lifecycle = stormIntensity(elapsed);
+
+      // Effective drop budget = perf governor × lifecycle (calm
+      // phases carry as little as half the rain). Reapplied only
+      // when the product actually moves — the reroll pass on
+      // reactivated drops isn't per-frame work.
+      if (!reduceMotion) {
+        const targetDensity = rainDensity * (0.5 + 0.5 * lifecycle);
+        if (Math.abs(targetDensity - appliedDensity) > 0.02) {
+          appliedDensity = targetDensity;
+          applyRainDensity(rainLayers, appliedDensity, width, height);
+        }
+      }
+
+      // Rain audio rides the same arc. Throttled — the level ramps
+      // over seconds inside the engine, no point calling at 60Hz.
+      if (now >= nextAudioLifecycleAt) {
+        nextAudioLifecycleAt = now + 2000;
+        audioRef.current?.setStormIntensity(lifecycle);
+      }
 
       // FPS rolling average (debug only — but cheap enough to always run).
       if (debugEnabled && dt > 0) {
@@ -695,69 +857,8 @@ export default function StormLanding() {
       variantLeader.fill(2);           // 2 = sentinel "no leader descending"
       variantStrokeJX.fill(0);
       variantStrokeJY.fill(0);
-      // Track per-variant "youngest age" so source/anchor X follow the
-      // currently-driving strike (matters when ribbon strikes overlap).
-      // Use a small stack-like array — VARIANT_COUNT is fixed at 8.
-      const variantYoungestAge = [
-        Infinity, Infinity, Infinity, Infinity,
-        Infinity, Infinity, Infinity, Infinity,
-      ];
-      let flashIntensity = 0;
-
-      // Helper: feed a single strike's contribution into all the
-      // per-variant accumulators. Inlined twice (scripted + ad-hoc).
-      const accumulateStrike = (
-        local: number,
-        intensity: number,
-        variant: number,
-        hasLeader: boolean,
-        strokeJX = 0,
-        strokeJY = 0,
-      ) => {
-        const env = strikeEnvelope(local, hasLeader) * intensity;
-        const after = afterImage(local) * intensity;
-        const total = env + after;
-        if (total > variantIntensity[variant]) {
-          variantIntensity[variant] = total;
-        }
-        // Leader descent — while the stepped leader is propagating
-        // (negative local), record its spatial progress so the
-        // composite pass can clip-reveal the channel top-down.
-        if (hasLeader && local < 0) {
-          const p = leaderProgress(local);
-          if (p > 0 && p < variantLeader[variant]) variantLeader[variant] = p;
-        }
-        // Decoupled flashIntensity — drives the scene flash + rain
-        // brightening signal. Computed WITHOUT the leader phase so
-        // rain only reacts to the bright return stroke (identical to
-        // pre-Tier-A behavior). The bolt itself still uses the
-        // leader-inclusive envelope above for its own dim pre-trace.
-        const flashEnv = local >= 0 ? strikeEnvelope(local, false) * intensity : 0;
-        if (flashEnv > flashIntensity) flashIntensity = flashEnv;
-        // Track youngest active strike on this variant — its source/anchor
-        // X feed the cloud glow + anchor explosion. "Youngest" defined as
-        // smallest absolute |local| (closest to peak) among contributors.
-        if (env > 0.01) {
-          const age = Math.abs(local);
-          if (age < variantYoungestAge[variant]) {
-            variantYoungestAge[variant] = age;
-            const path = VARIANT_PATHS[variant];
-            variantSourceX[variant] = width * path.srcX;
-            variantAnchorX[variant] = width * path.dstX;
-            // The youngest strike's channel re-route offset wins —
-            // it's the stroke currently driving the visible channel.
-            variantStrokeJX[variant] = strokeJX;
-            variantStrokeJY[variant] = strokeJY;
-          }
-        }
-        // Track sweep — only when a strike is in its return-stroke window
-        // (0..RETURN_STROKE_SWEEP_MS). Take the LOWEST progress (most
-        // recent strike) as the dominant sweep state for the variant.
-        if (local >= 0) {
-          const p = sweepProgress(local);
-          if (p < variantSweep[variant]) variantSweep[variant] = p;
-        }
-      };
+      variantYoungestAge.fill(Infinity);
+      peakFlash = 0;
 
       for (const s of STRIKES) {
         accumulateStrike(elapsed - s.t, s.intensity, s.variant, !!s.hasLeader,
@@ -782,6 +883,9 @@ export default function StormLanding() {
         accumulateStrike(local, s.intensity, s.variant, !!s.hasLeader,
                          s.jx ?? 0, s.jy ?? 0);
       }
+
+      // All strike contributions are in — snapshot the frame's flash.
+      let flashIntensity = peakFlash;
 
       /* ── Plasma flicker ──────────────────────────────────────
          High-frequency brightness shimmer during the decay phase.
@@ -811,7 +915,10 @@ export default function StormLanding() {
         if (now - lastClickStrikeTime < 4000) {
           nextAutoStrikeAt = now + 6000;
         } else {
-          nextAutoStrikeAt = now + 20000 + Math.random() * 22000;
+          // Cadence rides the lifecycle: ~×0.8 spacing at peak
+          // (storm discharging often), ~×1.7 in a calm phase.
+          nextAutoStrikeAt =
+            now + (14000 + Math.random() * 20000) * (1.7 - 0.9 * lifecycle);
           // Shares the click picker's two-strike no-repeat memory, so
           // an auto-strike never replays the channel the user just
           // fired (and vice versa).
@@ -1009,9 +1116,11 @@ export default function StormLanding() {
           const result = spawnBgFlashEvent(now, bgFlashes);
           // Big-cell swells space themselves out further (their audio
           // chain runs 4-6s, no point overlapping). Normal events
-          // resume the original 6-20s spacing.
+          // resume the original 6-20s spacing. Both scale with the
+          // lifecycle — a peaking storm flickers noticeably more.
           nextBgFlashAt = now + (result.isSwell ? 14000 + Math.random() * 12000
-                                                : 6000 + Math.random() * 14000);
+                                                : 6000 + Math.random() * 14000)
+                              * (1.5 - 0.7 * lifecycle);
           // Fire all thunder bursts the spawn produced.
           const a = audioRef.current;
           if (a) for (const burst of result.thunder) a.triggerThunder(burst);
@@ -1030,9 +1139,9 @@ export default function StormLanding() {
       }
 
       // Falling rain + wind sheet.
-      let rainResult = { totalDrops: 0 };
+      let rainDropCount = 0;
       if (!reduceMotion) {
-        rainResult = tickRain({
+        rainDropCount = tickRain({
           ctx,
           layers: rainLayers,
           dt,
@@ -1046,7 +1155,24 @@ export default function StormLanding() {
           // one frame of lag is invisible at the 0.06 smoothing rate.
           parallaxX,
           parallaxY,
+          lifecycle,
         });
+
+        /* ── Gust audio ─────────────────────────────────────────
+           tickRain may have just spawned a wind sheet; if this is
+           a sheet we haven't voiced yet, fire the wind swell with
+           the sheet's own envelope timings so the whoosh attacks,
+           holds, and dies exactly as the rain leans in on screen. */
+        const activeSheet = windSheet.active;
+        if (activeSheet && activeSheet.startTime !== lastWindSheetStart) {
+          lastWindSheetStart = activeSheet.startTime;
+          audioRef.current?.triggerWindGust({
+            rampUpMs: activeSheet.rampUp,
+            plateauMs: activeSheet.plateau,
+            rampDownMs: activeSheet.rampDown,
+            peak: activeSheet.peak,
+          });
+        }
       }
 
       // ── Iris reflex apply (Tier C #4) ────────────────────────
@@ -1088,7 +1214,9 @@ export default function StormLanding() {
       if (debugEnabled) {
         const m = debugMetricsRef.current;
         m.fps = fpsBuf.length ? fpsSum / fpsBuf.length : 0;
-        m.drops = rainResult.totalDrops;
+        m.drops = rainDropCount;
+        m.rainDensity = appliedDensity;
+        m.lifecycle = lifecycle;
         m.adHocStrikes = adHocStrikes.length;
         m.bgFlashes = bgFlashes.length;
         m.windSheetActive = windSheet.active !== null;
