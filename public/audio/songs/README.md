@@ -13,8 +13,9 @@ play.
 
 | Filename                  | Source                                     | Length | Bitrate      | Role                    |
 | ------------------------- | ------------------------------------------ | ------ | ------------ | ----------------------- |
-| `neverending-cycle.m4a`   | YouTube `aKo5mR3j-98` (arimasen, trapeia)  | 2:05   | AAC 130 kbps | Playlist track 1        |
-| `bipolar.m4a`             | YouTube `v06CVZR-dH4` (.diedlonely)        | 2:12   | AAC 130 kbps | Playlist track 2        |
+| `bear.m4a`                | YouTube `DVCYPUtlFwY` (rock burwell)       | 1:55   | AAC 130 kbps | Playlist track 1        |
+| `neverending-cycle.m4a`   | YouTube `aKo5mR3j-98` (arimasen, trapeia)  | 2:05   | AAC 130 kbps | Playlist track 2        |
+| `bipolar.m4a`             | YouTube `v06CVZR-dH4` (.diedlonely)        | 2:12   | AAC 130 kbps | Playlist track 3        |
 
 Downloaded at the highest available bitrate (format 140, AAC 130k m4a)
 via `yt-dlp -f 140`. AAC-in-MP4 decodes natively in every modern browser

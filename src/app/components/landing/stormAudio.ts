@@ -117,6 +117,10 @@ export interface LandingSong {
  *  loop, so they get the same gain/balance + tab-suspend treatment. */
 export const SONG_FILES: LandingSong[] = [
   {
+    src: '/audio/songs/bear.m4a',
+    title: 'rock burwell — bear',
+  },
+  {
     src: '/audio/songs/neverending-cycle.m4a',
     title: 'arimasen, trapeia — neverending cycle',
   },
