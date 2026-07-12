@@ -1,69 +1,19 @@
-@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@400;600&family=Playfair+Display:ital,wght@1,300;1,600&family=Space+Grotesk:wght@300;500&display=swap');
-
-@theme {
-  --color-pink-soft: #ff8fb1;
-  --color-pink-deep: #ff4d6d;
-  --color-brand-red: #ff003c;
-}
-
 .strawberry-root {
-  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  background-color: #000;
 }
 
-/* Background depth: a deep maroon glow at center fading to black at the edges,
-   so content emerges from depth instead of a flat void.
-   (Removable: delete this rule and swap the .strawberry-bg class back to bg-[#050505].) */
-.strawberry-bg {
-  background: radial-gradient(ellipse at center, #1a0610 0%, #0c0307 45%, #050505 100%);
+.strawberry-fade {
+  animation: strawberry-fade-in 1.2s ease-out both;
 }
 
-/* Vignette: darkens the corners to frame the centered heart and pull the eye
-   inward. Sits above the background/embers but below the content + scanline.
-   (Removable: delete this rule and the <div className="strawberry-vignette" /> in page.tsx.) */
-.strawberry-vignette {
-  background: radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.55) 100%);
-}
-
-.strawberry-root .font-mono {
-  font-family: "Fira Code", monospace;
-}
-
-.strawberry-root canvas {
-  position: fixed;
-  background-color: transparent;
-}
-
-.terminal-cursor {
-  display: inline-block;
-  width: 2px;
-  height: 1em;
-  vertical-align: middle;
-  border-right: 2px solid #ff4d6d;
-  animation: strawberry-blink 1s step-end infinite;
-}
-
-@keyframes strawberry-blink {
-  from, to { border-color: transparent; }
-  50% { border-color: #ff4d6d; }
-}
-
-.glow-text {
-  text-shadow: 0 0 10px rgba(255, 77, 109, 0.5), 0 0 20px rgba(255, 77, 109, 0.3);
-}
-
-.scanline {
-  width: 100%;
-  height: 100px;
-  z-index: 10;
-  pointer-events: none;
-  background: linear-gradient(0deg, rgba(0, 0, 0, 0) 0%, rgba(255, 255, 255, 0.02) 50%, rgba(0, 0, 0, 0) 100%);
-  opacity: 0.1;
-  position: absolute;
-  bottom: 100%;
-  animation: strawberry-scanline 10s linear infinite;
-}
-
-@keyframes strawberry-scanline {
-  0% { bottom: 100%; }
-  100% { bottom: -100px; }
+@keyframes strawberry-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }

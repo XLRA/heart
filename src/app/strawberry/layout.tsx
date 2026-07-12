@@ -3,7 +3,7 @@ import "./strawberry.css";
 
 export const metadata: Metadata = {
   title: "strawberry",
-  description: "heart.PROTOCOL_v2.0",
+  description: "nothing to see here",
 };
 
 export default function StrawberryLayout({
