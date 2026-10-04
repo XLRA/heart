@@ -1,0 +1,27 @@
+/* Campus theme: Wayne State green and gold on warm paper, serif headings. */
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Source+Sans+3:ital,wght@0,400;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@500;700&display=swap");
+
+:root {
+  --font-head: "Fraunces", Georgia, serif;
+  --font-body: "Source Sans 3", "Segoe UI", Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", Consolas, monospace;
+
+  --bg: #f7f4ec;
+  --surface: #ffffff;
+  --header-bg: rgba(247, 244, 236, 0.9);
+  --text: #1f2a26;
+  --heading: #0c3b33;
+  --muted: #56635e;
+  --border: #ded8c8;
+  --stripe: #faf8f2;
+
+  --accent: #0c5449;
+  --accent-soft: #e2efe9;
+  --on-accent: #ffffff;
+  --accent-2: #f2b705;
+  --on-accent-2: #1f2a26;
+  --link: #0c5449;
+
+  --radius: 6px;
+  --shadow: 0 10px 25px rgba(12, 59, 51, 0.15);
+}

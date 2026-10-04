@@ -53,6 +53,16 @@ const nextConfig: NextConfig = {
       },
     ],
   },
+  async redirects() {
+    return [
+      {
+        // Static site in public/venkatyenduri uses relative links, so it must load from index.html
+        source: '/venkatyenduri',
+        destination: '/venkatyenduri/index.html',
+        permanent: false,
+      },
+    ];
+  },
   async headers() {
     return [
       {
