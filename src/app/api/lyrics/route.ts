@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { coreTitle } from '../../../services/textClean';
 
 interface LyricsLine {
   text: string;
@@ -129,7 +130,7 @@ function parseLrc(lrc: string): LyricsLine[] {
 async function fetchFromLrclib(track: string, artist: string, durationMs?: number): Promise<LyricsResponse | null> {
   const headers = { 'user-agent': 'heart-music-player/1.0 (+https://sleeep.dev)' };
   const primaryArtist = artist.split(/,| feat\.? | & /i)[0].trim();
-  const title = track.replace(/\s*[(\[].*?[)\]]\s*/g, ' ').replace(/\s-\s.*$/, '').trim() || track;
+  const title = coreTitle(track) || track;
   try {
     const params = new URLSearchParams({ artist_name: primaryArtist, track_name: title });
     if (durationMs) params.set('duration', String(Math.round(durationMs / 1000)));
@@ -175,8 +176,9 @@ function generateDemoLyrics(track: string, artist: string): LyricsResponse {
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
   const trackId = searchParams.get('trackId');
-  const track = searchParams.get('track');
-  const artist = searchParams.get('artist');
+  // Bounded: these feed string processing and upstream URLs.
+  const track = searchParams.get('track')?.slice(0, 200) ?? null;
+  const artist = searchParams.get('artist')?.slice(0, 200) ?? null;
   const durationMs = Number(searchParams.get('durationMs')) || undefined;
 
   // TrackId is required for the custom API

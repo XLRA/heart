@@ -19,6 +19,8 @@
  *                   tempo drift, which a 30 s clip cannot.
  */
 
+import { coreTitle, collapseSpaces, stripFeaturing } from '../textClean';
+
 const UA = 'heart-music-player/1.0 (+https://sleeep.dev)';
 const TIMEOUT_MS = 6000;
 
@@ -74,15 +76,13 @@ export class TtlCache<V> {
 }
 
 // --- Normalization helpers ---------------------------------------------------------
+// Built only from linear-time steps (see services/textClean): these strings
+// come from request query parameters.
 const norm = (s: string) =>
-  s.toLowerCase()
-    .normalize('NFKD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/\(.*?\)|\[.*?\]/g, ' ')
-    .replace(/\s-\s.*$/, ' ')
-    .replace(/feat\.?.*$|ft\.?.*$/, ' ')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
+  collapseSpaces(
+    stripFeaturing(coreTitle(s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')))
+      .replace(/[^a-z0-9]+/g, ' '),
+  );
 
 const similar = (a: string, b: string) => {
   const x = norm(a), y = norm(b);
