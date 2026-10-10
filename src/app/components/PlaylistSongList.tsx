@@ -63,7 +63,7 @@ const PlaylistSongList = ({ playlist, isVisible, onClose, currentTrackId, isPlay
       trackUri = `spotify:track:${track.id}`;
     }
     
-    playTrack(trackUri);
+    playTrack(trackUri, `spotify:playlist:${playlist.id}`);
   };
 
   const formatDuration = (ms: number): string => {

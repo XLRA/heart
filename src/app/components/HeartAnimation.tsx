@@ -4,11 +4,10 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { ParticleLevel, PARTICLE_MULTIPLIERS, TRACE_COUNTS } from '../context/SettingsContext';
 import type { AlbumColors } from '../../services/colorExtractor';
 import { createAudioAnalyzer, type AudioAnalyzer, type AudioReactiveData } from '../../services/audioAnalyzer';
+import { getOrCreateElementGraph } from '../../services/audioGraph';
 
-// Legacy audio frames from the non-analyzer path (the Spotify simulation
-// fallback) only carry the original six fields. The unified ref shape adds
-// kick/snare/centroid/flatness derived from the legacy values when the richer
-// data isn't available.
+// Minimal audio frames (the initial silent frame) only carry the original six
+// fields; buildAudioFrame fills the rest with neutral defaults.
 type LegacyAudioFields = Pick<AudioReactiveData, 'bass' | 'mid' | 'treble' | 'overall' | 'beat' | 'beatStrength'>;
 type AudioFrameInput = LegacyAudioFields & Partial<AudioReactiveData>;
 
@@ -139,10 +138,6 @@ const buildAudioFrame = (input: AudioFrameInput): AudioReactiveData => ({
   overall: input.overall,
   beat: input.beat,
   beatStrength: input.beatStrength,
-  // The simulation path fuses kick + snare into `beat`. Mirror them with slight
-  // asymmetry so the visualization at least gets *some* differentiation. Tab
-  // capture and local-file modes pass full analyzer data and overwrite these
-  // defaults.
   kick: input.kick ?? input.beat,
   kickStrength: input.kickStrength ?? (input.beat ? input.beatStrength : 0),
   snare: input.snare ?? input.beat,
@@ -160,42 +155,37 @@ const buildAudioFrame = (input: AudioFrameInput): AudioReactiveData => ({
   loudness: input.loudness ?? 0,
   section: input.section ?? false,
   sectionStrength: input.sectionStrength ?? 0,
+  downbeat: input.downbeat ?? false,
 });
+
+/** What is driving the heart, for the indicator dot. */
+export type ReactiveSourceLabel = 'tab' | 'full' | 'beatmap' | 'synced' | 'estimated' | 'live' | null;
 
 interface AudioVisualizerProps {
   audioElement?: HTMLAudioElement | null;
   isPlaying?: boolean;
   isSpotifyMode?: boolean;
   albumColors?: AlbumColors | null;
-  currentPosition?: number;
   particleLevel?: ParticleLevel;
   tabAudioStream?: MediaStream | null;
   /** Clean mode: suppress the audio-source indicator dot. */
   hideIndicator?: boolean;
+  /** Predictive Track Intelligence frame source, polled once per animation
+   *  frame. Returns null when no engine is ready (or live capture is on). */
+  readFrame?: () => AudioReactiveData | null;
+  sourceLabel?: ReactiveSourceLabel;
 }
-
-// One persistent Web Audio graph per <audio> element. An HTMLMediaElement can
-// only ever be captured by ONE MediaElementSourceNode for its lifetime
-// (Chrome throws InvalidStateError on a second createMediaElementSource, and
-// closing the owning context permanently silences the element). The previous
-// per-effect create/close cycle therefore killed local-file audio + analysis
-// after any Spotify-mode round trip. The graph (context + source wired to
-// destination) is created once and kept for the page's lifetime; only the
-// analyzer side-chain is built/disposed per effect run.
-const elementAudioGraphs = new WeakMap<
-  HTMLMediaElement,
-  { ctx: AudioContext; source: MediaElementAudioSourceNode }
->();
 
 const HeartAnimation = ({
   audioElement,
   isPlaying = false,
   isSpotifyMode = false,
   albumColors = null,
-  currentPosition = 0,
   particleLevel = 'high',
   tabAudioStream = null,
-  hideIndicator = false
+  hideIndicator = false,
+  readFrame,
+  sourceLabel = null,
 }: AudioVisualizerProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -218,6 +208,13 @@ const HeartAnimation = ({
   const lastIndicatorUpdateRef = useRef(0);
 
   const isPlayingRef = useRef(isPlaying);
+  // Predictive engine source, read inside the render loop. While it delivers
+  // frames, the local real-time analyzer stops writing (no fighting writers).
+  const readFrameRef = useRef(readFrame);
+  const engineActiveRef = useRef(false);
+  useEffect(() => {
+    readFrameRef.current = readFrame;
+  }, [readFrame]);
 
   // Color transition refs
   const currentColorsRef = useRef<string[]>([]);
@@ -273,17 +270,10 @@ const HeartAnimation = ({
 
     const initAudioContext = async () => {
       try {
-        // Reuse the element's persistent graph (see elementAudioGraphs).
+        // Reuse the element's persistent graph (see services/audioGraph).
         // Creating a second MediaElementSourceNode for the same element
         // throws, and closing the context silences the element forever.
-        let graph = elementAudioGraphs.get(audioElement);
-        if (!graph) {
-          const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-          const source = ctx.createMediaElementSource(audioElement);
-          source.connect(ctx.destination);
-          graph = { ctx, source };
-          elementAudioGraphs.set(audioElement, graph);
-        }
+        const graph = getOrCreateElementGraph(audioElement);
         if (graph.ctx.state === 'suspended') {
           await graph.ctx.resume();
         }
@@ -352,7 +342,7 @@ const HeartAnimation = ({
     const analyzer = localAnalyzerRef.current;
 
     const tick = () => {
-      if (localAnalyzerRef.current === analyzer && isPlayingRef.current) {
+      if (localAnalyzerRef.current === analyzer && isPlayingRef.current && !engineActiveRef.current) {
         writeAudioData(analyzer.read());
       }
       animationFrameRef.current = requestAnimationFrame(tick);
@@ -364,43 +354,6 @@ const HeartAnimation = ({
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
   }, [isPlaying, isSpotifyMode, tabAudioStream, writeAudioData]);
-
-  // Spotify mode without tab capture: position-seeded simulation. Spotify's
-  // SDK audio is DRM-protected (can't be tapped with Web Audio) and the
-  // audio-features / audio-analysis endpoints are deprecated for new apps,
-  // so without live capture this synthetic motion is the honest fallback.
-  // Live audio capture (tabAudioStream) replaces it with real analysis.
-  useEffect(() => {
-    if (!isSpotifyMode || !isPlaying || !currentPosition || tabAudioStream) return;
-
-    const simulateAudioData = () => {
-      const currentTimeSeconds = currentPosition / 1000;
-
-      const timeBasedIntensity = Math.sin(currentTimeSeconds * 0.3) * 0.4 + 0.6;
-      const beatPattern = Math.sin(currentTimeSeconds * 1.5) > 0.7 ? 1 : 0;
-
-      // Add some randomness for more natural feel
-      const randomVariation = (Math.random() - 0.5) * 0.1;
-
-      const bass = Math.max(0, Math.min(1, timeBasedIntensity * 0.7 + randomVariation + 0.1));
-      const mid = Math.max(0, Math.min(1, timeBasedIntensity * 0.5 + randomVariation + 0.2));
-      const treble = Math.max(0, Math.min(1, timeBasedIntensity * 0.3 + randomVariation + 0.1));
-      const overall = (bass + mid + treble) / 3;
-
-      writeAudioData({
-        bass,
-        mid,
-        treble,
-        overall,
-        beat: Boolean(beatPattern),
-        beatStrength: beatPattern ? 0.5 : 0,
-      });
-    };
-
-    simulateAudioData();
-    const interval = setInterval(simulateAudioData, 50);
-    return () => clearInterval(interval);
-  }, [isSpotifyMode, isPlaying, currentPosition, tabAudioStream, writeAudioData]);
 
   // Tab audio capture: real-time analysis of audio shared via getDisplayMedia.
   // Uses the unified analyzer (pre-emphasis + per-band beat detection + noise gate).
@@ -525,6 +478,8 @@ const HeartAnimation = ({
     let showDebug = false;
     let manualBurstFlag = false;
     const handleKeyDown = (ev: KeyboardEvent) => {
+      const target = ev.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
       if (ev.key === 'd' || ev.key === 'D') showDebug = !showDebug;
       else if (ev.key === 'b' || ev.key === 'B') manualBurstFlag = true;
     };
@@ -902,6 +857,18 @@ const HeartAnimation = ({
       const spikeEnvDecay = Math.pow(SPIKE_ENV_DECAY_60, dtFrames);
       const ringChase = 1 - Math.pow(1 - RING_CHASE_60, dtFrames);
 
+      // Predictive engine frame for this exact render instant (zero detection
+      // latency). Falls back to whatever the live paths last wrote.
+      const engineFrame = readFrameRef.current ? readFrameRef.current() : null;
+      engineActiveRef.current = engineFrame !== null;
+      if (engineFrame) {
+        audioDataRef.current = engineFrame;
+        if (now - lastIndicatorUpdateRef.current >= INDICATOR_THROTTLE_MS) {
+          lastIndicatorUpdateRef.current = now;
+          setIndicatorData({ overall: engineFrame.overall, beat: engineFrame.beat });
+        }
+      }
+
       // Get current values from refs
       const currentAudioData = audioDataRef.current;
       const currentIsPlaying = isPlayingRef.current;
@@ -995,8 +962,11 @@ const HeartAnimation = ({
       if (manualBurstFlag) {
         for (const an of spikeAnchors) an.env = 1;
       } else if (spikeEvent) {
+        // Bar downbeats (known only to the predictive engine) light one extra
+        // anchor, so the phrase structure reads in the silhouette.
         const lit = SPIKE_ANCHORS_PER_KICK_BASE +
-          Math.round(currentKickStrength * SPIKE_ANCHORS_PER_KICK_RANGE);
+          Math.round(currentKickStrength * SPIKE_ANCHORS_PER_KICK_RANGE) +
+          (currentAudioData.downbeat ? 1 : 0);
         // Random distinct subset via a partial shuffle of anchor indices.
         const idx = spikeAnchors.map((_, a) => a);
         for (let a = 0; a < lit && a < idx.length; a++) {
@@ -1441,28 +1411,43 @@ const HeartAnimation = ({
             width: '10px',
             height: '10px',
             borderRadius: '50%',
-            backgroundColor: tabAudioStream
-              ? `hsl(${180 + indicatorData.overall * 40}, 70%, 60%)`
-              : isSpotifyMode
-                ? `hsl(${30 + indicatorData.overall * 40}, 70%, 60%)`
-                : `hsl(${280 + indicatorData.overall * 40}, 70%, 60%)`,
+            backgroundColor: `hsl(${indicatorHue(tabAudioStream ? 'tab' : sourceLabel) + indicatorData.overall * 40}, 70%, 60%)`,
             opacity: 0.7,
             zIndex: 1000,
             transition: 'all 0.1s ease',
             transform: `scale(${1 + indicatorData.overall * 0.5})`,
             boxShadow: indicatorData.beat ? '0 0 20px rgba(255, 0, 150, 0.8)' : 'none'
           }}
-            title={
-            tabAudioStream
-              ? "Live Tab Audio Capture (Real-time)"
-              : isSpotifyMode
-                ? "Spotify Visualizer (Simulation - enable Live Audio for real reactivity)"
-                : "Real-time Audio Visualizer"
-          }
+            title={indicatorTitle(tabAudioStream ? 'tab' : sourceLabel)}
         />
       )}
     </>
   );
 };
+
+// Indicator dot: cyan = live capture, green = exact (local / beat map /
+// synced), amber = tempo + groove locked but phase estimated, violet = live
+// local analysis while the full analysis loads.
+function indicatorHue(label: ReactiveSourceLabel): number {
+  switch (label) {
+    case 'tab': return 180;
+    case 'full':
+    case 'beatmap':
+    case 'synced': return 130;
+    case 'estimated': return 35;
+    default: return 280;
+  }
+}
+
+function indicatorTitle(label: ReactiveSourceLabel): string {
+  switch (label) {
+    case 'tab': return 'Live tab audio capture';
+    case 'full': return 'Track Intelligence: full-song analysis';
+    case 'beatmap': return 'Track Intelligence: whole-song beat map';
+    case 'synced': return 'Track Intelligence: synced to your speakers';
+    case 'estimated': return 'Track Intelligence: tempo + groove locked (press T on the beat, or sync with mic)';
+    default: return 'Real-time audio analysis';
+  }
+}
 
 export default HeartAnimation; 

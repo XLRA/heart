@@ -1,72 +1,40 @@
 # Spotify Integration Setup
 
-This music player now supports Spotify integration! Here's how to set it up:
-
 ## 1. Create a Spotify App
 
-1. Go to [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
-2. Log in with your Spotify account
-3. Click "Create App"
-4. Fill in the app details:
-   - App name: "Heart Music Player" (or any name you prefer)
-   - App description: "A beautiful music player with Spotify integration"
+1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) and log in
+2. Click **Create app** and fill in:
+   - App name: anything (e.g. "Heart Music Player")
    - Website: `http://localhost:3000` (for development)
-   - Redirect URI: `http://localhost:3000/callback`
-5. Click "Save"
+   - Redirect URI: `http://localhost:3000/music/callback` (note the `/music` prefix)
+   - APIs used: **Web API** and **Web Playback SDK**
+3. Save
 
-## 2. Get Your Credentials
+## 2. Credentials and Environment Variables
 
-1. In your app dashboard, click on your app
-2. Copy the "Client ID"
-3. Note the "Client Secret" (you won't need it for this implementation)
+From the app's settings, copy the **Client ID** and **Client Secret**, then create `.env.local` in the project root:
 
-## 3. Set Up Environment Variables
-
-Create a `.env.local` file in your project root with:
-
-```
-NEXT_PUBLIC_SPOTIFY_CLIENT_ID=your_client_id_here
-NEXT_PUBLIC_SPOTIFY_REDIRECT_URI=http://localhost:3000/callback
+```bash
+NEXT_PUBLIC_SPOTIFY_CLIENT_ID=your_client_id
+SPOTIFY_CLIENT_SECRET=your_client_secret
+NEXT_PUBLIC_SPOTIFY_REDIRECT_URI=http://localhost:3000/music/callback
 ```
 
-Replace `your_client_id_here` with your actual Client ID from step 2.
+The secret is **server-only**: it's used by `/api/spotify/token` (code → token exchange) and `/api/spotify/refresh` (token refresh). Never prefix it with `NEXT_PUBLIC_`.
 
-## 4. Install Dependencies
+While the app is in Development Mode, add each Spotify account that should be able to log in under **User Management** in the dashboard.
 
-Run the following command to install the Spotify Web API:
+## 3. Run
 
 ```bash
 npm install
-```
-
-## 5. Start the Application
-
-```bash
 npm run dev
 ```
 
-## Features
-
-- **Spotify Authentication**: Click "Connect Spotify" to authenticate with your Spotify account
-- **Playlist Selection**: Once connected, click the Spotify icon in the player to select from your playlists
-- **Seamless Integration**: Switch between your local music and Spotify playlists
-- **Preview Playback**: Play 30-second previews of Spotify tracks
-- **Beautiful UI**: Maintains the original heart animation and player design
-
-## How to Use
-
-1. Start the app and you'll see a "Connect Spotify" button in the top-right
-2. Click it to authenticate with Spotify
-3. Once connected, you'll see your profile info in the top-right
-4. Click the Spotify icon in the music player to open the playlist selector
-5. Choose any playlist to start playing previews
-6. Use the "×" button next to the track name to return to default music
+Open <http://localhost:3000/music>, click **Connect Spotify**, then pick a playlist from the Spotify icon in the player.
 
 ## Notes
 
-- Only tracks with preview URLs will be playable (30-second previews)
-- The app uses Spotify's Web API for authentication and playlist access
-- Your Spotify credentials are stored locally and securely
-- You can disconnect anytime by clicking the logout button
-
-Enjoy your enhanced music experience! 🎵
+- In-browser playback uses the Web Playback SDK, which requires **Spotify Premium** and a browser with Widevine DRM enabled (Chrome: `chrome://settings/content/protectedContent`). The playlist picker explains which of these is missing if the player can't start.
+- The heart's reactivity doesn't need any extra Spotify permissions: it works from public preview clips, ReccoBeats, and AcousticBrainz (see the README). If your app was created before November 2024 and still has access to the legacy `/audio-analysis` endpoint, it's used automatically for even better timing.
+- For production, add your deployed callback (e.g. `https://sleeep.dev/music/callback`) as a redirect URI and set `NEXT_PUBLIC_SPOTIFY_REDIRECT_URI` accordingly.

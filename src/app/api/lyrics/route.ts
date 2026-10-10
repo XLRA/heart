@@ -105,6 +105,55 @@ async function fetchFromCustomAPI(trackId: string): Promise<LyricsResponse | nul
 }
 
 /**
+ * LRCLIB (lrclib.net): free, keyless, community-synced lyrics. Used when the
+ * Spotify-backed API is down (its SP_DC cookie expires periodically, which
+ * silently turned every track into demo lyrics). Matched by artist + title +
+ * duration (+-2 s, per LRCLIB's own matching rule).
+ */
+function parseLrc(lrc: string): LyricsLine[] {
+  const lines: LyricsLine[] = [];
+  for (const raw of lrc.split(/\r?\n/)) {
+    const stamps = [...raw.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)];
+    if (stamps.length === 0) continue;
+    const text = raw.replace(/\[[^\]]*\]/g, '').trim();
+    for (const m of stamps) {
+      lines.push({ text, startTime: Math.round((Number(m[1]) * 60 + Number(m[2])) * 1000), endTime: 0 });
+    }
+  }
+  lines.sort((a, b) => a.startTime - b.startTime);
+  // Empty LRC lines mark instrumental gaps; they end the previous line.
+  for (let i = 0; i < lines.length - 1; i++) lines[i].endTime = lines[i + 1].startTime;
+  return lines.filter((l) => l.text.length > 0);
+}
+
+async function fetchFromLrclib(track: string, artist: string, durationMs?: number): Promise<LyricsResponse | null> {
+  const headers = { 'user-agent': 'heart-music-player/1.0 (+https://sleeep.dev)' };
+  const primaryArtist = artist.split(/,| feat\.? | & /i)[0].trim();
+  const title = track.replace(/\s*[(\[].*?[)\]]\s*/g, ' ').replace(/\s-\s.*$/, '').trim() || track;
+  try {
+    const params = new URLSearchParams({ artist_name: primaryArtist, track_name: title });
+    if (durationMs) params.set('duration', String(Math.round(durationMs / 1000)));
+    let res = await fetch(`https://lrclib.net/api/get?${params}`, { headers, signal: AbortSignal.timeout(6000) });
+    let data: { syncedLyrics?: string | null; plainLyrics?: string | null } | null = res.ok ? await res.json() : null;
+    if (!data?.syncedLyrics) {
+      // Fuzzy fallback: search and take the closest-duration synced match.
+      res = await fetch(`https://lrclib.net/api/search?${new URLSearchParams({ artist_name: primaryArtist, track_name: title })}`, { headers, signal: AbortSignal.timeout(6000) });
+      const list: Array<{ syncedLyrics?: string | null; duration?: number }> = res.ok ? await res.json() : [];
+      const synced = list.filter((r) => r.syncedLyrics);
+      if (durationMs) synced.sort((a, b) => Math.abs((a.duration || 0) * 1000 - durationMs) - Math.abs((b.duration || 0) * 1000 - durationMs));
+      const pick = synced[0];
+      if (pick && (!durationMs || Math.abs((pick.duration || 0) * 1000 - durationMs) < 4000)) data = pick;
+    }
+    if (!data?.syncedLyrics) return null;
+    const lyrics = parseLrc(data.syncedLyrics);
+    return lyrics.length > 0 ? { lyrics, source: 'LRCLIB (time-synced)' } : null;
+  } catch (error) {
+    console.error('[LRCLIB] Error fetching lyrics:', error);
+    return null;
+  }
+}
+
+/**
  * Fallback: Generate demo/sample lyrics when no synced lyrics are available
  */
 function generateDemoLyrics(track: string, artist: string): LyricsResponse {
@@ -128,6 +177,7 @@ export async function GET(request: NextRequest) {
   const trackId = searchParams.get('trackId');
   const track = searchParams.get('track');
   const artist = searchParams.get('artist');
+  const durationMs = Number(searchParams.get('durationMs')) || undefined;
 
   // TrackId is required for the custom API
   if (!trackId) {
@@ -152,7 +202,11 @@ export async function GET(request: NextRequest) {
   let result: LyricsResponse | null = null;
 
   console.log(`[API] 📝 Fetching time-synced lyrics from custom Spotify API...`);
-  result = await fetchFromCustomAPI(trackId);
+  result = await fetchFromCustomAPI(encodeURIComponent(trackId));
+  if (!result && track && artist) {
+    console.log('[API] Custom API unavailable, trying LRCLIB...');
+    result = await fetchFromLrclib(track, artist, durationMs);
+  }
   
   if (result) {
     console.log(`[API] ✅ Successfully fetched lyrics (${result.lyrics.length} lines, source: ${result.source})`);
@@ -164,7 +218,7 @@ export async function GET(request: NextRequest) {
       timestamp: Date.now()
     });
   } else {
-    console.log('[API] ❌ Custom API failed, using demo lyrics (not cached)');
+    console.log('[API] ❌ No lyrics source succeeded, using demo lyrics (not cached)');
     result = generateDemoLyrics(track || 'Unknown Track', artist || 'Unknown Artist');
   }
 
