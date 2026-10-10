@@ -2,19 +2,55 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Icon from './Icon';
-import { useSettings, ParticleLevel, LyricsMode } from '../context/SettingsContext';
+import { useSettings, ParticleLevel, LyricsMode, SYNC_NUDGE_LIMIT_MS } from '../context/SettingsContext';
 import { useAudioVisualizer } from '../context/AudioVisualizerContext';
+import { useReactivity, type ReactivityStatus } from '../context/ReactivityContext';
+
+function describeStatus(status: ReactivityStatus): { title: string; detail: string; tone: 'good' | 'ok' | 'muted' } {
+  switch (status.kind) {
+    case 'idle':
+      return { title: 'Waiting for music', detail: 'Play something and the heart locks onto it automatically.', tone: 'muted' };
+    case 'loading':
+      return { title: 'Analyzing this track…', detail: 'Reading its tempo, groove and beat map.', tone: 'muted' };
+    case 'unavailable':
+      return { title: 'No analysis for this track', detail: 'The heart keeps breathing; live capture below still works.', tone: 'muted' };
+    case 'live': {
+      const bpm = `${Math.round(status.bpm)} BPM`;
+      const clip = status.clip === 'synthetic' ? ' · tempo only (no preview audio)' : '';
+      if (status.source === 'full') return { title: `Full-song analysis · ${bpm}`, detail: 'Every beat known in advance.', tone: 'good' };
+      if (status.source === 'beatmap') {
+        return {
+          title: `Beat-mapped · ${bpm}${clip}`,
+          detail: status.beatMap === 'spotify-analysis'
+            ? 'Spotify’s own beats, bars and sections.'
+            : 'Whole-song beat map. Sync once to also lock the bar’s downbeat.',
+          tone: 'good',
+        };
+      }
+      if (status.source === 'synced') return { title: `Locked to the beat · ${bpm}${clip}`, detail: 'Synced to what your speakers play.', tone: 'good' };
+      return { title: `Tempo & groove locked · ${bpm}${clip}`, detail: 'Tap T on the beat 4 times, or sync with the mic, to lock the timing.', tone: 'ok' };
+    }
+  }
+}
 
 const SettingsPanel = () => {
   const [isOpen, setIsOpen] = useState(false);
-  const { particleLevel, setParticleLevel, lyricsMode, setLyricsMode, setUiHidden } = useSettings();
-  const { tabAudioStream, setTabAudioStream } = useAudioVisualizer();
+  const { particleLevel, setParticleLevel, lyricsMode, setLyricsMode, setUiHidden, syncNudgeMs, setSyncNudgeMs, micAutoSync, setMicAutoSync } = useSettings();
+  const { tabAudioStream, setTabAudioStream, isSpotifyMode } = useAudioVisualizer();
+  const { status, micSync, micSupported, syncWithMic, clearSync, tapMessage } = useReactivity();
+  const statusInfo = describeStatus(status);
+  const canSync = status.kind === 'live' && status.source !== 'full' && isSpotifyMode;
+  const toast = tapMessage
+    ?? (micSync.state === 'listening' ? `Listening… ${micSync.seconds}s` : null);
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [isCapturing, setIsCapturing] = useState(false);
 
-  const isTabCaptureSupported = typeof navigator !== 'undefined' 
-    && navigator.mediaDevices 
-    && typeof navigator.mediaDevices.getDisplayMedia === 'function';
+  // Decided after mount: computing this during render made the server HTML
+  // ("not supported") differ from the client's, a React hydration error.
+  const [isTabCaptureSupported, setIsTabCaptureSupported] = useState(false);
+  useEffect(() => {
+    setIsTabCaptureSupported(!!navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function');
+  }, []);
 
   // Listen for the captured stream's audio track ending (user clicked "Stop sharing" in Chrome)
   useEffect(() => {
@@ -119,7 +155,7 @@ const SettingsPanel = () => {
 
       {/* Settings Panel - Opens above the button */}
       <div 
-        className={`fixed bottom-24 right-8 z-50 w-[280px] bg-[#101012] rounded-[15px] border border-white/10 shadow-[0_30px_80px_#101012] transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] ${
+        className={`fixed bottom-24 right-8 z-50 w-[300px] max-h-[calc(100vh-8rem)] overflow-y-auto bg-[#101012] rounded-[15px] border border-white/10 shadow-[0_30px_80px_#101012] transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)] ${
           isOpen ? 'opacity-100 translate-y-0 pointer-events-auto' : 'opacity-0 translate-y-2 pointer-events-none'
         }`}
       >
@@ -127,6 +163,74 @@ const SettingsPanel = () => {
         <div className="px-5 py-4 border-b border-white/10">
           <h3 className="text-[#f1f1f1] text-[15px] font-bold">Settings</h3>
           <p className="text-[#8f8f9d] text-[11px] mt-1">Customize your experience</p>
+        </div>
+
+        {/* Reactivity (Track Intelligence) */}
+        <div className="px-5 py-4 border-b border-white/10">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[#f1f1f1] text-[13px] font-medium">Reactivity</span>
+            <span
+              className="w-2 h-2 rounded-full"
+              style={{ background: statusInfo.tone === 'good' ? '#00e5a0' : statusInfo.tone === 'ok' ? '#f5b041' : '#5a5a6e' }}
+            />
+          </div>
+          <p className="text-[#d6d6de] text-[12px]">{statusInfo.title}</p>
+          <p className="text-[#5a5a6e] text-[10px] mt-1 italic">{statusInfo.detail}</p>
+
+          {canSync && micSupported && (
+            <>
+              <button
+                onClick={syncWithMic}
+                disabled={micSync.state === 'listening'}
+                className={`w-full mt-3 py-2 px-3 rounded-lg text-[12px] font-medium transition-all duration-200 border ${
+                  micSync.state === 'listening'
+                    ? 'bg-[#1a1a1d] text-[#5a5a6e] border-white/5 cursor-wait'
+                    : 'bg-[#1a1a1d] text-[#8f8f9d] border-white/10 hover:bg-[#252529] hover:text-white hover:border-white/20 cursor-pointer'
+                }`}
+              >
+                <Icon name={micSync.state === 'listening' ? 'spinner' : 'broadcast'} className={`mr-1.5 ${micSync.state === 'listening' ? 'animate-spin' : ''}`} />
+                {micSync.state === 'listening' ? `Listening… ${micSync.seconds}s` : 'Sync with microphone'}
+              </button>
+              {(micSync.state === 'done' || micSync.state === 'failed') && (
+                <p className={`text-[10px] mt-2 ${micSync.state === 'done' ? 'text-[#00e5a0]' : 'text-[#ff6b6b]'}`}>{micSync.message}</p>
+              )}
+              <label className="flex items-center gap-2 mt-3 text-[11px] text-[#8f8f9d] cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={micAutoSync}
+                  onChange={(e) => setMicAutoSync(e.target.checked)}
+                  className="accent-[#00e5a0]"
+                />
+                Auto-sync new tracks (mic, a few seconds each)
+              </label>
+              <p className="text-[#5a5a6e] text-[10px] mt-1 italic">
+                Listens briefly through your speakers to find the beat; nothing is recorded or sent anywhere. Headphones? Tap T on the beat instead.
+              </p>
+            </>
+          )}
+          {canSync && status.kind === 'live' && status.source === 'synced' && (
+            <button onClick={clearSync} className="mt-2 text-[10px] text-[#5a5a6e] hover:text-[#8f8f9d] underline">
+              Forget this track&rsquo;s sync
+            </button>
+          )}
+
+          <div className="mt-3">
+            <div className="flex items-center justify-between text-[11px] text-[#8f8f9d]">
+              <span>Timing nudge</span>
+              <span className="tabular-nums">{syncNudgeMs > 0 ? '+' : ''}{syncNudgeMs} ms</span>
+            </div>
+            <input
+              type="range"
+              min={-SYNC_NUDGE_LIMIT_MS}
+              max={SYNC_NUDGE_LIMIT_MS}
+              step={10}
+              value={syncNudgeMs}
+              onChange={(e) => setSyncNudgeMs(Number(e.target.value))}
+              className="w-full mt-1"
+              aria-label="Visual timing nudge in milliseconds"
+            />
+            <p className="text-[#5a5a6e] text-[10px] mt-1 italic">Heart hits before you hear the beat? Slide right.</p>
+          </div>
         </div>
 
         {/* Particle Quality */}
@@ -189,7 +293,7 @@ const SettingsPanel = () => {
         {/* Live Audio Capture */}
         <div className="px-5 py-4 border-b border-white/10">
           <div className="flex items-center justify-between mb-3">
-            <span className="text-[#f1f1f1] text-[13px] font-medium">Live Audio</span>
+            <span className="text-[#f1f1f1] text-[13px] font-medium">Live tab capture <span className="text-[#5a5a6e] font-normal">(advanced)</span></span>
             {tabAudioStream ? (
               <span className="flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-[#00e5a0] animate-pulse" />
@@ -234,7 +338,7 @@ const SettingsPanel = () => {
           <p className="text-[#5a5a6e] text-[10px] mt-2 italic">
             {tabAudioStream
               ? 'Heart reacts to real audio from the tab'
-              : 'Capture tab audio to make the heart truly reactive to music'}
+              : 'Optional: analyze the tab’s audio live instead of the track analysis above (Chrome/Edge share dialog).'}
           </p>
         </div>
 
@@ -259,6 +363,15 @@ const SettingsPanel = () => {
             move the mouse and click the button.
           </p>
         </div>
+      </div>
+
+      {/* Sync feedback toast (tap sync works with the panel closed). */}
+      <div
+        className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-[#1a1a1d]/90 border border-white/10 text-[#d6d6de] text-[12px] backdrop-blur-sm pointer-events-none transition-opacity duration-300"
+        style={{ opacity: toast && !isOpen ? 1 : 0 }}
+        aria-live="polite"
+      >
+        {toast}
       </div>
 
       {/* Backdrop to close panel */}

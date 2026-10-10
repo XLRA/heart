@@ -13,15 +13,18 @@ interface LiveLyricsProps {
   currentTrackId: string | null;
   currentTrackName?: string;
   currentArtist?: string;
+  /** Track length; lets the lyrics fallback (LRCLIB) pick the right edit. */
+  currentDurationMs?: number;
   currentPosition: number; // in milliseconds
   isPlaying: boolean;
   lyricsMode?: LyricsMode;
 }
 
-const LiveLyrics = ({ 
-  currentTrackId, 
-  currentTrackName, 
-  currentArtist, 
+const LiveLyrics = ({
+  currentTrackId,
+  currentTrackName,
+  currentArtist,
+  currentDurationMs,
   currentPosition,
   isPlaying,
   lyricsMode = 'center'
@@ -38,6 +41,9 @@ const LiveLyrics = ({
       setLyrics([]);
       setCurrentLineIndex(-1);
       setError(null);
+      // Forget the last track so the same track coming back (e.g. playback
+      // transferred away and back) fetches its lyrics again.
+      previousTrackIdRef.current = null;
       return;
     }
 
@@ -54,7 +60,8 @@ const LiveLyrics = ({
     console.log(`[LiveLyrics] Track: "${currentTrackName}" by "${currentArtist}"`);
 
     // Fetch lyrics from our API endpoint using Spotify track ID
-    const apiUrl = `/api/lyrics?trackId=${encodeURIComponent(currentTrackId)}&track=${encodeURIComponent(currentTrackName)}&artist=${encodeURIComponent(currentArtist)}`;
+    const apiUrl = `/api/lyrics?trackId=${encodeURIComponent(currentTrackId)}&track=${encodeURIComponent(currentTrackName)}&artist=${encodeURIComponent(currentArtist)}${currentDurationMs ? `&durationMs=${Math.round(currentDurationMs)}` : ''}`;
+    const requestedId = currentTrackId;
     
     console.log(`[LiveLyrics] API URL:`, apiUrl);
     
@@ -67,6 +74,9 @@ const LiveLyrics = ({
         return response.json();
       })
       .then(data => {
+        // A slow response for a track that's no longer playing must not
+        // overwrite the current track's lyrics.
+        if (previousTrackIdRef.current !== requestedId) return;
         console.log(`[LiveLyrics] Received data:`, data);
         if (data.lyrics && Array.isArray(data.lyrics)) {
           console.log(`[LiveLyrics] ✅ Loaded ${data.lyrics.length} lyrics lines from source: ${data.source}`);
@@ -79,14 +89,15 @@ const LiveLyrics = ({
         }
       })
       .catch(err => {
+        if (previousTrackIdRef.current !== requestedId) return;
         console.error('[LiveLyrics] ❌ Error fetching lyrics:', err);
         setError('Lyrics not available');
         setLyrics([]);
       })
       .finally(() => {
-        setIsLoading(false);
+        if (previousTrackIdRef.current === requestedId) setIsLoading(false);
       });
-  }, [currentTrackId, currentTrackName, currentArtist]);
+  }, [currentTrackId, currentTrackName, currentArtist, currentDurationMs]);
 
   // Update current line based on playback position
   useEffect(() => {

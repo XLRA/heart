@@ -18,11 +18,38 @@ interface WebPlayerState {
   is_paused: boolean;
   is_active: boolean;
   current_track: WebPlayerTrack | null;
+  /** First upcoming track in the play queue (used to prefetch its analysis). */
+  next_track: WebPlayerTrack | null;
   position: number;
   duration: number;
   volume: number;
   device_id: string | null;
 }
+
+/**
+ * High-resolution playback clock. React state `position` updates at 10 Hz for
+ * the UI; the visualizer needs the position at the exact instant it renders.
+ * The clock stores the SDK's last reported position and the performance.now()
+ * time it was valid at, and extrapolates.
+ */
+interface PlaybackClock {
+  positionMs: number;
+  perfMs: number;
+  paused: boolean;
+  trackId: string | null;
+}
+
+const toTrack = (raw: Record<string, unknown> | undefined): WebPlayerTrack | null =>
+  raw
+    ? {
+        id: String(raw.id),
+        name: String(raw.name),
+        artists: (raw.artists as Array<{ name: string }>) || [],
+        album: (raw.album as { name: string; images: Array<{ url: string }> }) || { name: '', images: [] },
+        duration_ms: Number(raw.duration_ms) || 0,
+        uri: String(raw.uri),
+      }
+    : null;
 
 interface SpotifyDevice {
   id: string;
@@ -75,8 +102,11 @@ interface WebPlayerContextType {
   isReady: boolean;
   deviceId: string | null;
   playerError: PlayerError | null;
+  /** Song position in SECONDS at performance.now() time `perfMs` (default:
+   *  now), or null when nothing is loaded. Not latency-corrected. */
+  getSongTimeAt: (perfMs?: number) => number | null;
   initializePlayer: (token: string) => void;
-  playTrack: (trackUri: string) => void;
+  playTrack: (trackUri: string, contextUri?: string) => void;
   playPlaylist: (playlistUri: string) => void;
   togglePlay: () => void;
   nextTrack: () => void;
@@ -96,11 +126,20 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     is_paused: true,
     is_active: false,
     current_track: null,
+    next_track: null,
     position: 0,
     duration: 0,
     volume: 0.5,
     device_id: null
   });
+  const clockRef = useRef<PlaybackClock>({ positionMs: 0, perfMs: 0, paused: true, trackId: null });
+
+  const getSongTimeAt = useCallback((perfMs?: number) => {
+    const c = clockRef.current;
+    if (!c.trackId) return null;
+    const at = perfMs ?? performance.now();
+    return (c.paused ? c.positionMs : c.positionMs + (at - c.perfMs)) / 1000;
+  }, []);
 
   const playerRef = useRef<SpotifyPlayer | null>(null);
   const isInitializingRef = useRef<boolean>(false);
@@ -116,6 +155,39 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
   const isReadyRef = useRef(false);
   const deviceIdRef = useRef<string | null>(null);
 
+  // Single parser for SDK state objects (event + poll). Re-anchors both the
+  // UI interpolation clock and the high-resolution playback clock.
+  const applySdkState = useCallback((stateObj: Record<string, unknown>) => {
+    const trackWindow = stateObj.track_window as Record<string, unknown> | undefined;
+    const current = toTrack(trackWindow?.current_track as Record<string, unknown> | undefined);
+    const next = toTrack((trackWindow?.next_tracks as Array<Record<string, unknown>> | undefined)?.[0]);
+    const position = Number(stateObj.position) || 0;
+    const paused = Boolean(stateObj.paused);
+
+    // The SDK's `timestamp` (epoch ms at which `position` was sampled), when
+    // present, removes the event-delivery delay from the anchor.
+    const now = performance.now();
+    let perfAnchor = now;
+    const ts = Number(stateObj.timestamp);
+    if (Number.isFinite(ts) && ts > 0) {
+      const age = Date.now() - ts;
+      if (age >= 0 && age < 2000) perfAnchor = now - age;
+    }
+    clockRef.current = { positionMs: position, perfMs: perfAnchor, paused, trackId: current?.id ?? null };
+    lastPositionUpdateRef.current = Date.now();
+
+    setPlayerState(prev => ({
+      is_paused: paused,
+      is_active: true,
+      current_track: current,
+      next_track: next,
+      position,
+      duration: current?.duration_ms || 0,
+      volume: prev.volume, // the SDK state doesn't carry volume
+      device_id: deviceIdRef.current
+    }));
+  }, []);
+
   // Safety-net polling. player_state_changed events carry the real updates;
   // this only catches drift (e.g. a missed event after a network blip), so a
   // slow cadence is plenty and keeps SDK traffic low.
@@ -129,34 +201,15 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         try {
           const state = await playerRef.current.getCurrentState();
           if (state) {
-            const stateObj = state as Record<string, unknown>;
-            const currentTrack = (stateObj.track_window as Record<string, unknown>)?.current_track as Record<string, unknown> | undefined;
-
-            // Update position timestamp when we get new position from API
-            lastPositionUpdateRef.current = Date.now();
-
-            setPlayerState(prev => ({
-              is_paused: Boolean(stateObj.paused),
-              is_active: true,
-              current_track: currentTrack ? {
-                id: String(currentTrack.id),
-                name: String(currentTrack.name),
-                artists: (currentTrack.artists as Array<{ name: string }>) || [],
-                album: (currentTrack.album as { name: string; images: Array<{ url: string }> }) || { name: '', images: [] },
-                duration_ms: Number(currentTrack.duration_ms) || 0,
-                uri: String(currentTrack.uri)
-              } : null,
-              position: Number(stateObj.position) || 0,
-              duration: Number(currentTrack?.duration_ms) || 0,
-              volume: prev.volume, // Keep current volume
-              device_id: deviceIdRef.current
-            }));
+            applySdkState(state as Record<string, unknown>);
           } else {
             // If no state, set as inactive
+            clockRef.current = { ...clockRef.current, paused: true, trackId: null };
             setPlayerState(prev => ({
               ...prev,
               is_active: false,
               current_track: null,
+              next_track: null,
               position: 0,
               duration: 0
             }));
@@ -167,7 +220,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         }
       }
     }, 5000);
-  }, []);
+  }, [applySdkState]);
 
   const stopStatePolling = useCallback(() => {
     if (stateCheckIntervalRef.current) {
@@ -346,36 +399,17 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     // Playback status updates
     newPlayer.addListener('player_state_changed', (state: unknown) => {
       if (!state || typeof state !== 'object') {
+        clockRef.current = { ...clockRef.current, paused: true, trackId: null };
         setPlayerState(prev => ({
           ...prev,
           is_active: false,
-          current_track: null
+          current_track: null,
+          next_track: null
         }));
         return;
       }
 
-      const stateObj = state as Record<string, unknown>;
-      const currentTrack = (stateObj.track_window as Record<string, unknown>)?.current_track as Record<string, unknown> | undefined;
-
-      // Fresh position from the SDK: re-anchor the interpolation clock.
-      lastPositionUpdateRef.current = Date.now();
-
-      setPlayerState(prev => ({
-        is_paused: Boolean(stateObj.paused),
-        is_active: true,
-        current_track: currentTrack ? {
-          id: String(currentTrack.id),
-          name: String(currentTrack.name),
-          artists: (currentTrack.artists as Array<{ name: string }>) || [],
-          album: (currentTrack.album as { name: string; images: Array<{ url: string }> }) || { name: '', images: [] },
-          duration_ms: Number(currentTrack.duration_ms) || 0,
-          uri: String(currentTrack.uri)
-        } : null,
-        position: Number(stateObj.position) || 0,
-        duration: Number(currentTrack?.duration_ms) || 0,
-        volume: prev.volume, // Keep current volume since Spotify doesn't provide it in state
-        device_id: deviceIdRef.current
-      }));
+      applySdkState(state as Record<string, unknown>);
     });
 
     // Ready - SDK guarantees the device is registered when this fires.
@@ -433,25 +467,28 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       });
       isInitializingRef.current = false;
     });
-  }, [startStatePolling, startPositionInterpolation, stopStatePolling, stopPositionInterpolation]);
+  }, [startStatePolling, startPositionInterpolation, stopStatePolling, stopPositionInterpolation, applySdkState]);
 
   // Starting playback of a track/context is the ONE thing the SDK has no
   // local method for -- it requires the Web API. Everything else (toggle,
   // seek, volume, next/previous) uses the SDK's local methods below: they
   // act on this device directly with no network round trip, no token read,
   // and no device checks, so the controls respond instantly.
-  const playTrack = useCallback((trackUri: string) => {
+  const playTrack = useCallback((trackUri: string, contextUri?: string) => {
     const targetDeviceId = deviceIdRef.current;
     if (!playerRef.current || !targetDeviceId) {
       console.error('Player not ready or device ID not available');
       return;
     }
 
+    // With a context (playlist), start AT the track inside it so next /
+    // previous keep walking the playlist. A bare `uris: [track]` plays that
+    // one song and then stops.
     fetch(`https://api.spotify.com/v1/me/player/play?device_id=${targetDeviceId}`, {
       method: 'PUT',
-      body: JSON.stringify({
-        uris: [trackUri]
-      }),
+      body: JSON.stringify(
+        contextUri ? { context_uri: contextUri, offset: { uri: trackUri } } : { uris: [trackUri] }
+      ),
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${localStorage.getItem('spotify_access_token')}`
@@ -576,6 +613,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
       // Re-anchor interpolation so the progress bar doesn't jump while the
       // next state event is in flight.
       lastPositionUpdateRef.current = Date.now();
+      clockRef.current = { ...clockRef.current, positionMs: Math.round(position), perfMs: performance.now() };
       setPlayerState(prev => ({ ...prev, position: Math.round(position) }));
     } catch (error) {
       console.error('Error seeking:', error);
@@ -607,11 +645,13 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
         is_paused: true,
         is_active: false,
         current_track: null,
+        next_track: null,
         position: 0,
         duration: 0,
         volume: 0.5,
         device_id: null
       });
+      clockRef.current = { positionMs: 0, perfMs: 0, paused: true, trackId: null };
     };
   }, [stopStatePolling, stopPositionInterpolation]);
 
@@ -623,6 +663,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     isReady,
     deviceId,
     playerError,
+    getSongTimeAt,
     initializePlayer,
     playTrack,
     playPlaylist,
@@ -631,7 +672,7 @@ export const WebPlayerProvider = ({ children }: { children: ReactNode }) => {
     previousTrack,
     setVolume,
     seek
-  }), [player, playerState, isReady, deviceId, playerError, initializePlayer, playTrack, playPlaylist, togglePlay, nextTrack, previousTrack, setVolume, seek]);
+  }), [player, playerState, isReady, deviceId, playerError, getSongTimeAt, initializePlayer, playTrack, playPlaylist, togglePlay, nextTrack, previousTrack, setVolume, seek]);
 
   return (
     <WebPlayerContext.Provider value={value}>

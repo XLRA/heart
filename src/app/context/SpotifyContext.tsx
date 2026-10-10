@@ -394,7 +394,9 @@ export const SpotifyProvider = ({ children }: { children: ReactNode }) => {
         
         const tracks = tracksData.items
           .map(item => item.track)
-          .filter(track => track && 'preview_url' in track && track.preview_url) as SpotifyTrack[];
+          // Keep every real track: Spotify stopped returning preview_url for
+          // new apps, so filtering on it emptied every playlist.
+          .filter(track => track && 'duration_ms' in track) as SpotifyTrack[];
         
         allTracks.push(...tracks);
         

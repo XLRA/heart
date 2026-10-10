@@ -203,6 +203,8 @@ const AdvancedMusicPlayer = () => {
   };
 
   const handleVolumeChange = useCallback((volumeValue: number) => {
+    // Dragging the bar is an explicit level choice: it ends a mute.
+    setIsMuted(false);
     // Update local state immediately for responsive UI
     if (isUsingSpotifyPlayer) {
       setLocalPlayerState(prev => ({ ...prev, volume: volumeValue }));
@@ -283,6 +285,9 @@ const AdvancedMusicPlayer = () => {
     setCurrentPlaylist(null);
     setIsUsingSpotifyPlayer(false);
     setShowPlaylistSongs(false);
+    // Local audio starts paused; without this the visualizer kept the
+    // Spotify-side "playing" flag until the next local play/pause event.
+    setIsPlaying(false);
     // Stop Spotify playback if active
     if (isReady && deviceId) {
       fetch('https://api.spotify.com/v1/me/player/pause', {
@@ -417,9 +422,9 @@ const AdvancedMusicPlayer = () => {
     if (isUsingSpotifyPlayer && playerState.current_track?.album?.images) {
       // Spotify track - get the smallest image for faster extraction
       imageUrl = getSmallestImageUrl(playerState.current_track.album.images);
-    } else if (!isUsingSpotifyPlayer && songs.length > 0 && songs[0].cover) {
-      // Local track - use the cover path directly
-      imageUrl = songs[0].cover;
+    } else if (!isUsingSpotifyPlayer && currentSong?.cover) {
+      // Local track - use the CURRENT song's cover (not the list's first).
+      imageUrl = currentSong.cover;
     }
     
     if (!imageUrl) {
@@ -454,7 +459,7 @@ const AdvancedMusicPlayer = () => {
     return () => {
       isMounted = false;
     };
-  }, [playerState.current_track?.id, playerState.current_track?.album?.images, isUsingSpotifyPlayer, songs, setAlbumColors]);
+  }, [playerState.current_track?.id, playerState.current_track?.album?.images, isUsingSpotifyPlayer, currentSong?.cover, setAlbumColors]);
 
   // Cleanup timeouts on unmount
   useEffect(() => {
@@ -505,7 +510,7 @@ const AdvancedMusicPlayer = () => {
               cover={currentSong?.cover ?? ''}
               title={currentSong?.title ?? ''}
               isActive={isActive}
-              isBuffering={!currentPlayerState.is_active && isReady}
+              isBuffering={isUsingSpotifyPlayer && !currentPlayerState.is_active && isReady}
             />
 
             <PlayerControls 

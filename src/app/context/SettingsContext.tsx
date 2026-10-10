@@ -15,6 +15,14 @@ interface SettingsContextType {
    *  visible so nobody gets stranded on a blank screen. */
   uiHidden: boolean;
   setUiHidden: (hidden: boolean) => void;
+  /** Manual visual-sync nudge in ms: positive = visuals later (use when the
+   *  heart hits before you hear the beat, e.g. Bluetooth headphones). */
+  syncNudgeMs: number;
+  setSyncNudgeMs: (ms: number) => void;
+  /** Re-sync every new track with a few seconds of microphone audio (only
+   *  takes effect once mic permission has been granted). */
+  micAutoSync: boolean;
+  setMicAutoSync: (on: boolean) => void;
 }
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
@@ -33,22 +41,31 @@ export const TRACE_COUNTS: Record<ParticleLevel, number> = {
   high: 50,
 };
 
+export const SYNC_NUDGE_LIMIT_MS = 300;
+
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [particleLevel, setParticleLevelState] = useState<ParticleLevel>('high');
   const [lyricsMode, setLyricsModeState] = useState<LyricsMode>('center');
   const [uiHidden, setUiHidden] = useState(false);
+  const [syncNudgeMs, setSyncNudgeState] = useState(0);
+  const [micAutoSync, setMicAutoSyncState] = useState(false);
 
   // Load settings from localStorage on mount
   useEffect(() => {
     const savedParticleLevel = localStorage.getItem('particleLevel') as ParticleLevel;
     const savedLyricsMode = localStorage.getItem('lyricsMode') as LyricsMode;
-    
+    const savedNudge = Number(localStorage.getItem('syncNudgeMs'));
+
     if (savedParticleLevel && ['low', 'medium', 'high'].includes(savedParticleLevel)) {
       setParticleLevelState(savedParticleLevel);
     }
     if (savedLyricsMode && ['center', 'alternating'].includes(savedLyricsMode)) {
       setLyricsModeState(savedLyricsMode);
     }
+    if (Number.isFinite(savedNudge) && Math.abs(savedNudge) <= SYNC_NUDGE_LIMIT_MS) {
+      setSyncNudgeState(savedNudge);
+    }
+    setMicAutoSyncState(localStorage.getItem('micAutoSync') === '1');
   }, []);
 
   const setParticleLevel = (level: ParticleLevel) => {
@@ -61,8 +78,27 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('lyricsMode', mode);
   };
 
+  const setSyncNudgeMs = (ms: number) => {
+    const v = Math.max(-SYNC_NUDGE_LIMIT_MS, Math.min(SYNC_NUDGE_LIMIT_MS, Math.round(ms)));
+    setSyncNudgeState(v);
+    localStorage.setItem('syncNudgeMs', String(v));
+  };
+
+  const setMicAutoSync = (on: boolean) => {
+    setMicAutoSyncState(on);
+    localStorage.setItem('micAutoSync', on ? '1' : '0');
+  };
+
   return (
-    <SettingsContext.Provider value={{ particleLevel, setParticleLevel, lyricsMode, setLyricsMode, uiHidden, setUiHidden }}>
+    <SettingsContext.Provider
+      value={{
+        particleLevel, setParticleLevel,
+        lyricsMode, setLyricsMode,
+        uiHidden, setUiHidden,
+        syncNudgeMs, setSyncNudgeMs,
+        micAutoSync, setMicAutoSync,
+      }}
+    >
       {children}
     </SettingsContext.Provider>
   );

@@ -10,11 +10,13 @@ import { SpotifyProvider } from '../context/SpotifyContext';
 import { WebPlayerProvider, useWebPlayer } from '../context/WebPlayerContext';
 import { AudioVisualizerProvider, useAudioVisualizer } from '../context/AudioVisualizerContext';
 import { SettingsProvider, useSettings } from '../context/SettingsContext';
+import { ReactivityProvider, useReactivity } from '../context/ReactivityContext';
 
 function AppContent() {
   const { audioElement, isPlaying, isSpotifyMode, albumColors, tabAudioStream } = useAudioVisualizer();
   const { playerState } = useWebPlayer();
   const { particleLevel, lyricsMode, uiHidden, setUiHidden } = useSettings();
+  const { readFrame, status } = useReactivity();
 
   // While the UI is hidden, moving the mouse briefly reveals a small restore
   // button so clean mode stays discoverable without the keyboard shortcut.
@@ -63,15 +65,19 @@ function AppContent() {
         isPlaying={isPlaying}
         isSpotifyMode={isSpotifyMode}
         albumColors={albumColors}
-        currentPosition={playerState.position}
         particleLevel={particleLevel}
         tabAudioStream={tabAudioStream}
         hideIndicator={uiHidden}
+        readFrame={readFrame}
+        sourceLabel={status.kind === 'live' ? status.source : null}
       />
+      {/* Lyrics are Spotify-only; in local mode the SDK's (paused) track must
+          not leave its lyrics on screen. */}
       <LiveLyrics
-        currentTrackId={playerState.current_track?.id || null}
+        currentTrackId={isSpotifyMode ? playerState.current_track?.id || null : null}
         currentTrackName={playerState.current_track?.name}
         currentArtist={playerState.current_track?.artists.map(a => a.name).join(', ')}
+        currentDurationMs={playerState.current_track?.duration_ms}
         currentPosition={playerState.position}
         isPlaying={isPlaying}
         lyricsMode={lyricsMode}
@@ -117,7 +123,9 @@ export default function MusicPage() {
       <WebPlayerProvider>
         <AudioVisualizerProvider>
           <SettingsProvider>
-            <AppContent />
+            <ReactivityProvider>
+              <AppContent />
+            </ReactivityProvider>
           </SettingsProvider>
         </AudioVisualizerProvider>
       </WebPlayerProvider>

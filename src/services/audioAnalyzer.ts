@@ -4,18 +4,21 @@
  *
  * Pipeline per frame:
  *   1. getFloatFrequencyData() into a Float32Array (post pre-emphasis).
- *   2. Per-bin: compute magnitude, accumulate per-band energy + per-band positive flux.
+ *   2. Per-bin: compute magnitude, accumulate per-band levels and the linear
+ *      power of the drum bands (kick 40-130 Hz, snare body 150-400 Hz + noise
+ *      1.5-6 kHz).
  *   3. Update long-term loudness (slow EMA, only on non-silent frames).
  *   4. Apply AGC: scale per-band magnitudes by clamped target/longTermLoudness ratio.
- *      Beat detection is gain-invariant (deltas + relative threshold), so AGC only
- *      affects the displayed envelope values.
+ *      Drum detection is gain-invariant (dB rises), so AGC only affects the
+ *      displayed envelope values.
  *   5. Noise gate (silence -> output decays to zero, beats suppressed).
  *   6. Per-band asymmetric envelope follower (different attack/decay per band for
  *      a more "musical" feel: bass snaps, mid sustains, treble sparkles).
- *   7. Per-band beat detection with median + MAD adaptive threshold (robust to
- *      outliers - a single big hit doesn't ratchet the threshold up for the next):
- *        - Kick : sub-bass band (20-150 Hz), tight refractory (~220ms)
- *        - Snare: upper-mid band (2-6 kHz), shorter refractory (~130ms)
+ *   7. Drum detection on band-energy dB rises over ~23 ms, thresholded at
+ *      mean + k * std of the last ~2 s (the same detector the offline Track
+ *      Intelligence analysis uses):
+ *        - Kick : 40-130 Hz rise, refractory ~150 ms
+ *        - Snare: body AND noise bands rising together, refractory ~110 ms
  *   8. Tempo tracking (median IBI + MAD confidence over recent kicks):
  *        - Reject detected kicks that fall too close to the last kick (false positives).
  *        - When confidence is high, fire a predicted beat if detection missed one.
@@ -24,6 +27,8 @@
  * NOT touch the audible signal path. The caller is responsible for connecting the
  * source to the destination (or not, for tab capture where the tab handles output).
  */
+
+import { flatnessToUnit } from './trackIntel/analysis';
 
 export interface AudioReactiveData {
   bass: number;
@@ -65,6 +70,10 @@ export interface AudioReactiveData {
   /** Magnitude of the most recent section transition in [0, 1]. Persists for
    *  the cooldown window so visualization can ramp/fade against it. */
   sectionStrength: number;
+  /** True on the frame a bar's first beat lands. Only predictive sources
+   *  (the Track Intelligence engine) know bar structure; live analysis
+   *  always reports false. */
+  downbeat: boolean;
 }
 
 export interface AudioAnalyzerConfig {
@@ -99,13 +108,19 @@ const ENV = {
   overall: { attack: 0.50, decay: 0.05 },
 };
 
-// Beat detection: median + MAD * 1.4826 (consistent estimator of sigma for normal dist)
-const FLUX_HISTORY_FRAMES = 43;
-const KICK_REFRACTORY_MS = 220;
+// Drum detection (same detector as the offline Track Intelligence analysis):
+// onsets are dB RISES of band energy over ~23 ms -- kick: 40-130 Hz thump;
+// snare: 150-400 Hz body AND 1.5-6 kHz noise rising together. Thresholds are
+// mean + k * std of the last ~2 s of the detection function. The previous
+// per-bin flux + median/MAD threshold collapsed (MAD ~ 0 on mostly-zero
+// flux), fired on nearly every bass note, and pinned strengths at 1.0.
+const ODF_HISTORY_MS = 2000;
+const ODF_LAG_MS = 23;
+const KICK_REFRACTORY_MS = 150;
 const KICK_THRESHOLD_K = 1.5;
-const SNARE_REFRACTORY_MS = 130;
+const SNARE_REFRACTORY_MS = 110;
 const SNARE_THRESHOLD_K = 1.7;
-const MAD_TO_SIGMA = 1.4826;
+const ODF_MIN_THRESHOLD_DB = 1.5;
 
 const NOISE_FLOOR = 0.08;
 
@@ -173,7 +188,7 @@ const TEMPO_MIN_BPM_PERIOD_MS = 333;     // 180 BPM
 const TEMPO_MAX_BPM_PERIOD_MS = 1000;    // 60 BPM
 
 // Robust order statistics over a small history. Sorts a copy each call;
-// FLUX_HISTORY_FRAMES is small (~43) so this is cheap.
+// Histories here are small (<= 16 kicks) so this is cheap.
 function median(values: readonly number[]): number {
   if (values.length === 0) return 0;
   const sorted = values.slice().sort((a, b) => a - b);
@@ -281,8 +296,6 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
 
   const bufferLength = analyser.frequencyBinCount;
   const floatData = new Float32Array(bufferLength);
-  const prevFloatData = new Float32Array(bufferLength);
-  prevFloatData.fill(-100);
 
   const binWidth = audioContext.sampleRate / analyser.fftSize;
   const subBassEnd  = Math.min(bufferLength, Math.ceil(BAND_EDGES_HZ.subBass  / binWidth));
@@ -291,10 +304,22 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
   const upperMidEnd = Math.min(bufferLength, Math.ceil(BAND_EDGES_HZ.upperMid / binWidth));
   const trebleEnd   = Math.min(bufferLength, Math.ceil(BAND_EDGES_HZ.treble   / binWidth));
 
+  const binOf = (hz: number) => Math.min(bufferLength, Math.ceil(hz / binWidth));
+  const kickLo = Math.max(1, Math.floor(40 / binWidth));
+  const kickHi = binOf(130);
+  const bodyLo = binOf(150);
+  const bodyHi = binOf(400);
+  const noiseLo = binOf(1500);
+  const noiseHi = binOf(6000);
+
   let envBass = 0, envMid = 0, envTreble = 0, envOverall = 0;
 
-  const kickFluxHistory: number[] = [];
-  const snareFluxHistory: number[] = [];
+  // Drum detection state: recent band energies (for the lagged rise), slow
+  // energy levels (relative floors), and ~2 s of detection-function history.
+  const energyRing: Array<{ t: number; k: number; b: number; n: number }> = [];
+  let levelK = 0, levelB = 0, levelN = 0;
+  const kickOdfHistory: Array<{ t: number; v: number }> = [];
+  const snareOdfHistory: Array<{ t: number; v: number }> = [];
   let lastKickTime = 0;
   let lastSnareTime = 0;
   let lastFiredBeatTime = 0; // detected OR predicted, used for prediction debounce
@@ -343,17 +368,32 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
     return current + rate * (raw - current);
   };
 
-  const robustThreshold = (history: number[], k: number) => {
-    if (history.length === 0) return { threshold: Infinity, scale: 0 };
-    const med = median(history);
-    const mad = medianAbsoluteDeviation(history, med);
-    const sigma = mad * MAD_TO_SIGMA;
-    return { threshold: Math.max(med + k * sigma, 0.005), scale: sigma };
+  const pushOdf = (history: Array<{ t: number; v: number }>, t: number, v: number) => {
+    history.push({ t, v });
+    while (history.length > 0 && history[0].t < t - ODF_HISTORY_MS) history.shift();
   };
 
-  const pushFlux = (history: number[], value: number) => {
-    history.push(value);
-    if (history.length > FLUX_HISTORY_FRAMES) history.shift();
+  /** Threshold (mean + k*std) and a "loud hit" reference (95th pct) over the
+   *  detection-function history. Strength = clearance over threshold
+   *  relative to that reference, so ordinary hits read mid-scale. */
+  const odfThreshold = (history: Array<{ t: number; v: number }>, k: number) => {
+    const n = history.length;
+    if (n < 8) return { threshold: Infinity, top: Infinity };
+    let m = 0;
+    for (const h of history) m += h.v;
+    m /= n;
+    let v = 0;
+    for (const h of history) v += (h.v - m) * (h.v - m);
+    const threshold = Math.max(m + k * Math.sqrt(v / n), ODF_MIN_THRESHOLD_DB);
+    const sorted = history.map((h) => h.v).sort((a, b) => a - b);
+    const top = Math.max(threshold + 1, sorted[Math.floor(0.95 * (n - 1))]);
+    return { threshold, top };
+  };
+
+  const rise = (cur: number, prev: number, level: number) => {
+    const floor = Math.max(1e-14, level * 0.01);
+    const r = 10 * Math.log10((cur + floor) / (prev + floor));
+    return r > 0 ? r : 0;
   };
 
   const clamp01 = (v: number) => v < 0 ? 0 : v > 1 ? 1 : v;
@@ -370,7 +410,7 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
         centroid: 0.5, flatness: 0.5,
         tempo: 0, tempoConfidence: 0,
         nextBeatIn: Infinity, beatPhase: 0,
-        loudness: 0, section: false, sectionStrength: 0,
+        loudness: 0, section: false, sectionStrength: 0, downbeat: false,
       };
     }
 
@@ -402,41 +442,59 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
 
     let subBassSum = 0, bassSum = 0, midSum = 0, upperMidSum = 0, trebleSum = 0;
     let subBassCount = 0, bassCount = 0, midCount = 0, upperMidCount = 0, trebleCount = 0;
-    let kickFlux = 0, snareFlux = 0;
-    // Centroid: bin-weighted magnitude mean. Flatness: log-sum for geometric mean.
+    // Drum band energies (linear power).
+    let eKick = 0, eBody = 0, eNoise = 0;
+    // Centroid: LINEAR-magnitude-weighted bin mean (weighting by the dB-
+    // normalized value let the many high bins pin it at the 4 kHz ceiling).
+    // Flatness: power geometric / arithmetic mean.
     let centroidNumerator = 0;
     let centroidDenominator = 0;
-    let logMagSum = 0;
+    let logPowSum = 0;
+    let powSum = 0;
 
     for (let i = 1; i < trebleEnd; i++) {
-      const magnitude = (floatData[i] + 100) / 90;
+      const db = floatData[i];
+      const magnitude = (db + 100) / 90;
       const m = magnitude > 0 ? magnitude : 0;
-      const prev = (prevFloatData[i] + 100) / 90;
-      const p = prev > 0 ? prev : 0;
-      const delta = m - p;
-      const positiveDelta = delta > 0 ? delta : 0;
+      const pw = Math.pow(10, db / 10);
 
       if (i < subBassEnd) {
         subBassSum += m; subBassCount++;
-        kickFlux += positiveDelta;
       } else if (i < bassEnd) {
         bassSum += m; bassCount++;
       } else if (i < midEnd) {
         midSum += m; midCount++;
       } else if (i < upperMidEnd) {
         upperMidSum += m; upperMidCount++;
-        snareFlux += positiveDelta;
       } else {
         trebleSum += m; trebleCount++;
       }
+      if (i >= kickLo && i < kickHi) eKick += pw;
+      else if (i >= bodyLo && i < bodyHi) eBody += pw;
+      else if (i >= noiseLo && i < noiseHi) eNoise += pw;
 
-      // Centroid: weighted mean of bin index (proxy for frequency, scaled later by binWidth)
-      centroidNumerator += i * m;
-      centroidDenominator += m;
-      // Flatness: epsilon-protected log so silent bins don't blow up to -Infinity
-      logMagSum += Math.log(m + FLATNESS_LOG_EPS);
+      const lin = Math.sqrt(pw);
+      centroidNumerator += i * lin;
+      centroidDenominator += lin;
+      logPowSum += Math.log(pw + FLATNESS_LOG_EPS);
+      powSum += pw;
     }
-    prevFloatData.set(floatData);
+
+    // --- Drum detection functions: dB rise of each band over ~ODF_LAG_MS ---
+    energyRing.push({ t: now, k: eKick, b: eBody, n: eNoise });
+    while (energyRing.length > 12) energyRing.shift();
+    let ref: { t: number; k: number; b: number; n: number } | null = null;
+    for (let r = energyRing.length - 2; r >= 0; r--) {
+      if (now - energyRing[r].t >= ODF_LAG_MS) { ref = energyRing[r]; break; }
+    }
+    const levelAlpha = 1 - Math.pow(1 - 1 / 120, dtFrames); // ~2 s level trackers
+    levelK += levelAlpha * (eKick - levelK);
+    levelB += levelAlpha * (eBody - levelB);
+    levelN += levelAlpha * (eNoise - levelN);
+    const kickOdf = ref ? rise(eKick, ref.k, levelK) : 0;
+    const snareOdf = ref
+      ? Math.sqrt(rise(eBody, ref.b, levelB) * rise(eNoise, ref.n, levelN)) * Math.max(0, 1 - kickOdf / 24)
+      : 0;
 
     const rawSubBass  = subBassCount  > 0 ? subBassSum  / subBassCount  : 0;
     const rawBass     = bassCount     > 0 ? bassSum     / bassCount     : 0;
@@ -455,8 +513,8 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       envMid     = applyEnvelope(envMid,     0, ENV.mid.attack,     ENV.mid.decay,     dtFrames);
       envTreble  = applyEnvelope(envTreble,  0, ENV.treble.attack,  ENV.treble.decay,  dtFrames);
       envOverall = applyEnvelope(envOverall, 0, ENV.overall.attack, ENV.overall.decay, dtFrames);
-      pushFlux(kickFluxHistory, 0);
-      pushFlux(snareFluxHistory, 0);
+      pushOdf(kickOdfHistory, now, 0);
+      pushOdf(snareOdfHistory, now, 0);
       // Section strength decays even through silence so a long break doesn't keep
       // the previous section glow alive forever.
       lastSectionStrength *= sectionStrengthDecayDt;
@@ -469,7 +527,7 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
         tempo: tempo.tempo, tempoConfidence: tempo.confidence,
         nextBeatIn: Infinity, beatPhase: 0,
         loudness: longTermLoudness,
-        section: false, sectionStrength: lastSectionStrength,
+        section: false, sectionStrength: lastSectionStrength, downbeat: false,
       };
       return cachedFrame;
     }
@@ -484,13 +542,11 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       ));
       smoothedCentroid += (1 - Math.pow(1 - CENTROID_SMOOTH_ALPHA, dtFrames)) * (rawCentroid - smoothedCentroid);
     }
-    // Flatness: geometric mean / arithmetic mean. Both computed over the same bin set
-    // [1, trebleEnd), so they share the same N. Use the centroid sum as arith.
+    // Flatness: power geometric mean / arithmetic mean over [1, trebleEnd),
+    // mapped log-wise to [0, 1] (shared scale with the offline analysis).
     const totalBins = trebleEnd - 1;
-    if (totalBins > 0 && centroidDenominator > 0) {
-      const arithMean = centroidDenominator / totalBins;
-      const geoMean = Math.exp(logMagSum / totalBins);
-      const rawFlatness = Math.max(0, Math.min(1, geoMean / arithMean));
+    if (totalBins > 0 && powSum > 0) {
+      const rawFlatness = flatnessToUnit(Math.exp(logPowSum / totalBins) / (powSum / totalBins));
       smoothedFlatness += (1 - Math.pow(1 - FLATNESS_SMOOTH_ALPHA, dtFrames)) * (rawFlatness - smoothedFlatness);
     }
 
@@ -531,20 +587,20 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
     envTreble  = applyEnvelope(envTreble,  gainedTreble,  ENV.treble.attack,  ENV.treble.decay,  dtFrames);
     envOverall = applyEnvelope(envOverall, gainedOverall, ENV.overall.attack, ENV.overall.decay, dtFrames);
 
-    // Beat detection runs on raw flux (gain-invariant: scaling kickFlux scales the
-    // threshold proportionally, so AGC doesn't bias detection).
-    pushFlux(kickFluxHistory, kickFlux);
-    pushFlux(snareFluxHistory, snareFlux);
+    // Drum detection runs on dB rises, which are gain-invariant (AGC can't
+    // bias it). Thresholds come from the history BEFORE this frame.
+    const kickT = odfThreshold(kickOdfHistory, KICK_THRESHOLD_K);
+    const snareT = odfThreshold(snareOdfHistory, SNARE_THRESHOLD_K);
+    pushOdf(kickOdfHistory, now, kickOdf);
+    pushOdf(snareOdfHistory, now, snareOdf);
 
-    const { threshold: kickThreshold, scale: kickScale } =
-      robustThreshold(kickFluxHistory, KICK_THRESHOLD_K);
-    let kickHit = kickFlux > kickThreshold && (now - lastKickTime) > KICK_REFRACTORY_MS;
+    let kickHit = kickOdf > kickT.threshold && (now - lastKickTime) > KICK_REFRACTORY_MS;
     // Tempo grid suppression: reject kicks that violate the locked tempo period.
     if (kickHit && !tempo.fitsGrid(now, lastKickTime)) {
       kickHit = false;
     }
     const kickStrength = kickHit
-      ? Math.min(1, (kickFlux - kickThreshold) / Math.max(0.005, kickScale * 2))
+      ? Math.max(0.05, Math.min(1, (kickOdf - kickT.threshold) / (kickT.top - kickT.threshold)))
       : 0;
     if (kickHit) {
       lastKickTime = now;
@@ -552,12 +608,10 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       lastFiredBeatTime = now;
     }
 
-    const { threshold: snareThreshold, scale: snareScale } =
-      robustThreshold(snareFluxHistory, SNARE_THRESHOLD_K);
-    const snareHit = snareFlux > snareThreshold && (now - lastSnareTime) > SNARE_REFRACTORY_MS;
+    const snareHit = snareOdf > snareT.threshold && (now - lastSnareTime) > SNARE_REFRACTORY_MS;
     if (snareHit) lastSnareTime = now;
     const snareStrength = snareHit
-      ? Math.min(1, (snareFlux - snareThreshold) / Math.max(0.005, snareScale * 2))
+      ? Math.max(0.05, Math.min(1, (snareOdf - snareT.threshold) / (snareT.top - snareT.threshold)))
       : 0;
 
     // Tempo prediction: if we have a confident tempo lock and detection missed,
@@ -640,6 +694,7 @@ export function createAudioAnalyzer(config: AudioAnalyzerConfig): AudioAnalyzer 
       loudness: longTermLoudness,
       section: sectionThisFrame,
       sectionStrength: lastSectionStrength,
+      downbeat: false,
     };
     return cachedFrame;
   }

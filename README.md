@@ -28,19 +28,27 @@ A full-screen storm scene rendered on a single canvas with a hand-tuned intro ti
 - **Local Audio**: play bundled MP3s (`/public/music`) with real Web Audio analysis
 - **Full Controls**: play/pause, next/previous, seek, and volume
 
-### Audio-Reactive Heart
-- **Particle heart animation** that beats and reacts to bass, mids, treble, kicks, and snares
-- **Custom audio analyzer** (`src/services/audioAnalyzer.ts`): per-band envelope followers, gain-invariant beat detection with median+MAD adaptive thresholds, tempo locking with beat prediction, spectral centroid/flatness features, and AGC
-- **Live tab-audio capture** (Chrome/Edge): capture the tab's audio so the heart reacts to *real* Spotify sound — otherwise Spotify playback falls back to a position-seeded simulation (the SDK's audio is DRM-protected and can't be tapped)
+### Audio-Reactive Heart — Track Intelligence
+Spotify's Web Playback SDK audio is DRM-protected: the page can never *hear* what Spotify plays. So instead of listening, the heart **knows the song** — with zero setup:
+
+1. **Real audio of the exact track.** `/api/track-intel` finds Spotify's own 30 s preview of the same master (from the public embed page; Deezer / iTunes as fallbacks) plus tempo/energy from ReccoBeats. The browser decodes the clip and analyzes it in a Web Worker (`src/services/trackIntel/analysis.ts`): tempo, a dynamic-programming beat track and grid fit, kick/snare onsets (band-energy rise detectors), and the same envelopes the live analyzer produces.
+2. **The whole song's beat map.** `/api/track-intel/beatmap` looks the track up (ISRC → MusicBrainz → AcousticBrainz) and returns every beat position in the song, including live-band tempo drift. If your Spotify app still has the legacy `/audio-analysis` endpoint, its beats, bars and sections are used instead.
+3. **A predictive engine** (`engine.ts`) plays the clip's groove — a consensus kick/snare template per 16th-note slot — along the song's beat clock, driven by a high-resolution playback clock. Because it reads *ahead*, there's no detection latency, and the heart genuinely anticipates each hit.
+4. **One-tap sync for anything else.** Songs without a beat map (mostly 2022+) start with the correct tempo and groove but an unknown beat phase. **Sync with microphone** (settings) listens for a few seconds and locks phase *and* downbeat with a matched filter against the known groove — it also measures your speaker latency. Or press **`T` on the beat** four times. Locks are remembered per track.
+
+Local files get a full-song analysis (exact). Optional **live tab capture** (Chrome/Edge) remains under *advanced*. The indicator dot shows the source: green = exact/beat-mapped/synced, amber = tempo + groove locked, cyan = live capture.
+
+- **Particle heart animation** that pumps core-to-rim on kicks, flares on snares, accents bar downbeats, and lifts on section changes
+- **Real-time analyzer** (`src/services/audioAnalyzer.ts`) for live capture: band-energy-rise drum detection with mean+std thresholds, tempo locking with beat prediction, spectral centroid/flatness, and AGC
 - **Album-art theming**: dominant colors are extracted from the current album cover and tint the visuals
 
 ### Live Lyrics
-- **Time-synced lyrics** with millisecond-precise timestamps, displayed one line at a time like a music video
-- **No API key needed** — fetched server-side through `/api/lyrics` from a custom Spotify lyrics API, with in-memory caching and smart timing estimation for unsynced tracks
+- **Time-synced lyrics** displayed one line at a time like a music video
+- **No API key needed** — fetched server-side through `/api/lyrics`: a custom Spotify lyrics API first, then [LRCLIB](https://lrclib.net) (matched by artist, title and duration), with in-memory caching
 - **Two display modes**: centered or alternating, switchable in settings
 
 ### Settings & Clean Mode
-- **Settings panel**: particle density (low/medium/high), lyrics mode, and tab-audio capture toggle
+- **Settings panel**: reactivity status + mic sync / auto-sync + timing nudge, particle density (low/medium/high), lyrics mode, and live tab capture
 - **Clean mode**: press `H` to hide all UI chrome and leave just the heart and lyrics; `Esc` (or the mouse-reveal button) brings it back
 
 ## Getting Started
@@ -106,17 +114,28 @@ heart/
 │   │   │   ├── SpotifyContext.tsx          # Spotify auth & API
 │   │   │   ├── WebPlayerContext.tsx        # Spotify Web Player SDK
 │   │   │   ├── AudioVisualizerContext.tsx  # Shared audio state
+│   │   │   ├── ReactivityContext.tsx       # Track Intelligence ↔ heart, mic/tap sync
 │   │   │   └── SettingsContext.tsx         # User settings
 │   │   ├── music/
 │   │   │   ├── page.tsx                    # Music player page
 │   │   │   └── callback/                   # Spotify OAuth callback
 │   │   └── api/
 │   │       ├── lyrics/route.ts             # Time-synced lyrics proxy + cache
+│   │       ├── track-intel/route.ts        # Preview clip + audio features
+│   │       ├── track-intel/beatmap/        # Whole-song beat map (AcousticBrainz)
 │   │       └── spotify/
 │   │           ├── token/route.ts          # OAuth code → token exchange
 │   │           └── refresh/route.ts        # Token refresh
 │   ├── services/
+│   │   ├── trackIntel/                     # Track Intelligence
+│   │   │   ├── analysis.ts                 #   Offline groove analysis (tempo, beats, drums, envelopes)
+│   │   │   ├── engine.ts                   #   Predictive per-frame engine + beat clocks
+│   │   │   ├── sync.ts                     #   Mic matched-filter + tap phase sync
+│   │   │   ├── micCapture.ts               #   AudioWorklet mic capture
+│   │   │   ├── client.ts                   #   Loading pipeline, worker, caches
+│   │   │   └── server.ts                   #   Upstream lookups (server-only)
 │   │   ├── audioAnalyzer.ts                # Real-time audio feature extraction
+│   │   ├── audioGraph.ts                   # Shared Web Audio graph for <audio>
 │   │   └── colorExtractor.ts               # Album-art color extraction
 │   └── types/                              # TypeScript definitions
 └── public/
@@ -138,8 +157,9 @@ heart/
 ### Music Player
 1. **Connect Spotify** via the button in the top-right
 2. **Pick a playlist** from the Spotify icon in the player and click a track
-3. **Optional**: enable tab-audio capture in settings so the heart reacts to the real Spotify audio
-4. **Press `H`** for clean mode — just the heart and lyrics
+3. The heart locks onto the song by itself within a couple of seconds (watch the dot turn green or amber)
+4. **Optional**: if the dot is amber, press `T` on the beat 4 times — or open settings → **Sync with microphone** (and tick auto-sync to do it for every new track)
+5. **Press `H`** for clean mode — just the heart and lyrics
 
 ### Local Audio Files
 1. Drop MP3s into `/public/music/` and covers into `/public/covers/`
@@ -159,7 +179,6 @@ Landing audio assets live under `/public/audio/` — `storm/` holds the rain loo
 ## 📚 Documentation
 
 - [SPOTIFY_SETUP.md](./SPOTIFY_SETUP.md) — Spotify API setup instructions
-- [REAUTHENTICATE_SPOTIFY.md](./REAUTHENTICATE_SPOTIFY.md) — Spotify reauth guide
 
 ## 🚀 Deployment
 
@@ -172,12 +191,15 @@ Set the environment variables above in your Vercel project settings before deplo
 ## 🐛 Troubleshooting
 
 ### Lyrics Not Showing
-- Check the browser console for `[API]` / `[Custom API]` fetch logs
-- Demo lyrics appear when a track has no lyrics on Spotify — try another track
+- Check the server log for `[API]` / `[Custom API]` / `[LRCLIB]` lines
+- The custom Spotify lyrics API depends on an `SP_DC` cookie that expires; when it does, LRCLIB takes over automatically
+- Demo lyrics appear only when neither source has the track
 
-### Heart Not Reacting to Spotify
-- This is expected without capture: Spotify's SDK audio is DRM-protected, so the heart runs a simulation
-- Enable **tab-audio capture** in the settings panel (Chrome/Edge) and select "Share tab audio" in the picker for real analysis
+### Heart Off the Beat (Spotify)
+- **Amber dot**: tempo and groove are right but the beat phase is a guess (common for 2022+ songs with no public beat map) — press `T` on the beat 4 times or use **Sync with microphone**
+- **Consistently early/late**: drag the **Timing nudge** slider (Bluetooth headphones add 150–250 ms)
+- **Hits on the wrong beats of the bar** (kick/snare swapped): mic sync also locks the downbeat
+- **Grey "No analysis for this track"**: no preview clip and no tempo metadata exist; live tab capture still works
 
 ### No Storm Audio
 - Browsers block autoplay — click the speaker icon once to unlock
@@ -195,7 +217,9 @@ This project is open source and available under the MIT License.
 
 - [Next.js](https://nextjs.org/) — React framework
 - [Spotify Web API](https://developer.spotify.com/) — music streaming
-- [spotify-lyrics-api](https://github.com/akashrchandran/spotify-lyrics-api) — time-synced lyrics
+- [spotify-lyrics-api](https://github.com/akashrchandran/spotify-lyrics-api) and [LRCLIB](https://lrclib.net) — time-synced lyrics
+- [ReccoBeats](https://reccobeats.com), [MusicBrainz](https://musicbrainz.org) and [AcousticBrainz](https://acousticbrainz.org) — audio features and whole-song beat maps
+- Deezer and iTunes Search — fallback preview clips
 - [ColorThief](https://lokeshdhakar.com/projects/color-thief/) — album-art color extraction
 
 ---
