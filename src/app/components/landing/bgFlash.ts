@@ -38,6 +38,9 @@ export interface BgFlash {
   peak: number;
   /** Vertical center as fraction of height. */
   yFraction: number;
+  /** Glow gradient, built on the flash's first rendered frame and
+   *  reused for its whole life (strength rides globalAlpha). */
+  grad?: CanvasGradient;
 }
 
 export interface ThunderBurst {
@@ -260,15 +263,25 @@ export function renderBgFlash(
 
   const cx = flash.side === 'left' ? -width * 0.05 : width * 1.05;
   const cy = height * flash.yFraction;
+  const r = width * 0.65;
+  if (!flash.grad) {
+    flash.grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    flash.grad.addColorStop(0,    'rgba(220, 220, 220, 1)');
+    flash.grad.addColorStop(0.35, 'rgba(170, 170, 170, 0.5)');
+    flash.grad.addColorStop(0.7,  'rgba(110, 110, 110, 0.18)');
+    flash.grad.addColorStop(1,    'rgba(0,0,0,0)');
+  }
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, width * 0.65);
-  grad.addColorStop(0,    `rgba(220, 220, 220, ${intensity})`);
-  grad.addColorStop(0.35, `rgba(170, 170, 170, ${intensity * 0.5})`);
-  grad.addColorStop(0.7,  `rgba(110, 110, 110, ${intensity * 0.18})`);
-  grad.addColorStop(1,    'rgba(0,0,0,0)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, width, height);
+  ctx.globalAlpha = Math.min(1, intensity);
+  ctx.fillStyle = flash.grad;
+  // Only the gradient's footprint (~60% of the width) — beyond its
+  // radius the outer stop is transparent and adds nothing.
+  const x0 = Math.max(0, cx - r);
+  const x1 = Math.min(width, cx + r);
+  const y0 = Math.max(0, cy - r);
+  const y1 = Math.min(height, cy + r);
+  if (x1 > x0 && y1 > y0) ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
 
   // Cloud structure lit from within — the sprite for the flash's
   // side, faded by the flash envelope. One drawImage; the additive

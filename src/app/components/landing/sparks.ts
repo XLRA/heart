@@ -87,8 +87,8 @@ export function renderSparks(
     const hx = cx + dx * dist;
     const hy = cy + dy * dist + droop;
     const tailLen = s.len * (1 - t * 0.55);
-    const alpha = (1 - t) * (1 - t) * 0.85;
-    ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+    ctx.globalAlpha = (1 - t) * (1 - t) * 0.85;
+    ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = s.width;
     ctx.beginPath();
     ctx.moveTo(hx, hy);

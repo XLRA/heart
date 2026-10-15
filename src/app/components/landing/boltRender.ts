@@ -26,6 +26,28 @@
 
    Memory cost: 8 variants × 2 offscreens (trunk + branches) ×
    ~2MB on a 1080p display ≈ 32MB. Re-render cost on resize: ~80ms.
+
+   Fill-rate budget (why strikes used to hitch on weak GPUs)
+   -----------------------------------------------------------
+   A strike is pure GPU fill: every lit frame used to blit each
+   full-screen offscreen 3× (trunk + branches = 6 viewport-sized
+   blits per variant, held for the whole ~0.9s afterimage) plus up
+   to seven full-screen gradient fills. Three changes cut that
+   without changing a single visible pixel:
+     • TILES — at prerender time we record which cells (64px wide,
+       a third of the viewport tall) each bolt can touch (polyline +
+       a blur margin far past where the shadow quantizes to 0).
+       Composites blit only those runs — ~3 per layer, covering
+       ~30-37% of the screen instead of 100%.
+     • STACKING — three additive draws at alpha I equal ceil(3I)
+       draws whose alphas sum to 3I ('lighter' saturates, and
+       saturating addition of non-negatives is associative). The
+       dim afterimage tail (I < 1/3) becomes one blit instead of 3.
+     • GRADIENTS — every glow fill is clipped to its gradient's
+       bounding box (outside it the gradient is transparent and
+       adds nothing), and gradients are cached per position with
+       the strength applied through globalAlpha — strike frames no
+       longer allocate gradient objects or rgba() strings.
    ────────────────────────────────────────────────────────────── */
 
 import { strokePoints, mulberry32, type Lightning, type Pt } from './generateBolt';
@@ -128,6 +150,56 @@ function strokeVariedCore(
   }
 }
 
+/* ── Tile coverage ──────────────────────────────────────────────
+   Per offscreen: a flat list of [x, y, w, h] rects (CSS px) — the
+   horizontal runs of cells that the bolt can light. Cells are
+   TILE_W wide and a third of the viewport tall: tall bands keep
+   the run count at ~3 per layer (each run is one drawImage, so the
+   afterimage tail issues the same call count as the old 3-stack
+   full blits) while covering only ~30-37% of the screen. Keyed by
+   the offscreen canvas itself, so composites look their rects up
+   without any API change; a missing entry falls back to a
+   full-viewport blit. */
+const TILE_W = 64;
+const TILE_BANDS = 3;
+/** Distance from any stroke point beyond which the offscreen is
+ *  exactly transparent. The widest pass is shadowBlur 32 (gaussian
+ *  sigma 16 canvas px — ≤16 CSS px at any DPR); at 80px the shadow
+ *  is ~exp(-12.5) of peak, which quantizes to 0. */
+const TILE_MARGIN = 80;
+const BOLT_TILES = new WeakMap<HTMLCanvasElement, Float32Array>();
+
+function computeTiles(polylines: Pt[][], width: number, height: number): Float32Array {
+  const tileH = Math.max(1, Math.ceil(height / TILE_BANDS));
+  const cols = Math.max(1, Math.ceil(width / TILE_W));
+  const rows = Math.max(1, Math.ceil(height / tileH));
+  const mask = new Uint8Array(cols * rows);
+  for (const pts of polylines) {
+    for (const [px, py] of pts) {
+      const c0 = Math.max(0, Math.floor((px - TILE_MARGIN) / TILE_W));
+      const c1 = Math.min(cols - 1, Math.floor((px + TILE_MARGIN) / TILE_W));
+      const r0 = Math.max(0, Math.floor((py - TILE_MARGIN) / tileH));
+      const r1 = Math.min(rows - 1, Math.floor((py + TILE_MARGIN) / tileH));
+      for (let r = r0; r <= r1; r++) {
+        for (let c = c0; c <= c1; c++) mask[r * cols + c] = 1;
+      }
+    }
+  }
+  const rects: number[] = [];
+  for (let r = 0; r < rows; r++) {
+    let c = 0;
+    while (c < cols) {
+      if (!mask[r * cols + c]) { c++; continue; }
+      const start = c;
+      while (c < cols && mask[r * cols + c]) c++;
+      const x = start * TILE_W;
+      const y = r * tileH;
+      rects.push(x, y, Math.min(width, c * TILE_W) - x, Math.min(height, y + tileH) - y);
+    }
+  }
+  return new Float32Array(rects);
+}
+
 function clearOffscreen(off: HTMLCanvasElement, width: number, height: number, dpr: number) {
   off.width = Math.floor(width * dpr);
   off.height = Math.floor(height * dpr);
@@ -155,6 +227,7 @@ export function prerenderTrunk(
 ) {
   const ctx = clearOffscreen(off, width, height, dpr);
   if (!ctx) return;
+  BOLT_TILES.set(off, computeTiles([bolt.trunk], width, height));
 
   // Pass 1 — outer halo (cool tinted).
   ctx.shadowBlur = 32;
@@ -199,6 +272,7 @@ export function prerenderBranches(
 ) {
   const ctx = clearOffscreen(off, width, height, dpr);
   if (!ctx) return;
+  BOLT_TILES.set(off, computeTiles(bolt.branches, width, height));
 
   // Pass 1 — outer halo (cool tinted).
   ctx.shadowBlur = 32;
@@ -229,11 +303,38 @@ export function prerenderBranches(
   for (const br of bolt.branches) strokeVariedCore(ctx, br, 0.38, coreRng);
 }
 
+/** Blit an offscreen's covered tile runs (or the whole viewport if
+ *  it has no tile list). Source rects scale by the offscreen's own
+ *  backing-store ratio — the same mapping a full-viewport blit uses. */
+function blitCovered(
+  ctx: CanvasRenderingContext2D,
+  off: HTMLCanvasElement,
+  width: number,
+  height: number,
+) {
+  const rects = BOLT_TILES.get(off);
+  if (!rects) {
+    ctx.drawImage(off, 0, 0, width, height);
+    return;
+  }
+  const sx = off.width / width;
+  const sy = off.height / height;
+  for (let i = 0; i < rects.length; i += 4) {
+    const x = rects[i];
+    const y = rects[i + 1];
+    const w = rects[i + 2];
+    const h = rects[i + 3];
+    ctx.drawImage(off, x * sx, y * sy, w * sx, h * sy, x, y, w, h);
+  }
+}
+
 /**
  * Composite a pre-rendered offscreen onto the live canvas at the
  * given intensity, with optional jitter offset. Three stacked
  * draws under additive compositing blow out the core to over-
- * exposed white.
+ * exposed white — issued as ceil(3I) draws whose alphas sum to 3I
+ * (identical under saturating 'lighter'), each blitting only the
+ * bolt's covered tiles.
  */
 export function compositeBolt(
   ctx: CanvasRenderingContext2D,
@@ -247,11 +348,14 @@ export function compositeBolt(
   if (intensity <= 0) return;
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  ctx.globalAlpha = Math.min(1, intensity);
   if (jitterX !== 0 || jitterY !== 0) ctx.translate(jitterX, jitterY);
-  ctx.drawImage(off, 0, 0, width, height);
-  ctx.drawImage(off, 0, 0, width, height);
-  ctx.drawImage(off, 0, 0, width, height);
+  let remaining = 3 * Math.min(1, intensity);
+  while (remaining > 1e-4) {
+    const a = remaining > 1 ? 1 : remaining;
+    ctx.globalAlpha = a;
+    blitCovered(ctx, off, width, height);
+    remaining -= a;
+  }
   ctx.globalAlpha = 1;
   ctx.restore();
 }
@@ -327,6 +431,52 @@ export function compositeBoltLeader(
   ctx.restore();
 }
 
+/* ── Gradient cache ─────────────────────────────────────────────
+   Glow gradients are pure geometry once their alpha ramp is
+   normalized (peak stop = 1); each call scales them by the old
+   per-frame strength through globalAlpha — the same pixels the
+   strength-baked stops produced, since every stop scaled linearly
+   with it. Positions are fixed per variant (source/anchor X) or per
+   viewport, so a handful of entries serve every strike. Cleared
+   whenever the viewport size changes. */
+const G_FLASH = 1;
+const G_CLOUD = 2;
+const G_RIM = 3;
+const G_ANCHOR = 4;
+const G_DIRECTIONAL = 5;
+const G_TIP = 6;
+let gradCacheW = -1;
+let gradCacheH = -1;
+const gradCache = new Map<number, CanvasGradient>();
+
+/** Cache key for (kind, x) — x quantized to 1/8 px. Integer math
+ *  only, so lookups never allocate. */
+function gradKey(kind: number, width: number, height: number, x: number): number {
+  if (width !== gradCacheW || height !== gradCacheH) {
+    gradCache.clear();
+    gradCacheW = width;
+    gradCacheH = height;
+  }
+  return kind * 1_000_000 + Math.round(x * 8);
+}
+
+/** Fill only the bounding box of a radial gradient whose outer stop
+ *  is fully transparent — outside it the fill would add nothing. */
+function fillRadialBox(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  r: number,
+  width: number,
+  height: number,
+) {
+  const x0 = Math.max(0, cx - r);
+  const y0 = Math.max(0, cy - r);
+  const x1 = Math.min(width, cx + r);
+  const y1 = Math.min(height, cy + r);
+  if (x1 > x0 && y1 > y0) ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+}
+
 /**
  * Bright spot at the descending leader's tip. The tip is where new
  * air is being ionized, so it glows hotter than the channel behind
@@ -346,14 +496,22 @@ export function renderLeaderTip(
   if (intensity <= 0) return;
   const a = Math.min(1, intensity * 2.4);
   const r = 28;
+  // Cached at the origin and translated — the tip moves every frame.
+  const key = gradKey(G_TIP, gradCacheW, gradCacheH, 0);
+  let grad = gradCache.get(key);
+  if (!grad) {
+    grad = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+    grad.addColorStop(0,   'rgba(255, 255, 255, 1)');
+    grad.addColorStop(0.4, `rgba(240, 240, 240, ${0.22 / 0.55})`);
+    grad.addColorStop(1,   'rgba(0, 0, 0, 0)');
+    gradCache.set(key, grad);
+  }
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  const grad = ctx.createRadialGradient(tipX, tipY, 0, tipX, tipY, r);
-  grad.addColorStop(0,   `rgba(255, 255, 255, ${0.55 * a})`);
-  grad.addColorStop(0.4, `rgba(240, 240, 240, ${0.22 * a})`);
-  grad.addColorStop(1,   'rgba(0, 0, 0, 0)');
+  ctx.globalAlpha = 0.55 * a;
+  ctx.translate(tipX, tipY);
   ctx.fillStyle = grad;
-  ctx.fillRect(tipX - r, tipY - r, r * 2, r * 2);
+  ctx.fillRect(-r, -r, r * 2, r * 2);
   ctx.restore();
 }
 
@@ -370,21 +528,22 @@ export function renderFlash(
   intensity: number,
 ) {
   if (intensity <= 0) return;
+  // Outer stop is not transparent — this one must cover the viewport.
+  // (centerY is always viewport-derived, so size + X identify it.)
+  const key = gradKey(G_FLASH, w, h, centerX);
+  let grad = gradCache.get(key);
+  if (!grad) {
+    grad = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, Math.max(w, h));
+    grad.addColorStop(0,    'rgba(255, 255, 255, 1)');
+    grad.addColorStop(0.15, 'rgba(245, 245, 245, 0.78)');
+    grad.addColorStop(0.45, 'rgba(195, 195, 195, 0.4)');
+    grad.addColorStop(0.8,  'rgba(120, 120, 120, 0.18)');
+    grad.addColorStop(1,    'rgba(80, 80, 80, 0.08)');
+    gradCache.set(key, grad);
+  }
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  const grad = ctx.createRadialGradient(
-    centerX,
-    centerY,
-    0,
-    centerX,
-    centerY,
-    Math.max(w, h),
-  );
-  grad.addColorStop(0,    `rgba(255, 255, 255, ${1.0 * intensity})`);
-  grad.addColorStop(0.15, `rgba(245, 245, 245, ${0.78 * intensity})`);
-  grad.addColorStop(0.45, `rgba(195, 195, 195, ${0.4 * intensity})`);
-  grad.addColorStop(0.8,  `rgba(120, 120, 120, ${0.18 * intensity})`);
-  grad.addColorStop(1,    `rgba(80, 80, 80, ${0.08 * intensity})`);
+  ctx.globalAlpha = Math.min(1, intensity);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, w, h);
   ctx.restore();
@@ -408,21 +567,28 @@ export function renderCloudGlow(
   intensity: number,
 ) {
   if (intensity <= 0) return;
-  ctx.save();
-  ctx.globalCompositeOperation = 'lighter';
   // Anchor 5% above the top edge so the glow reads as the cloud
   // (not the air right below the cloud) being lit.
   const cy = -height * 0.05;
   const radius = Math.max(width, height) * 0.42;
-  const grad = ctx.createRadialGradient(sourceX, cy, 0, sourceX, cy, radius);
-  // Pure neutral white at center — visually couples the cloud
-  // illumination to the bolt's own neutral-white halo (no color cast).
-  grad.addColorStop(0,    `rgba(235, 235, 235, ${0.55 * intensity})`);
-  grad.addColorStop(0.35, `rgba(185, 185, 185, ${0.28 * intensity})`);
-  grad.addColorStop(0.7,  `rgba(125, 125, 125, ${0.10 * intensity})`);
-  grad.addColorStop(1,    'rgba(0, 0, 0, 0)');
+  const key = gradKey(G_CLOUD, width, height, sourceX);
+  let grad = gradCache.get(key);
+  if (!grad) {
+    grad = ctx.createRadialGradient(sourceX, cy, 0, sourceX, cy, radius);
+    // Pure neutral white at center — visually couples the cloud
+    // illumination to the bolt's own neutral-white halo (no color
+    // cast). Normalized to the 0.55 peak (applied via globalAlpha).
+    grad.addColorStop(0,    'rgba(235, 235, 235, 1)');
+    grad.addColorStop(0.35, `rgba(185, 185, 185, ${0.28 / 0.55})`);
+    grad.addColorStop(0.7,  `rgba(125, 125, 125, ${0.10 / 0.55})`);
+    grad.addColorStop(1,    'rgba(0, 0, 0, 0)');
+    gradCache.set(key, grad);
+  }
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = Math.min(1, 0.55 * intensity);
   ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, width, height);
+  fillRadialBox(ctx, sourceX, cy, radius, width, height);
   ctx.restore();
 }
 
@@ -446,19 +612,26 @@ export function renderAnchorExplosion(
   const THRESHOLD = 0.45;
   if (intensity <= THRESHOLD) return;
   const punch = (intensity - THRESHOLD) / (1 - THRESHOLD);  // 0..1
-  ctx.save();
-  ctx.globalCompositeOperation = 'lighter';
   // Anchor 2% below the bottom so the explosion reads as
   // happening at "ground level" off-screen.
   const cy = height + height * 0.02;
   const radius = Math.max(width, height) * 0.28;
-  const grad = ctx.createRadialGradient(anchorX, cy, 0, anchorX, cy, radius);
-  grad.addColorStop(0,    `rgba(255, 255, 255, ${0.72 * punch})`);
-  grad.addColorStop(0.18, `rgba(238, 238, 238, ${0.50 * punch})`);
-  grad.addColorStop(0.45, `rgba(190, 190, 190, ${0.22 * punch})`);
-  grad.addColorStop(1,    'rgba(0, 0, 0, 0)');
+  const key = gradKey(G_ANCHOR, width, height, anchorX);
+  let grad = gradCache.get(key);
+  if (!grad) {
+    grad = ctx.createRadialGradient(anchorX, cy, 0, anchorX, cy, radius);
+    // Normalized to the 0.72 peak (applied via globalAlpha).
+    grad.addColorStop(0,    'rgba(255, 255, 255, 1)');
+    grad.addColorStop(0.18, `rgba(238, 238, 238, ${0.50 / 0.72})`);
+    grad.addColorStop(0.45, `rgba(190, 190, 190, ${0.22 / 0.72})`);
+    grad.addColorStop(1,    'rgba(0, 0, 0, 0)');
+    gradCache.set(key, grad);
+  }
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = Math.min(1, 0.72 * punch);
   ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, width, height);
+  fillRadialBox(ctx, anchorX, cy, radius, width, height);
   ctx.restore();
 }
 
@@ -480,19 +653,26 @@ export function renderCloudRim(
   intensity: number,
 ) {
   if (intensity <= 0) return;
-  ctx.save();
-  ctx.globalCompositeOperation = 'lighter';
   // Anchor at ~32% from top — visually where the cloud bases sit in
   // the .skyDrift CSS layer behind the canvas.
   const cy = height * 0.32;
   const radius = Math.max(width, height) * 0.55;
-  const grad = ctx.createRadialGradient(sourceX, cy, 0, sourceX, cy, radius);
-  grad.addColorStop(0,    `rgba(232, 232, 232, ${0.20 * intensity})`);
-  grad.addColorStop(0.40, `rgba(185, 185, 185, ${0.10 * intensity})`);
-  grad.addColorStop(0.85, `rgba(110, 110, 110, ${0.03 * intensity})`);
-  grad.addColorStop(1,    'rgba(0, 0, 0, 0)');
+  const key = gradKey(G_RIM, width, height, sourceX);
+  let grad = gradCache.get(key);
+  if (!grad) {
+    grad = ctx.createRadialGradient(sourceX, cy, 0, sourceX, cy, radius);
+    // Normalized to the 0.20 peak (applied via globalAlpha).
+    grad.addColorStop(0,    'rgba(232, 232, 232, 1)');
+    grad.addColorStop(0.40, 'rgba(185, 185, 185, 0.5)');
+    grad.addColorStop(0.85, 'rgba(110, 110, 110, 0.15)');
+    grad.addColorStop(1,    'rgba(0, 0, 0, 0)');
+    gradCache.set(key, grad);
+  }
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = Math.min(1, 0.20 * intensity);
   ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, width, height);
+  fillRadialBox(ctx, sourceX, cy, radius, width, height);
   ctx.restore();
 }
 
@@ -514,7 +694,8 @@ export function renderSkyWash(
   if (intensity <= 0) return;
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  ctx.fillStyle = `rgba(220, 220, 220, ${0.06 * intensity})`;
+  ctx.globalAlpha = Math.min(1, 0.06 * intensity);
+  ctx.fillStyle = 'rgb(220, 220, 220)';
   ctx.fillRect(0, 0, width, height);
   ctx.restore();
 }
@@ -539,18 +720,25 @@ export function renderDirectionalFlash(
   intensity: number,
 ) {
   if (intensity <= 0) return;
-  ctx.save();
-  ctx.globalCompositeOperation = 'lighter';
   // Centered horizontally at sourceX, vertically 60% down (where the
   // rain is densest). Wide radius for smooth fall-off across the screen.
   const cy = height * 0.60;
   const radius = Math.max(width, height) * 0.85;
-  const grad = ctx.createRadialGradient(sourceX, cy, 0, sourceX, cy, radius);
-  grad.addColorStop(0,    `rgba(238, 238, 238, ${0.10 * intensity})`);
-  grad.addColorStop(0.40, `rgba(180, 180, 180, ${0.05 * intensity})`);
-  grad.addColorStop(1,    'rgba(0, 0, 0, 0)');
+  const key = gradKey(G_DIRECTIONAL, width, height, sourceX);
+  let grad = gradCache.get(key);
+  if (!grad) {
+    grad = ctx.createRadialGradient(sourceX, cy, 0, sourceX, cy, radius);
+    // Normalized to the 0.10 peak (applied via globalAlpha).
+    grad.addColorStop(0,    'rgba(238, 238, 238, 1)');
+    grad.addColorStop(0.40, 'rgba(180, 180, 180, 0.5)');
+    grad.addColorStop(1,    'rgba(0, 0, 0, 0)');
+    gradCache.set(key, grad);
+  }
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = Math.min(1, 0.10 * intensity);
   ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, width, height);
+  fillRadialBox(ctx, sourceX, cy, radius, width, height);
   ctx.restore();
 }
 
@@ -571,7 +759,8 @@ export function renderIrisReflex(
 ) {
   if (alpha <= 0) return;
   ctx.save();
-  ctx.fillStyle = `rgba(0, 0, 0, ${alpha})`;
+  ctx.globalAlpha = Math.min(1, alpha);
+  ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, width, height);
   ctx.restore();
 }
