@@ -48,6 +48,7 @@ import {
   tickRain,
   applyRainDensity,
   createWindSheetState,
+  createRainFrame,
   type LayeredDrops,
 } from './rain';
 import {
@@ -388,6 +389,9 @@ export default function StormLanding() {
 
     // Wind-sheet scheduler — starts the first sheet 8–15s in.
     const windSheet = createWindSheetState(start);
+    // Rain's per-frame inputs — one object, mutated every frame.
+    const rainFrame = createRainFrame();
+    rainFrame.windSheet = windSheet;
     // startTime of the sheet whose gust audio already fired —
     // lets the loop detect a NEW sheet spawning inside tickRain.
     let lastWindSheetStart = -1;
@@ -885,7 +889,11 @@ export default function StormLanding() {
       }
 
       // All strike contributions are in — snapshot the frame's flash.
+      // `strikeFlash` stays strike-only (bg flashes merge into
+      // flashIntensity later) — it drives the rain's strobe freeze,
+      // which distant flashes must not trigger.
       let flashIntensity = peakFlash;
+      const strikeFlash = peakFlash;
 
       /* ── Plasma flicker ──────────────────────────────────────
          High-frequency brightness shimmer during the decay phase.
@@ -1076,17 +1084,18 @@ export default function StormLanding() {
       // matches "drops closer to the strike catch more light." Uses
       // the brightest currently-active variant's source X as the
       // gradient center.
-      if (flashIntensity > 0.30) {
-        // Pick the highest-intensity variant — that's the visual
-        // dominant strike whose source the directional bias should track.
-        let dominantI = 0;
-        let dominantMax = variantIntensity[0];
-        for (let i = 1; i < VARIANT_COUNT; i++) {
-          if (variantIntensity[i] > dominantMax) {
-            dominantMax = variantIntensity[i];
-            dominantI = i;
-          }
+      // Highest-intensity variant — the visually dominant strike. Its
+      // source drives the directional bias below, and its channel
+      // lights the rain drops nearest to it.
+      let dominantI = 0;
+      let dominantMax = variantIntensity[0];
+      for (let i = 1; i < VARIANT_COUNT; i++) {
+        if (variantIntensity[i] > dominantMax) {
+          dominantMax = variantIntensity[i];
+          dominantI = i;
         }
+      }
+      if (flashIntensity > 0.30) {
         renderDirectionalFlash(
           ctx,
           width,
@@ -1141,22 +1150,45 @@ export default function StormLanding() {
       // Falling rain + wind sheet.
       let rainDropCount = 0;
       if (!reduceMotion) {
-        rainDropCount = tickRain({
-          ctx,
-          layers: rainLayers,
-          dt,
-          width,
-          height,
-          elapsed,
-          now,
-          flashIntensity,
-          windSheet,
-          // Smoothed values from the previous frame's parallax pass —
-          // one frame of lag is invisible at the 0.06 smoothing rate.
-          parallaxX,
-          parallaxY,
-          lifecycle,
-        });
+        const rf = rainFrame;
+        rf.ctx = ctx;
+        rf.layers = rainLayers;
+        rf.dt = dt;
+        rf.width = width;
+        rf.height = height;
+        rf.dpr = dpr;
+        rf.elapsed = elapsed;
+        rf.now = now;
+        rf.flashIntensity = flashIntensity;
+        // Strobe freeze: only the bright return-stroke peak (the
+        // envelope's 25ms plateau + fast decay) — a few frames.
+        rf.strobe = Math.max(0, Math.min(1, (strikeFlash - 0.4) / 0.45));
+        // Bolt channel lighting — the dominant strike's straight-line
+        // channel. Peak-gated (and off while the leader is still
+        // descending) so the afterimage tail never lights the rain.
+        const path = VARIANT_PATHS[dominantI];
+        rf.boltX0 = width * path.srcX;
+        rf.boltY0 = -60;
+        rf.boltX1 = width * path.dstX;
+        rf.boltY1 = height + 60;
+        rf.boltLight = variantLeader[dominantI] < 1
+          ? 0
+          : Math.max(0, (dominantMax - 0.35) / 0.65);
+        // Wordmark backlight — dark until the intro strike reveals the
+        // word, full once it has settled (~2.4s). Center tracks the
+        // stage's parallax so the glow stays glued to the word.
+        rf.wordX = width * 0.5 - parallaxX * 7;
+        rf.wordY = height * 0.5 - parallaxY * 5;
+        rf.wordLight = Math.max(0, Math.min(1, (elapsed - PRIMARY_STRIKE_T - 150) / 1250));
+        // Smoothed values from the previous frame's parallax pass —
+        // one frame of lag is invisible at the 0.06 smoothing rate.
+        rf.parallaxX = parallaxX;
+        rf.parallaxY = parallaxY;
+        rf.lifecycle = lifecycle;
+        // Governor deep in shedding mode → mid layer goes back to
+        // batched paths (per-drop shading is the first luxury cut).
+        rf.lowQuality = rainDensity < 0.55;
+        rainDropCount = tickRain(rf);
 
         /* ── Gust audio ─────────────────────────────────────────
            tickRain may have just spawned a wind sheet; if this is
