@@ -63,6 +63,15 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  async rewrites() {
+    return [
+      {
+        // Web Tech Project 2 puzzle game in public/project2, served at /project2 without changing the URL
+        source: '/project2',
+        destination: '/project2/index.html',
+      },
+    ];
+  },
   async headers() {
     return [
       {
