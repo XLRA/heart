@@ -70,19 +70,24 @@ const nextConfig: NextConfig = {
     ];
   },
   async rewrites() {
-    return [
-      {
-        // Web Tech Project 2 puzzle game in public/project2, served at /project2 without changing the URL
-        source: '/project2',
-        destination: '/project2/index.html',
-      },
-      ...(crossfadeOrigin
+    return {
+      // Crossfade's rewrites run before files. As ordinary (afterFiles) rewrites, Vercel adds ".rsc"
+      // to the forwarded path of every client-side navigation, and Crossfade's server has no such
+      // paths, so each click inside Crossfade became a full page load.
+      beforeFiles: crossfadeOrigin
         ? [
             { source: '/crossfade', destination: `${crossfadeOrigin}/crossfade` },
             { source: '/crossfade/:path*', destination: `${crossfadeOrigin}/crossfade/:path*` },
           ]
-        : []),
-    ];
+        : [],
+      afterFiles: [
+        {
+          // Web Tech Project 2 puzzle game in public/project2, served at /project2 without changing the URL
+          source: '/project2',
+          destination: '/project2/index.html',
+        },
+      ],
+    };
   },
   async headers() {
     return [
