@@ -1,5 +1,11 @@
 import type { NextConfig } from "next";
 
+// Crossfade (CSC 5750 term project) is its own Next.js app, built with basePath "/crossfade" and
+// running on a separate server. Everything under /crossfade is proxied there (Next.js multi-zones),
+// so pages, assets, API routes and sign-in all keep working at sleeep.dev/crossfade. Without the
+// variable (e.g. local dev) the rewrite is left out and /crossfade is a 404.
+const crossfadeOrigin = process.env.CROSSFADE_ORIGIN?.replace(/\/+$/, '');
+
 const nextConfig: NextConfig = {
   images: {
     remotePatterns: [
@@ -70,6 +76,12 @@ const nextConfig: NextConfig = {
         source: '/project2',
         destination: '/project2/index.html',
       },
+      ...(crossfadeOrigin
+        ? [
+            { source: '/crossfade', destination: `${crossfadeOrigin}/crossfade` },
+            { source: '/crossfade/:path*', destination: `${crossfadeOrigin}/crossfade/:path*` },
+          ]
+        : []),
     ];
   },
   async headers() {

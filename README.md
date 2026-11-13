@@ -173,6 +173,7 @@ heart/
 | `NEXT_PUBLIC_SPOTIFY_CLIENT_ID` | client | Spotify app client ID |
 | `SPOTIFY_CLIENT_SECRET` | server only | Used by the token/refresh API routes |
 | `NEXT_PUBLIC_SPOTIFY_REDIRECT_URI` | client | OAuth callback (default `http://localhost:3000/music/callback`) |
+| `CROSSFADE_ORIGIN` | server only | Where Crossfade runs; `/crossfade` is proxied there (see below) |
 
 Landing audio assets live under `/public/audio/` — `storm/` holds the rain loop and near/far thunder samples, `songs/` holds the background playlist (see `SONG_FILES` in `stormAudio.ts`).
 
@@ -187,6 +188,12 @@ Deployed at [sleeep.dev](https://sleeep.dev) via Vercel.
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/XLRA/heart)
 
 Set the environment variables above in your Vercel project settings before deploying (and update the redirect URI to your production domain).
+
+### Crossfade at `/crossfade`
+
+[Crossfade](https://sleeep.dev/crossfade), a Spotify + YouTube player built as a CSC 5750 term project, is a separate Next.js app with its own server and database. This site only forwards to it: with `CROSSFADE_ORIGIN` set, `next.config.ts` rewrites `/crossfade` and everything under it to that origin (Next.js multi-zones). Crossfade is built with the same `/crossfade` base path, so paths map one to one and none of its routes or cookies overlap with this site's.
+
+Crossfade's own repository has the server setup in `docs/DEPLOYMENT.md`. Once it's reachable over HTTPS, set `CROSSFADE_ORIGIN` (for example `https://crossfade-origin.sleeep.dev`) for Production in Vercel and redeploy.
 
 ## 🐛 Troubleshooting
 
