@@ -1,5 +1,5 @@
-import StormLanding from "./components/landing/StormLanding";
+import BlackwallLanding from "./components/landing/blackwall/BlackwallLanding";
 
 export default function Home() {
-  return <StormLanding />;
+  return <BlackwallLanding />;
 }

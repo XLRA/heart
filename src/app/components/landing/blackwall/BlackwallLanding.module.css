@@ -1,0 +1,66 @@
+/* The whole page: a fixed black void holding one canvas. */
+
+.root {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: #000000;
+  /* Layout and paint cannot escape the box (it is viewport-sized). */
+  contain: strict;
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #000000;
+  /* Touch-drag is pressure probing, never a scroll or zoom. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  outline: none;
+}
+
+/* The sound toggle: a small glyph in the corner, nearly part of the
+   dark until it is looked for. */
+.sound {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #a3283c;
+  opacity: 0.4;
+  cursor: pointer;
+  transition: opacity 160ms ease-out, color 160ms ease-out;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sound:hover {
+  opacity: 0.9;
+}
+
+.sound:focus-visible {
+  opacity: 1;
+  outline: 1px solid #d90018;
+  outline-offset: -6px;
+}
+
+.sound[aria-pressed='false'] {
+  color: #6a5a66;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sound {
+    transition: none;
+  }
+}
